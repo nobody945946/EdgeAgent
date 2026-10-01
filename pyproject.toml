@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "e4b-core"
+version = "1.0.0"
+description = "Independent local E4B model service and agent UI"
+requires-python = ">=3.12"
+dependencies = ["pypdf>=6"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.11"]
+
+[project.scripts]
+e4b = "e4b_core.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["e4b_core*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88

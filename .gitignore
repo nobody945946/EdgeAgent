@@ -1,0 +1,15 @@
+.venv/
+models/
+config.json
+.env
+settings.json
+personas.json
+character_state.json
+.test-tmp/
+.worktrees/
+disabled-autostart/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.log
