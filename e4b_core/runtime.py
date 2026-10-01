@@ -18,6 +18,18 @@ class E4BCoreError(RuntimeError):
     """Raised when the local E4B core cannot satisfy a request."""
 
 
+def activate_deployment_tools(root: Path = CORE_ROOT) -> None:
+    paths = [root / ".runtime/git/cmd"]
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        paths.append(Path(local) / "E4B/GitHubCLI/2.102.0/bin")
+    existing = os.environ.get("PATH", "").split(os.pathsep)
+    additions = [
+        str(path) for path in paths if path.is_dir() and str(path) not in existing
+    ]
+    os.environ["PATH"] = os.pathsep.join([*additions, *existing])
+
+
 def build_server_args(
     executable: str,
     model_path: Path,

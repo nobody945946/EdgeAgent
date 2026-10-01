@@ -89,12 +89,31 @@ function Ensure-GitHubLogin {
     }
 }
 
+function Ensure-Git {
+    param([string]$Root, [string]$CacheDir)
+    $existing = Get-Command git.exe -ErrorAction SilentlyContinue
+    if ($existing) {
+        Invoke-Checked $existing.Source @('--version')
+        return
+    }
+    $directory = Join-Path $Root '.runtime\git'
+    $executable = Join-Path $directory 'cmd\git.exe'
+    if (-not (Test-Path -LiteralPath $executable)) {
+        $archive = Join-Path $CacheDir 'MinGit-2.56.0-64-bit.zip'
+        Get-VerifiedFile 'https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.1/MinGit-2.56.0-64-bit.zip' $archive '064b440ff870ed5198527e8f3a92cdf5bd2fd0fedf5e718af95e3fdaddeff718'
+        Expand-Archive -LiteralPath $archive -DestinationPath $directory -Force
+    }
+    Invoke-Checked $executable @('--version')
+    $env:PATH = "$(Split-Path $executable -Parent);$env:PATH"
+}
+
 function Install-E4B {
     param([string]$Root, [string]$SelectedBackend)
     $Root = [IO.Path]::GetFullPath($Root)
     $cache = Join-Path $Root '.runtime\downloads'
     New-Item -ItemType Directory -Force -Path $cache | Out-Null
     $python = Ensure-Python312 $cache
+    Ensure-Git $Root $cache
     $venv = Join-Path $Root '.venv\Scripts\python.exe'
     if (-not (Test-Path -LiteralPath $venv)) { Invoke-Checked $python @('-m', 'venv', (Join-Path $Root '.venv')) }
     $projectHash = (Get-FileHash -LiteralPath (Join-Path $Root 'pyproject.toml')).Hash

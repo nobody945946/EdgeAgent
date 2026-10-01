@@ -4,7 +4,7 @@ Source: https://github.com/nobody945946/E4BCore (private repository).
 
 On Windows x64, open `開啟 E4B.cmd`: the independent installer prepares Python
 3.12, its own virtual environment, pinned Python dependencies, verified llama.cpp
-b11193 binaries, Gemma 4 E4B, and the character adapter. It uses CUDA 12.4 if an
+b11193 binaries, Git when absent, Gemma 4 E4B, and the character adapter. It uses CUDA 12.4 if an
 NVIDIA driver is available and usable; otherwise it installs the CPU backend.
 Git, winget and the CUDA Toolkit are not prerequisites. A GitHub sign-in with
 access to this private repository is needed to obtain the character adapter.

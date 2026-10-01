@@ -111,3 +111,15 @@ def test_runtime_rejects_external_server_in_deployment_marker(tmp_path, monkeypa
     monkeypatch.setattr(runtime, "_winget_llama_server", lambda: None)
     with pytest.raises(runtime.E4BCoreError):
         runtime.find_llama_server()
+
+
+def test_service_tools_find_portable_git_without_system_git(tmp_path, monkeypatch):
+    directory = tmp_path / ".runtime/git/cmd"
+    directory.mkdir(parents=True)
+    monkeypatch.setenv("PATH", "system-only")
+    runtime.activate_deployment_tools(tmp_path)
+    assert str(directory) in runtime.os.environ["PATH"].split(runtime.os.pathsep)
+    runtime.activate_deployment_tools(tmp_path)
+    assert (
+        runtime.os.environ["PATH"].split(runtime.os.pathsep).count(str(directory)) == 1
+    )

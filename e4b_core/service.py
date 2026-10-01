@@ -753,6 +753,9 @@ class ExclusiveHTTPServer(ThreadingHTTPServer):
 
 
 def main() -> int:
+    from e4b_core.runtime import activate_deployment_tools
+
+    activate_deployment_tools()
     parser = argparse.ArgumentParser()
     parser.add_argument("--core-dir", type=Path, default=CORE_ROOT)
     args = parser.parse_args()
