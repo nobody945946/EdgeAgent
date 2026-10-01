@@ -139,6 +139,18 @@ llama.cpp Windows `/tools` 對中文路徑不可靠：
 - cross_origin_live_run：403，PASS；請求未執行命令。
 - final_shutdown：e4b stop exit code 0；控制／模型連接埠已無 LISTENING；測試專用 Edge 已關閉。
 
+## 2026-10-02 首次部署完成
+
+- standalone_bootstrap_verified：Windows x64；Python 3.12、Git、虛擬環境、模型與推論引擎自動部署；CPU／CUDA 自動選擇；下載校驗與續傳。
+- native_ownership_preserved：獨立來源、環境、模型、原生介面；SilentTalk 僅使用 localhost 租用 API。
+- source_distribution_published：bootstrap-v4；版本 1.1.2；來源 HEAD e135aac；SHA256 4efb3095e47785d5e6045810c6dd816e3db568cd43ea8d120567963fcfa82e0c；排除模型、使用者設定與交接回報。
+- windows_clean_cpu_pipeline：PASS；run 36902829053；隔離 PATH／LOCALAPPDATA，Python 與 Git 缺席；安裝後原生啟動／停止通過。
+- local_cold_cuda_pipeline：PASS；Unicode 路徑；全新環境與模型下載；原生／角色租用／恢復原生通過。
+- portable_git_worktree_verified：PASS；Git 2.56.0；分支與原工作目錄隔離通過。
+- pytest：45 passed；exit code 0。ruff：PASS；exit code 0。
+- global_command_restored：正式獨立安裝；測試後控制／模型端口無 LISTENING。
+- user_configuration_preserved：未修改使用者設定；未記錄對話、錄音、附件或模型回覆。
+
 ### 精確範圍
 
 附件是文件內容處理；目前模型未部署圖片投影器／OCR，圖片與掃描 PDF 不冒充可理解。终端是持久 PowerShell 命令面板，未提供 ConPTY 全螢幕互動程式。Worktree 從已提交 HEAD 建立，不複製原專案未提交修改。所有對話／附件／指令仍只在 RAM；不因模仿其他軟體而寫入磁碟。以上完成的是本次已列出的本機工作介面缺口，未宣稱具備 OpenAI 雲端服務、全部外掛或完整 Codex 產品等價性。
