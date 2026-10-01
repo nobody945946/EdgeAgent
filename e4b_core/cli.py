@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import sys
@@ -43,33 +44,51 @@ def install_command() -> Path:
     cli = CORE_ROOT / "e4b_core" / "cli.py"
     if not python.is_file() or not cli.is_file():
         raise RuntimeError(f"E4B Core is not installed at {CORE_ROOT}")
+
+    # ASCII launch files work even when cmd.exe has no console/code-page handle.
+    # Paths decode to Unicode inside PowerShell; user arguments stay separate.
+    def encoded_path(path: Path) -> str:
+        return base64.b64encode(str(path).encode("utf-16-le")).decode("ascii")
+
+    launcher = links / "e4b-launch.ps1"
+    launcher.write_text(
+        "$ErrorActionPreference = 'Stop'\n"
+        f"$python = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded_path(python)}'))\n"
+        f"$cli = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded_path(cli)}'))\n"
+        "& $python $cli @args\nexit $LASTEXITCODE\n",
+        encoding="ascii",
+    )
     shim.write_text(
-        f'@echo off\nchcp 65001 >nul\n"{python}" "{cli}" %*\n',
-        encoding="utf-8",
+        '@echo off\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0e4b-launch.ps1" %*\n',
+        encoding="ascii",
     )
     if os.name == "nt":
-        import winreg
-
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
-            try:
-                current, kind = winreg.QueryValueEx(key, "Path")
-            except FileNotFoundError:
-                current, kind = "", winreg.REG_EXPAND_SZ
-            entries = str(current).split(";")
-            if str(links).casefold() not in [
-                entry.rstrip("\\").casefold() for entry in entries
-            ]:
-                winreg.SetValueEx(
-                    key, "Path", 0, kind, str(current).rstrip(";") + ";" + str(links)
-                )
-        # Notify Explorer so future terminals inherit the user command path.
-        import ctypes
-
-        result = ctypes.c_size_t()
-        ctypes.windll.user32.SendMessageTimeoutW(
-            0xFFFF, 0x001A, 0, "Environment", 2, 1000, ctypes.byref(result)
-        )
+        _register_command_path(links)
     return shim
+
+
+def _register_command_path(links: Path) -> None:
+    import winreg
+
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+        try:
+            current, kind = winreg.QueryValueEx(key, "Path")
+        except FileNotFoundError:
+            current, kind = "", winreg.REG_EXPAND_SZ
+        entries = str(current).split(";")
+        if str(links).casefold() not in [
+            entry.rstrip("\\").casefold() for entry in entries
+        ]:
+            winreg.SetValueEx(
+                key, "Path", 0, kind, str(current).rstrip(";") + ";" + str(links)
+            )
+    # Notify Explorer so future terminals inherit the user command path.
+    import ctypes
+
+    result = ctypes.c_size_t()
+    ctypes.windll.user32.SendMessageTimeoutW(
+        0xFFFF, 0x001A, 0, "Environment", 2, 1000, ctypes.byref(result)
+    )
 
 
 def autostart_enabled() -> bool:

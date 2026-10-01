@@ -2,8 +2,46 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import subprocess
+import sys
+
+import pytest
 
 from e4b_core import cli
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows global command")
+def test_global_command_handles_unicode_paths_without_a_console(tmp_path, monkeypatch):
+    root = tmp_path / "原生 E4B 空白路徑"
+    root.mkdir()
+    subprocess.run(
+        [sys.executable, "-m", "venv", str(root / ".venv")], check=True, timeout=60
+    )
+    (root / "e4b_core").mkdir()
+    (root / "e4b_core/cli.py").write_text(
+        "import json, sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(cli, "CORE_ROOT", root)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "使用者 資料"))
+    monkeypatch.setattr(cli, "_register_command_path", lambda links: None)
+    command = cli.install_command()
+    result = subprocess.run(
+        [
+            os.environ.get("COMSPEC", "cmd.exe"),
+            "/d",
+            "/c",
+            "call",
+            str(command),
+            "status",
+            "空 白參數",
+        ],
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    assert json.loads(result.stdout) == ["status", "空 白參數"]
 
 
 def test_terminal_chat_streams_local_response_without_agent(
