@@ -26,10 +26,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Install from a checkout with no virtual environment or model assets
         shell: powershell
-        run: ./scripts/bootstrap.ps1 -SetupOnly -Backend cpu
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'E4B-new-user'
+          $env:PATH = "$env:WINDIR\System32;$env:WINDIR\System32\WindowsPowerShell\v1.0"
+          ./scripts/bootstrap.ps1 -SetupOnly -Backend cpu
       - name: Load native E4B and release all model resources
         shell: powershell
         run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'E4B-new-user'
           try {
             & ./.venv/Scripts/python.exe -m e4b_core.cli start
             if ($LASTEXITCODE -ne 0) { throw 'Native E4B failed to start' }
