@@ -2,12 +2,26 @@
 
 Source: https://github.com/nobody945946/E4BCore (private repository).
 
-For a fresh checkout, use Python 3.12 or newer, create `.venv` with
-`py -3.12 -m venv .venv`, and install with
-`.venv\Scripts\python.exe -m pip install -e ".[dev]"`.
-Install llama.cpp separately and provide the local model assets under `models`.
+On Windows x64, open `開啟 E4B.cmd`: the independent installer prepares Python
+3.12, its own virtual environment, pinned Python dependencies, verified llama.cpp
+b11193 binaries, Gemma 4 E4B, and the character adapter. It uses CUDA 12.4 if an
+NVIDIA driver is available and usable; otherwise it installs the CPU backend.
+Git, winget and the CUDA Toolkit are not prerequisites. A GitHub sign-in with
+access to this private repository is needed to obtain the character adapter.
+`開啟 E4B.cmd --check` installs and validates binaries without opening the browser.
+The installer does not enable Windows login startup or modify user configuration.
+Large downloads resume after interruption and are checked against pinned SHA256.
+Rerunning setup reuses verified assets. Allow at least 12 GB of free disk space.
+For development, install the optional checks with
+`.venv\Scripts\python.exe -m pip install -e ".[dev]"` after setup.
 Model files, local configuration, caches, and runtime data are excluded from Git.
 The original extracted core is preserved in SilentTalk commit `24b73e5`.
+
+`scripts/bootstrap.ps1` owns Windows prerequisites and the independent package
+environment; `e4b_core/deploy.py` owns inference binaries and model assets.
+SilentTalk may invoke this installer, but its application imports no E4B code
+and borrows only the localhost API. The source-only bootstrap distribution is
+published separately from the `runtime-assets-v1` character adapter release.
 
 This is the independent local E4B runtime. Its source, Python environment, and
 models live under `C:\Users\A8fm0\E4BCore`; SilentTalk only leases the running
