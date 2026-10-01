@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -72,6 +73,18 @@ def build_server_args(
 
 
 def find_llama_server() -> str:
+    marker = CORE_ROOT / ".runtime/deployment.json"
+    if marker.is_file():
+        try:
+            relative = json.loads(marker.read_text(encoding="utf-8"))["server"]
+            executable = (CORE_ROOT / relative).resolve()
+            if (
+                executable.is_relative_to((CORE_ROOT / ".runtime").resolve())
+                and executable.is_file()
+            ):
+                return str(executable)
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
     executable = (
         shutil.which("llama-server.exe")
         or shutil.which("llama-server")

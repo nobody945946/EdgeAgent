@@ -2,18 +2,15 @@
 setlocal
 cd /d "%~dp0"
 
-if not exist ".venv\Scripts\python.exe" (
-    echo ERROR: E4B Core Python environment is missing.
-    pause
-    exit /b 1
+if /i "%~1"=="--check" (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\bootstrap.ps1" -SetupOnly
+) else (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\bootstrap.ps1"
 )
-
-".venv\Scripts\python.exe" "e4b_core\cli.py" install >nul
 if errorlevel 1 (
-    echo ERROR: Could not install the global e4b command.
+    echo ERROR: E4B setup failed. Run this launcher again to retry.
     pause
     exit /b 1
 )
 
-call "%LOCALAPPDATA%\Microsoft\WinGet\Links\e4b.cmd"
-exit /b %errorlevel%
+exit /b 0

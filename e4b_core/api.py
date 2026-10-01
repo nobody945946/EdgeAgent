@@ -30,7 +30,7 @@ def control_service_present(timeout: float = 0.25) -> bool:
         return False
 
 
-def ensure_service(timeout: float = 120.0) -> dict[str, object]:
+def ensure_service(timeout: float = 360.0) -> dict[str, object]:
     status = service_status()
     if status is None and not control_service_present():
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -66,7 +66,7 @@ def request_base() -> dict[str, object]:
     status = ensure_service()
     if status.get("mode") == "base":
         return status
-    return post_json("/base", {}, timeout=120)
+    return post_json("/base", {}, timeout=360)
 
 
 def shutdown_service() -> dict[str, object]:

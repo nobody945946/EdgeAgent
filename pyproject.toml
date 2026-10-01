@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "e4b-core"
-version = "1.0.0"
+version = "1.1.0"
 description = "Independent local E4B model service and agent UI"
 requires-python = ">=3.12"
-dependencies = ["pypdf>=6"]
+dependencies = ["pypdf==6.19.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.11"]

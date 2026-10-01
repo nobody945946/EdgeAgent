@@ -388,7 +388,7 @@ class E4BCore:
         self.owner_dead_since = None
         if mode == "character":
             self.handoff_until = 0.0
-        deadline = time.monotonic() + 90
+        deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 code = self.process.returncode

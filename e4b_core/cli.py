@@ -44,9 +44,31 @@ def install_command() -> Path:
     if not python.is_file() or not cli.is_file():
         raise RuntimeError(f"E4B Core is not installed at {CORE_ROOT}")
     shim.write_text(
-        f'@echo off\n"{python}" "{cli}" %*\n',
+        f'@echo off\nchcp 65001 >nul\n"{python}" "{cli}" %*\n',
         encoding="utf-8",
     )
+    if os.name == "nt":
+        import winreg
+
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            try:
+                current, kind = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                current, kind = "", winreg.REG_EXPAND_SZ
+            entries = str(current).split(";")
+            if str(links).casefold() not in [
+                entry.rstrip("\\").casefold() for entry in entries
+            ]:
+                winreg.SetValueEx(
+                    key, "Path", 0, kind, str(current).rstrip(";") + ";" + str(links)
+                )
+        # Notify Explorer so future terminals inherit the user command path.
+        import ctypes
+
+        result = ctypes.c_size_t()
+        ctypes.windll.user32.SendMessageTimeoutW(
+            0xFFFF, 0x001A, 0, "Environment", 2, 1000, ctypes.byref(result)
+        )
     return shim
 
 
