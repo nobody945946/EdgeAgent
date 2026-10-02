@@ -11,6 +11,7 @@ NATIVE_CHAT_HTML = r"""<!doctype html>
 
 #attachments{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px}#attachments:empty{display:none}.attachment{font-size:11px;border:1px solid #555;padding:5px 9px}#attach{width:30px;height:34px;padding:0;background:transparent;font-size:22px}main.terminal-open{grid-template-rows:58px minmax(0,1fr) 220px auto auto}#terminal-pane{min-height:0;background:#181818;border-block:1px solid #3b3b3b;display:grid;grid-template-rows:auto minmax(0,1fr) auto;padding:8px 18px;gap:5px}#terminal-pane[hidden]{display:none}.terminal-head{display:flex;align-items:center;gap:8px;font-size:11px}.terminal-head strong{margin-right:10px}.terminal-head span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#999}.terminal-head button{font-size:10px;padding:4px 8px}#terminal-output{margin:0;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 Consolas,monospace}#terminal-form{display:flex;gap:8px;margin:0;border:0;padding:0}#terminal-command{flex:1;min-width:0;border:1px solid #444;background:#222;color:inherit;border-radius:6px;padding:7px;font:12px Consolas,monospace}#terminal-run{font-size:11px;padding:6px 12px}
 #folder-address-form{display:flex;padding:12px 16px;gap:8px}#folder-address{flex:1;min-width:0;padding:8px;background:#292929;color:inherit;border:1px solid #444;border-radius:7px}#branch-label{display:block;font-size:10px}#worktree-create{max-width:130px}
+ #folder-dialog[open]{display:flex;flex-direction:column;overflow:hidden}#folder-dialog .folder-head,#folder-address-form,#folder-dialog .folder-actions{flex-shrink:0}#folder-dialog .folder-path{flex-shrink:0;max-height:64px;overflow:auto}#folder-list{flex:1;min-height:0;max-height:none;overflow:auto}#folder-error{margin:0;padding:0 16px 10px;color:#ed9999;max-height:64px;overflow:auto;flex-shrink:0}#folder-error[hidden]{display:none}
 </style>
 </head>
 <body><aside id="sidebar"><h2>E4B</h2><button id="new-thread" class="secondary">＋ 新對話</button><button id="open-project" class="secondary">開啟專案</button><div class="nav-title">專案與對話</div><div id="threads"></div><div id="privacy">本機工作 · 對話只在記憶體<br>關閉頁面後不保留對話</div></aside><main>
@@ -24,7 +25,7 @@ NATIVE_CHAT_HTML = r"""<!doctype html>
 <section id="terminal-pane" hidden><div class="terminal-head"><strong>PowerShell</strong><span id="terminal-cwd"></span><button id="terminal-stop" type="button" disabled>停止</button><button id="terminal-clear" type="button">清除</button><button id="terminal-hide" type="button">收起</button></div><pre id="terminal-output" role="log" aria-live="polite"></pre><form id="terminal-form"><input id="terminal-command" aria-label="終端命令" autocomplete="off" placeholder="在專案中執行命令…"><button id="terminal-run">執行</button></form></section>
 <form id="form"><div id="attachments"></div><input id="file-input" type="file" multiple hidden accept=".txt,.md,.py,.js,.ts,.tsx,.jsx,.json,.csv,.html,.css,.yaml,.yml,.toml,.xml,.log,.pdf,.docx"><button id="attach" type="button" aria-label="附加檔案">＋</button><textarea id="input" aria-label="工作指令" placeholder="描述工作，或提出問題…" autofocus></textarea><button id="stop" type="button" hidden>停止</button><button id="send" aria-label="送出">↑</button></form>
 </main>
-<dialog id="folder-dialog"><div class="folder-head"><strong>選擇 Agent 工作目錄</strong><button id="folder-close" class="secondary mini">關閉</button></div><form id="folder-address-form"><input id="folder-address" aria-label="資料夾路徑" placeholder="輸入資料夾路徑"><button>前往</button></form><div id="folder-path" class="folder-path"></div><div id="folder-list" class="folder-list"></div><div class="folder-actions"><button id="folder-use">使用這個資料夾</button></div></dialog>
+<dialog id="folder-dialog"><div class="folder-head"><strong>選擇 Agent 工作目錄</strong><button id="folder-close" class="secondary mini">關閉</button></div><form id="folder-address-form"><input id="folder-address" aria-label="資料夾路徑" placeholder="輸入資料夾路徑"><button>前往</button></form><div id="folder-path" class="folder-path"></div><p id="folder-error" role="alert" hidden></p><div id="folder-list" class="folder-list"></div><div class="folder-actions"><button id="folder-use" disabled>使用這個資料夾</button></div></dialog>
 <aside id="review" hidden><button id="review-close">關閉</button><h2>本次修改</h2><p id="review-empty">這個對話尚未修改檔案。</p><div id="review-files"></div></aside>
 <script>
 const chat=document.querySelector('#chat'),input=document.querySelector('#input'),send=document.querySelector('#send');
@@ -72,11 +73,31 @@ fetch('/config').then(response=>response.json()).then(value=>{effort.value=value
 document.querySelector('#save').addEventListener('click',async()=>{if(busy)return;const response=await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({thinking_effort:effort.value,agent:agent.checked})});if(!response.ok){add('notice','設定儲存失敗：'+await response.text());return}add('notice','Agent 與 thinking effort 設定已儲存')});
 document.querySelector('#shutdown').addEventListener('click',async()=>{if(busy||!confirm('關閉 E4B 並釋放 GPU 記憶體？'))return;const response=await fetch('/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});if(!response.ok){add('notice','關閉失敗：'+await response.text());return}send.disabled=true;input.disabled=true;add('notice','E4B 已關閉；需要時再執行「開啟 E4B.cmd」')});
 async function directoryInfo(path){const response=await fetch('/directories',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});if(!response.ok){const value=await response.json().catch(()=>({}));throw new Error(value.error||'資料夾不存在')}return response.json()}
-async function showDirectory(path,fallback=true){let value;try{value=await directoryInfo(path)}catch(error){if(fallback)value=await directoryInfo('');else throw error}folderPath.textContent=value.current;folderPath.dataset.path=value.current;folderList.replaceChildren();if(value.parent){const up=document.createElement('button');up.className='folder-item';up.textContent='↰ 上一層';up.addEventListener('click',()=>showDirectory(value.parent,false));folderList.append(up)}for(const item of value.directories){const button=document.createElement('button');button.className='folder-item';button.textContent='📁 '+item.name;button.addEventListener('click',()=>showDirectory(item.path,false));folderList.append(button)}}
-document.querySelector('#browse').addEventListener('click',async()=>{folderDialog.showModal();try{await showDirectory(cwd.value.trim())}catch(error){folderDialog.close();add('notice','無法開啟資料夾：'+error.message)}});
+let folderRequest=0;
+async function showDirectory(path,fallback=true){
+  const request=++folderRequest,use=document.querySelector('#folder-use'),errorNode=document.querySelector('#folder-error');
+  const address=document.querySelector('#folder-address'),previousAddress=address.value;
+  use.disabled=true;delete folderPath.dataset.path;errorNode.hidden=true;folderList.setAttribute('aria-busy','true');
+  try{
+    let value;
+    try{value=await directoryInfo(path)}catch(error){if(fallback&&path)value=await directoryInfo('');else throw error}
+    if(request!==folderRequest||!folderDialog.open)return;
+    folderPath.textContent=value.current;folderPath.dataset.path=value.current;
+    if(document.activeElement!==address&&address.value===previousAddress)address.value=value.current;
+    folderList.replaceChildren();
+    if(value.parent){const up=document.createElement('button');up.className='folder-item';up.textContent='↰ 上一層';up.addEventListener('click',()=>showDirectory(value.parent,false));folderList.append(up)}
+    for(const item of value.directories){const button=document.createElement('button');button.className='folder-item';button.textContent='📁 '+item.name;button.addEventListener('click',()=>showDirectory(item.path,false));folderList.append(button)}
+    use.disabled=busy;
+  }catch(error){
+    if(request!==folderRequest||!folderDialog.open)return;
+    errorNode.textContent='無法開啟資料夾：'+error.message;errorNode.hidden=false;
+  }finally{if(request===folderRequest)folderList.setAttribute('aria-busy','false')}
+}
+document.querySelector('#browse').addEventListener('click',()=>{if(busy){add('notice','請先停止或等目前工作完成，再開啟資料夾。');return}folderDialog.showModal();showDirectory(cwd.value.trim())});
+folderDialog.addEventListener('close',()=>{folderRequest++;document.querySelector('#folder-use').disabled=true;delete folderPath.dataset.path;folderList.setAttribute('aria-busy','false')});
 document.querySelector('#folder-close').addEventListener('click',()=>folderDialog.close());
-document.querySelector('#folder-address-form').onsubmit=async event=>{event.preventDefault();try{await showDirectory(document.querySelector('#folder-address').value,false)}catch(error){add('notice',error.message)}};
-function openWorkspace(path){if(busy)return;rememberThread();cwd.value=path;session=crypto.randomUUID();folderDialog.close();input.value='';pendingFiles=[];renderFiles();refreshTerminal();refreshWorkspace();chat.replaceChildren();reviewFiles.replaceChildren();document.querySelector('#review-empty').hidden=false;add('notice','已開啟 Workspace：'+cwd.value+'；這是新的對話 context');rememberThread()}
+document.querySelector('#folder-address-form').onsubmit=event=>{event.preventDefault();showDirectory(document.querySelector('#folder-address').value.trim(),false)};
+function openWorkspace(path){if(busy||typeof path!=='string'||!path)return;rememberThread();cwd.value=path;session=crypto.randomUUID();folderDialog.close();input.value='';pendingFiles=[];renderFiles();refreshTerminal();refreshWorkspace();chat.replaceChildren();reviewFiles.replaceChildren();document.querySelector('#review-empty').hidden=false;add('notice','已開啟 Workspace：'+cwd.value+'；這是新的對話 context');rememberThread()}
 document.querySelector('#folder-use').addEventListener('click',()=>openWorkspace(folderPath.dataset.path));
 async function approve(payload){
   const details=payload.preview||JSON.stringify(payload.arguments,null,2);

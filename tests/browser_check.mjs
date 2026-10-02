@@ -1,6 +1,6 @@
 // Real Edge CDP interaction checks. No conversation text is persisted.
 import assert from 'node:assert/strict';
-import {writeFile} from 'node:fs/promises';
+import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 const targets = await (await fetch('http://127.0.0.1:9223/json/list')).json();
 const target = targets.find(t => t.type === 'page' && t.url.startsWith('http://127.0.0.1:18087'));
@@ -30,7 +30,7 @@ const wait = async expression => {
     await new Promise(r=>setTimeout(r,100));
   }
   console.error(JSON.stringify(errors));
-  console.error(await evaluate('({title:document.title,threads:document.querySelectorAll(".thread").length})'));
+  console.error(await evaluate('({title:document.title,threads:document.querySelectorAll(".thread").length,dialog:document.querySelector("#folder-dialog").open,viewport:[innerWidth,innerHeight]})'));
   throw Error('Browser state timed out');
 };
 const click = async selector => {
@@ -40,11 +40,20 @@ const click = async selector => {
   await cdp('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',buttons:1,clickCount:1,...point});
   await cdp('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',buttons:0,clickCount:1,...point});
 };
+const fill = async (selector,text) => {
+  await click(selector);
+  await cdp('Input.dispatchKeyEvent',{type:'rawKeyDown',key:'a',code:'KeyA',windowsVirtualKeyCode:65,nativeVirtualKeyCode:65,modifiers:2});
+  await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'a',code:'KeyA',windowsVirtualKeyCode:65,nativeVirtualKeyCode:65,modifiers:2});
+  await cdp('Input.insertText',{text});
+};
 try {
   await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('Network.enable');
+  await cdp('Emulation.setFocusEmulationEnabled',{enabled:true});
+  await cdp('Emulation.setDeviceMetricsOverride',{width:1280,height:850,deviceScaleFactor:1,mobile:false});
   await cdp('Page.bringToFront');
+  await evaluate('window.__e4bCheckReload=true');
   await cdp('Page.reload');
-  await wait('document.querySelectorAll(".thread").length===1');
+  await wait('!window.__e4bCheckReload&&document.readyState==="complete"&&document.querySelectorAll(".thread").length===1');
   assert(await evaluate('!!document.querySelector("#sidebar")'), 'project sidebar');
   assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'), 'desktop width fits');
   await click('#new-thread');
@@ -53,14 +62,42 @@ try {
   assert(await evaluate('document.querySelectorAll(".thread")[0].classList.contains("active")'), 'thread switching');
   await click('#open-project');
   await wait('document.querySelector("#folder-dialog").open&&document.querySelectorAll(".folder-item").length>0');
+  await cdp('Emulation.setDeviceMetricsOverride',{width:1280,height:600,deviceScaleFactor:1,mobile:false});
+  assert(await evaluate(`(()=>{const dialog=document.querySelector('#folder-dialog').getBoundingClientRect(),button=document.querySelector('#folder-use').getBoundingClientRect();return button.bottom<=dialog.bottom&&button.bottom<=innerHeight})()`), 'folder confirmation stays visible in a short window');
+  await cdp('Emulation.setDeviceMetricsOverride',{width:1280,height:850,deviceScaleFactor:1,mobile:false});
   await click('#folder-use');
   await wait('document.querySelector("#cwd").value.length>0&&!document.querySelector("#folder-dialog").open');
   assert(await evaluate('document.querySelectorAll(".thread").length===3'), 'new project conversation');
+  const folderFixture=resolve('.test-tmp/folder-picker-fixture');
+  const folderChild=resolve(folderFixture,'子資料夾');
+  await mkdir(folderChild,{recursive:true});
+  await click('#browse');
+  await wait('!document.querySelector("#folder-use").disabled');
+  await fill('#folder-address',folderFixture);
+  await click('#folder-address-form button');
+  await wait(`document.querySelector('#folder-path').dataset.path===${JSON.stringify(folderFixture)}`);
+  const childIndex=await evaluate('[...document.querySelectorAll(".folder-item")].findIndex(node=>node.textContent.includes("子資料夾"))+1');
+  assert(childIndex>0,'Unicode child directory is listed');
+  await click(`.folder-item:nth-child(${childIndex})`);
+  await wait(`document.querySelector('#folder-path').dataset.path===${JSON.stringify(folderChild)}`);
+  assert(await evaluate(`document.querySelector('#folder-address').value===${JSON.stringify(folderChild)}`),'address follows child navigation');
+  await fill('#folder-address',resolve(folderFixture,'missing'));
+  await click('#folder-address-form button');
+  await wait('!document.querySelector("#folder-error").hidden');
+  assert(await evaluate('document.querySelector("#folder-use").disabled&&!document.querySelector("#folder-path").dataset.path'),'failed navigation cannot select stale directory');
+  await fill('#folder-address',folderChild);
+  await click('#folder-address-form button');
+  await wait('!document.querySelector("#folder-use").disabled&&document.querySelector("#folder-error").hidden');
+  await cdp('Emulation.setDeviceMetricsOverride',{width:480,height:360,deviceScaleFactor:1,mobile:false});
+  assert(await evaluate(`(()=>{const dialog=document.querySelector('#folder-dialog').getBoundingClientRect(),button=document.querySelector('#folder-use').getBoundingClientRect();return button.bottom<=dialog.bottom&&button.bottom<=innerHeight})()`),'folder confirmation visible in compact short window');
+  await click('#folder-use');
+  await wait(`!document.querySelector('#folder-dialog').open&&document.querySelector('#cwd').value===${JSON.stringify(folderChild)}`);
+  await cdp('Emulation.setDeviceMetricsOverride',{width:1280,height:850,deviceScaleFactor:1,mobile:false});
+  console.log('PASS: short-window folder selection, Unicode child navigation, inline errors, stale-selection protection and recovery');
   if(process.env.E4B_TEST_WORKSPACE){
     await click('#open-project');
     await wait('document.querySelector("#folder-dialog").open');
-    await click('#folder-address');
-    await cdp('Input.insertText',{text:process.env.E4B_TEST_WORKSPACE});
+    await fill('#folder-address',process.env.E4B_TEST_WORKSPACE);
     await click('#folder-address-form button');
     await wait(`document.querySelector('#folder-path').dataset.path===${JSON.stringify(process.env.E4B_TEST_WORKSPACE)}`);
     await click('#folder-use');
@@ -133,8 +170,9 @@ try {
   await cdp('Emulation.setDeviceMetricsOverride',{width:480,height:850,deviceScaleFactor:1,mobile:false});
   assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'), 'compact width fits');
   await cdp('Emulation.clearDeviceMetricsOverride');
+  await evaluate('window.__e4bCheckReload=true');
   await cdp('Page.reload');
-  await wait('document.querySelectorAll(".thread").length===1');
+  await wait('!window.__e4bCheckReload&&document.readyState==="complete"&&document.querySelectorAll(".thread").length===1');
   const screenshot=await cdp('Page.captureScreenshot',{format:'png'});
   await writeFile('.test-tmp/e4b-ui.png',Buffer.from(screenshot.data,'base64'));
   if(errors.length) console.error(JSON.stringify(errors));
