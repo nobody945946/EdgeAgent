@@ -151,6 +151,17 @@ llama.cpp Windows `/tools` 對中文路徑不可靠：
 - global_command_restored：正式獨立安裝；測試後控制／模型端口無 LISTENING。
 - user_configuration_preserved：未修改使用者設定；未記錄對話、錄音、附件或模型回覆。
 
+## 2026-10-02 資料夾選定除錯
+
+- folder_confirmation_clipped：已重現；1280×600 確認按鈕超出 dialog；修正後 1280×600／480×360 可見且可選定。
+- folder_navigation_error：無效路徑錯誤原顯示於 modal 背後；改為 modal 內錯誤提示；失敗時禁止選定舊目錄；重新輸入有效路徑可恢復。
+- folder_address_race：開啟視窗後立即輸入路徑會被較晚回來的清單結果覆蓋；已修正；原生地址／Git 專案選取實测通過。
+- edge_functional_checks：PASS；中文子目錄、地址導航、Git 分支、實際隔離 Worktree、終端輸出／持續變數／停止／清除、附件／移除、對話切換、桌面／窄視窗；瀏覽器 exception／network failure 0。
+- regression_tests：45 passed；exit code 0；Ruff PASS；JavaScript syntax PASS。
+- published_fix：版本 1.1.3；來源 HEAD 6e58c85；bootstrap-v5；來源 zip SHA256 ddc60fb193086c9a2f90e8f1dcfc380f51c924d99302bd1c367c18c29e24f877；私人下載與校驗通過。
+- local_install_refreshed：正式獨立安裝與全域 e4b 指令已更新；未修改使用者設定或記錄對話。
+- test_service_stopped：e4b stop exit code 0；模型／GPU 記憶體釋放。
+
 ### 精確範圍
 
 附件是文件內容處理；目前模型未部署圖片投影器／OCR，圖片與掃描 PDF 不冒充可理解。终端是持久 PowerShell 命令面板，未提供 ConPTY 全螢幕互動程式。Worktree 從已提交 HEAD 建立，不複製原專案未提交修改。所有對話／附件／指令仍只在 RAM；不因模仿其他軟體而寫入磁碟。以上完成的是本次已列出的本機工作介面缺口，未宣稱具備 OpenAI 雲端服務、全部外掛或完整 Codex 產品等價性。
