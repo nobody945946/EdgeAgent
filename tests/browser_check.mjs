@@ -5,17 +5,23 @@ import {spawnSync} from 'node:child_process';
 import {resolve} from 'node:path';
 const targets = await (await fetch('http://127.0.0.1:9223/json/list')).json();
 const target = targets.find(t => t.type === 'page' && t.url.startsWith('http://127.0.0.1:18087'));
+const folderFixture=resolve('.test-tmp/folder-picker-fixture');
+const missingDirectory=resolve(folderFixture,'missing');
 const originalTests=process.env.EDGE_AGENT_TEST_WORKSPACE&&process.env.EDGE_AGENT_EXPECT_SHELL
   ? await readFile(resolve(process.env.EDGE_AGENT_TEST_WORKSPACE,'test_calc.py')) : null;
 assert(target, 'EdgeAgent page must be open');
 const socket = new WebSocket(target.webSocketDebuggerUrl);
 await new Promise(resolve => socket.addEventListener('open', resolve, {once:true}));
 let serial = 0;
-const pending = new Map(), errors = [];
+const pending = new Map(), errors = [], expectedErrors = [], expectedDirectoryStatuses = [];
+const expectedDirectoryRequests = new Set();
 socket.addEventListener('message', event => {
   const value = JSON.parse(event.data);
   if (value.id) { pending.get(value.id)?.(value); pending.delete(value.id); }
-  else if (value.method === 'Runtime.exceptionThrown' || (value.method === 'Network.loadingFailed' && !value.params.canceled)) errors.push(value);
+  else if(value.method==='Network.requestWillBeSent'&&value.params.request.url==='http://127.0.0.1:18087/directories'&&JSON.parse(value.params.request.postData||'{}').path===missingDirectory) expectedDirectoryRequests.add(value.params.requestId);
+  else if(value.method==='Network.responseReceived'&&expectedDirectoryRequests.has(value.params.requestId)) expectedDirectoryStatuses.push(value.params.response.status);
+  else if(value.method==='Log.entryAdded'&&value.params.entry.source==='network'&&expectedDirectoryRequests.has(value.params.entry.networkRequestId)) expectedErrors.push(value);
+  else if (value.method === 'Runtime.exceptionThrown' || (value.method === 'Network.loadingFailed' && !value.params.canceled) || (value.method === 'Log.entryAdded' && value.params.entry.level === 'error') || (value.method === 'Runtime.consoleAPICalled' && value.params.type === 'error')) errors.push(value);
 });
 const cdp = (method, params={}) => new Promise((resolve,reject) => {
   const id=++serial;
@@ -60,8 +66,19 @@ const setViewport = async metrics => {
   await cdp('Emulation.setDeviceMetricsOverride',metrics);
   await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
 };
+const choose = async (selector,value) => {
+  const options=await evaluate(`[...document.querySelector(${JSON.stringify(selector)}).options].map(option=>option.value)`);
+  const index=options.indexOf(value);assert(index>=0,'model option exists');
+  await click(selector);
+  await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Home',code:'Home',windowsVirtualKeyCode:36});
+  await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'Home',code:'Home',windowsVirtualKeyCode:36});
+  for(let i=0;i<index;i++){await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'ArrowDown',code:'ArrowDown',windowsVirtualKeyCode:40});await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'ArrowDown',code:'ArrowDown',windowsVirtualKeyCode:40})}
+  await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).value`),value);
+};
+const waitJob=async(model=null)=>{for(let index=0;index<600;index++){const state=await evaluate('modelState?.job.state');if(state==='done'&&(!model||await evaluate('modelState.active_model==='+JSON.stringify(model))))return;if(state==='failed')throw Error(await evaluate('modelState.job.error'));await new Promise(resolve=>setTimeout(resolve,1000))}throw Error('Model operation timeout')};
 try {
-  await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('Network.enable');
+  await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('Network.enable'); await cdp('Log.enable');
   await cdp('Emulation.setFocusEmulationEnabled',{enabled:true});
   await setViewport({width:1280,height:850,deviceScaleFactor:1,mobile:false});
   await cdp('Page.bringToFront');
@@ -82,23 +99,44 @@ try {
   assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'model dialog fits compact window');
   await click('#models-close');
   await setViewport({width:1280,height:850,deviceScaleFactor:1,mobile:false});
+  if(process.env.EDGE_AGENT_TEST_ADAPTER_FILE){
+    const adapter=process.env.EDGE_AGENT_TEST_ADAPTER_FILE;
+    const base=process.env.EDGE_AGENT_TEST_ADAPTER_BASE;
+    assert(base,'adapter test requires its compatible base');
+    await click('#actions-menu>summary');await click('#models-open');
+    await wait('!document.querySelector("#model-select").disabled');
+    const original=await evaluate('({...modelState.config})');
+    assert.equal(original.lora,'','empty adapter default');
+    await choose('#model-select',base);
+    assert(await evaluate('[...document.querySelector("#model-lora").options].every(option=>!option.value||modelState.models.some(item=>item.filename===option.value&&item.adapter&&item.architecture===modelState.models.find(model=>model.filename===document.querySelector("#model-select").value).architecture))'),'adapter architecture filtering');
+    await choose('#model-lora',adapter);await fill('#model-context','4096');
+    await click('#model-switch');await wait('modelState?.job.action==="switch"');await waitJob(base);
+    assert.equal(await evaluate('modelState.config.lora'),adapter,'selected adapter loaded');
+    console.log('PASS: optional adapter empty default, architecture filtering and real UI loading');
+    await choose('#model-lora','');await click('#model-switch');
+    await wait('modelState?.job.state==="running"||modelState?.config.lora===""');await waitJob(base);
+    assert.equal(await evaluate('modelState.config.lora'),'','adapter removed');
+    console.log('PASS: real UI adapter removal');
+    await choose('#model-lora',adapter);await choose('#model-select',original.model);
+    assert.equal(await evaluate('document.querySelector("#model-lora").value'),'','base change clears old adapter');
+    await fill('#model-context',String(original.context_size));await click('#model-switch');
+    await wait('modelState?.job.state==="running"||modelState?.active_model==='+JSON.stringify(original.model));await waitJob(original.model);
+    assert.deepEqual(await evaluate('({...modelState.config})'),original,'original Agent configuration restored');
+    assert((await (await fetch('http://127.0.0.1:18087/status')).json()).ready,'original Agent ready');
+    await setViewport({width:390,height:320,deviceScaleFactor:1,mobile:false});
+    await click('#model-lora');
+    await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+    await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+    assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'adapter controls fit compact window');
+    await click('#models-close');await setViewport({width:1280,height:850,deviceScaleFactor:1,mobile:false});
+    console.log('PASS: base-change adapter reset, original Agent restoration and compact adapter controls');
+  }
   if(process.env.EDGE_AGENT_TEST_MODEL_MODULES){
     await click('#actions-menu>summary');await click('#models-open');
     await fill('#model-repository','unsloth/Qwen3-0.6B-GGUF');
     await click('#model-catalog');
     await wait('!document.querySelector("#model-remote").disabled&&document.querySelector("#model-remote").options.length>0');
     assert(await evaluate('[...document.querySelector("#model-remote").options].some(option=>option.value==="Qwen3-0.6B-Q4_K_M.gguf")'),'Hub GGUF catalog');
-    const choose = async (selector,value) => {
-      const options=await evaluate(`[...document.querySelector(${JSON.stringify(selector)}).options].map(option=>option.value)`);
-      const index=options.indexOf(value);assert(index>=0,'model option exists');
-      await click(selector);
-      await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Home',code:'Home',windowsVirtualKeyCode:36});
-      await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'Home',code:'Home',windowsVirtualKeyCode:36});
-      for(let i=0;i<index;i++){await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'ArrowDown',code:'ArrowDown',windowsVirtualKeyCode:40});await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'ArrowDown',code:'ArrowDown',windowsVirtualKeyCode:40})}
-      await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
-      assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).value`),value);
-    };
-    const waitJob=async(model=null)=>{for(let index=0;index<600;index++){const state=await evaluate('modelState?.job.state');if(state==='done'&&(!model||await evaluate('modelState.active_model==='+JSON.stringify(model))))return;if(state==='failed')throw Error(await evaluate('modelState.job.error'));await new Promise(resolve=>setTimeout(resolve,1000))}throw Error('Model operation timeout')};
     const alreadyInstalled=await evaluate('[...document.querySelector("#model-select").options].some(option=>option.value==="Qwen3-0.6B-Q4_K_M.gguf")');
     if(!alreadyInstalled){await choose('#model-remote','Qwen3-0.6B-Q4_K_M.gguf');await click('#model-download');await wait('modelState?.job.action==="download"');await waitJob();assert(await evaluate('document.querySelector("#model-result").textContent.includes("下載完成")'),'verified download finished');console.log('PASS: real Hub catalog and SHA256-verified GGUF download')}
     const before=await evaluate('({session,cwd:cwd.value,threads:threads.size})');
@@ -131,7 +169,6 @@ try {
   await click('#folder-use');
   await wait('document.querySelector("#cwd").value.length>0&&!document.querySelector("#folder-dialog").open');
   assert(await evaluate('document.querySelectorAll(".thread").length===3'), 'new project conversation');
-  const folderFixture=resolve('.test-tmp/folder-picker-fixture');
   const folderChild=resolve(folderFixture,'子資料夾');
   await mkdir(folderChild,{recursive:true});
   await click('#browse');
@@ -144,7 +181,7 @@ try {
   await click(`.folder-item:nth-child(${childIndex})`);
   await wait(`document.querySelector('#folder-path').dataset.path===${JSON.stringify(folderChild)}`);
   assert(await evaluate(`document.querySelector('#folder-address').value===${JSON.stringify(folderChild)}`),'address follows child navigation');
-  await fill('#folder-address',resolve(folderFixture,'missing'));
+  await fill('#folder-address',missingDirectory);
   await click('#folder-address-form button');
   await wait('!document.querySelector("#folder-error").hidden');
   assert(await evaluate('document.querySelector("#folder-use").disabled&&!document.querySelector("#folder-path").dataset.path'),'failed navigation cannot select stale directory');
@@ -291,6 +328,8 @@ try {
   await writeFile('.test-tmp/edge-agent-mobile-ui.png',Buffer.from(phoneScreenshot.data,'base64'));
   await cdp('Emulation.clearDeviceMetricsOverride');
   if(errors.length) console.error(JSON.stringify(errors));
+  assert.deepEqual(expectedDirectoryStatuses,[400],'only the deliberate missing-directory request returns an expected error');
   assert.equal(errors.length,0,'browser errors');
-  console.log('PASS: sidebar, new conversation, conversation switching, project dialog, workspace context, agent toggle, desktop and compact layout; 0 browser errors');
+  console.log(JSON.stringify({event:'edge_browser_verification',passed:true,adapter_checks:process.env.EDGE_AGENT_TEST_ADAPTER_FILE?8:0,viewports:8,unexpected_errors:errors.length,expected_directory_http400:expectedDirectoryStatuses.length,expected_error_logs:expectedErrors.length}));
+  console.log('PASS: sidebar, new conversation, conversation switching, project dialog, workspace context, agent toggle, desktop and compact layout; 0 unexpected browser errors');
 } finally { socket.close(); }

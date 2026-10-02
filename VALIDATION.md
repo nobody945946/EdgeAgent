@@ -29,4 +29,8 @@
 - optional_adapter_ui_javascript: syntax check exit 0.
 - optional_adapter_real_runtime: compatible adapter loaded; adapter removed; original Agent restored; exit 0.
 - incompatible_adapter_real_runtime: same architecture; load rejected; previous Agent restored and ready.
-- optional_adapter_ui_browser: new control not tested in real browser; browser launch rejected by tool policy; browser connector has no active browsers.
+- optional_adapter_ui_browser_initial: launch tool rejection; later dedicated Edge launch succeeded.
+- optional_adapter_ui_browser: fresh real Edge CDP run exit 0; 8 adapter assertions; 8 viewport sizes; unexpected exceptions/console/network errors 0.
+- optional_adapter_ui_checks: empty default; architecture filtering; compatible load; removal; base-change reset; original configuration restored; original Agent ready; compact controls.
+- browser_negative_case: deliberate missing-directory request HTTP 400; 1 expected error log; inline recovery verified; matched by request ID and fixture path.
+- followup_cleanup: 2 owned player deployment test directories removed; public model files retained; no protected user settings or adapters removed.
