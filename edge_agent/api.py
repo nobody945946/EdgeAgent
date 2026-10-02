@@ -8,7 +8,7 @@ import time
 import urllib.error
 import urllib.request
 
-from e4b_core.runtime import CONTROL_PORT, CORE_ROOT, E4BCoreError
+from edge_agent.runtime import CONTROL_PORT, CORE_ROOT, EdgeAgentError
 
 
 def service_status(timeout: float = 1.0) -> dict[str, object] | None:
@@ -30,7 +30,9 @@ def control_service_present(timeout: float = 0.25) -> bool:
         return False
 
 
-def ensure_service(timeout: float = 360.0) -> dict[str, object]:
+def ensure_service(
+    timeout: float = 360.0, *, require_ready: bool = True
+) -> dict[str, object]:
     status = service_status()
     if status is None and not control_service_present():
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -40,7 +42,7 @@ def ensure_service(timeout: float = 360.0) -> dict[str, object]:
             [
                 sys.executable,
                 "-m",
-                "e4b_core.service",
+                "edge_agent.service",
             ],
             cwd=CORE_ROOT,
             stdin=subprocess.DEVNULL,
@@ -54,12 +56,12 @@ def ensure_service(timeout: float = 360.0) -> dict[str, object]:
     last: dict[str, object] | None = None
     while time.monotonic() < deadline:
         last = service_status()
-        if last is not None and last.get("ready") is True:
+        if last is not None and (not require_ready or last.get("ready") is True):
             return last
         if last is not None and last.get("error"):
-            raise E4BCoreError(str(last["error"]))
+            raise EdgeAgentError(str(last["error"]))
         time.sleep(0.25)
-    raise E4BCoreError(f"E4B core did not become ready: {last}")
+    raise EdgeAgentError(f"EdgeAgent did not become ready: {last}")
 
 
 def request_base() -> dict[str, object]:
@@ -98,11 +100,13 @@ def post_json(
             value = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise E4BCoreError(f"E4B core request failed ({exc.code}): {detail}") from exc
+        raise EdgeAgentError(
+            f"EdgeAgent request failed ({exc.code}): {detail}"
+        ) from exc
     except (OSError, ValueError, urllib.error.URLError) as exc:
-        raise E4BCoreError(f"E4B core request failed: {exc}") from exc
+        raise EdgeAgentError(f"EdgeAgent request failed: {exc}") from exc
     if not isinstance(value, dict) or (
         require_ready and value.get("ready") is not True
     ):
-        raise E4BCoreError(f"E4B core request did not become ready: {value}")
+        raise EdgeAgentError(f"EdgeAgent request did not become ready: {value}")
     return value

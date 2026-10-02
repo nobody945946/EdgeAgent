@@ -85,15 +85,15 @@ class TerminalSession:
         if not self.lock.acquire(blocking=False):
             raise ValueError("terminal is already running a command")
         try:
-            marker = "E4B_DONE_" + uuid4().hex
+            marker = "EDGE_AGENT_DONE_" + uuid4().hex
             encoded = base64.b64encode(command.encode("utf-8")).decode("ascii")
             script = (
-                "$global:LASTEXITCODE=0; $e4bResult=0; try { "
+                "$global:LASTEXITCODE=0; $agentResult=0; try { "
                 f"Invoke-Expression ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}'))); "
-                "if (-not $?) { $e4bResult=1 } elseif ($global:LASTEXITCODE) { $e4bResult=$global:LASTEXITCODE } "
-                "} catch { Write-Output $_; $e4bResult=1 }; "
-                "$e4bCwd=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Location).Path)); "
-                f"Write-Output ''; Write-Output ('{marker}:'+ $e4bResult + ':' + $e4bCwd)\n"
+                "if (-not $?) { $agentResult=1 } elseif ($global:LASTEXITCODE) { $agentResult=$global:LASTEXITCODE } "
+                "} catch { Write-Output $_; $agentResult=1 }; "
+                "$agentCwd=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Location).Path)); "
+                f"Write-Output ''; Write-Output ('{marker}:'+ $agentResult + ':' + $agentCwd)\n"
             )
             assert self.process.stdin is not None
             self.process.stdin.write(script)

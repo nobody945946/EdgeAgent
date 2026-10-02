@@ -6,11 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from e4b_core import api, runtime, service
+from edge_agent import api, runtime, service
 
 
 def test_live_character_lease_cannot_be_stolen_or_stopped(tmp_path, monkeypatch):
-    manager = service.E4BCore(tmp_path)
+    manager = service.EdgeAgent(tmp_path)
     manager.mode = "character"
     manager.owner_pid = 123
     monkeypatch.setattr(service, "_pid_alive", lambda pid: True)
@@ -18,15 +18,18 @@ def test_live_character_lease_cannot_be_stolen_or_stopped(tmp_path, monkeypatch)
         manager.switch("base")
     with pytest.raises(PermissionError):
         manager.stop_service()
+    with pytest.raises(PermissionError):
+        manager.switch("character", 456)
 
 
 def test_character_takeover_reuses_running_server(tmp_path, monkeypatch):
-    manager = service.E4BCore(tmp_path)
+    manager = service.EdgeAgent(tmp_path)
     manager.mode = "character"
     manager.port = 18088
     manager.owner_pid = 123
     manager.process = SimpleNamespace(poll=lambda: None)
-    monkeypatch.setattr(service, "_health_ok", lambda port: True)
+    monkeypatch.setattr(manager, "_model_ready", lambda: True)
+    monkeypatch.setattr(service, "_pid_alive", lambda pid: False)
     status = manager.switch("character", 456)
     assert manager.owner_pid == 456
     assert status["ready"] is True
@@ -45,17 +48,20 @@ def test_slow_status_does_not_spawn_duplicate_manager(monkeypatch):
 
 
 def test_restart_handoff_suspends_crash_restore(tmp_path):
-    manager = service.E4BCore(tmp_path)
+    manager = service.EdgeAgent(tmp_path)
     manager.mode = "character"
     manager.hold_handoff()
     assert manager.handoff_until > 0
 
 
-def test_stop_releases_base_server(tmp_path):
-    manager = service.E4BCore(tmp_path)
+def test_stop_releases_base_server(tmp_path, monkeypatch):
+    manager = service.EdgeAgent(tmp_path)
     manager.mode = "base"
     manager.process = SimpleNamespace(
         poll=lambda: None, terminate=lambda: None, wait=lambda *args, **kwargs: 0
+    )
+    monkeypatch.setattr(
+        manager, "_model_request", lambda *args, **kwargs: {"success": True}
     )
     status = manager.stop_service()
     assert manager.process is None
@@ -76,7 +82,7 @@ def _value_after(args: list[str], flag: str) -> str:
     return args[args.index(flag) + 1]
 
 
-def test_base_server_is_one_agent_enabled_96k_slot() -> None:
+def test_base_server_is_one_slot_without_an_extra_agent_loop() -> None:
     args = runtime.build_server_args(
         "llama-server",
         Path("e4b.gguf"),
@@ -85,13 +91,11 @@ def test_base_server_is_one_agent_enabled_96k_slot() -> None:
         threads=4,
         gpu_layers=99,
         low_vram=True,
-        agent_tools=True,
     )
 
-    assert _value_after(args, "--ctx-size") == "98304"
+    assert _value_after(args, "--ctx-size") == "16384"
     assert _value_after(args, "--parallel") == "1"
-    assert _value_after(args, "--tools") == "all"
-    assert "--no-ui" in args
+    assert "--tools" not in args
 
 
 def test_character_server_gets_two_slots_and_lora() -> None:
@@ -113,18 +117,22 @@ def test_character_server_gets_two_slots_and_lora() -> None:
 
 
 def test_config_never_persists_workspace_or_chat(tmp_path: Path) -> None:
-    manager = service.E4BCore(tmp_path)
+    manager = service.EdgeAgent(tmp_path)
 
     config = manager.update_config({"thinking_effort": "high", "agent": False})
 
-    assert config == {"thinking_effort": "high", "agent": False}
+    assert config == {
+        **service.DEFAULT_CONFIG,
+        "thinking_effort": "high",
+        "agent": False,
+    }
     saved = manager.config_path.read_text(encoding="utf-8")
     assert "working_dir" not in saved
     assert "messages" not in saved
 
 
 def test_directory_picker_lists_real_unicode_directories(tmp_path: Path) -> None:
-    manager = service.E4BCore(tmp_path)
+    manager = service.EdgeAgent(tmp_path)
     (tmp_path / "故事").mkdir()
     (tmp_path / "not-a-folder.txt").write_text("x", encoding="utf-8")
 
@@ -138,12 +146,12 @@ def test_directory_picker_lists_real_unicode_directories(tmp_path: Path) -> None
 def test_stop_cancels_approval_waits_before_waiting_for_core_lock(
     tmp_path: Path,
 ) -> None:
-    manager = service.E4BCore(tmp_path)
+    manager = service.EdgeAgent(tmp_path)
     session = manager.chat.session("pending-work")
-    manager.chat._prepare_approval(session, "pending-write")
+    session.approvals["pending-write"] = {"type": "fixture"}
     manager.stop_service()
     assert session.cancelled.is_set()
-    assert not manager.chat._wait_for_approval(session, "pending-write")
+    assert session.approvals == {}
 
 
 def test_listener_lookup_ignores_time_wait_pid_zero(
@@ -191,7 +199,7 @@ def test_worktree_is_real_and_original_workspace_is_preserved(tmp_path: Path) ->
     (project / "code.py").write_text("value = 1\n", encoding="utf-8")
     git("add", "code.py")
     git("commit", "-m", "fixture")
-    manager = service.E4BCore(tmp_path / "core")
+    manager = service.EdgeAgent(tmp_path / "core")
     result = manager.create_worktree(str(project))
     worktree = Path(result["path"])
     assert worktree.is_dir()
@@ -199,3 +207,49 @@ def test_worktree_is_real_and_original_workspace_is_preserved(tmp_path: Path) ->
     assert (worktree / "code.py").read_text() == "value = 1\n"
     (worktree / "code.py").write_text("value = 2\n", encoding="utf-8")
     assert (project / "code.py").read_text() == "value = 1\n"
+
+
+def test_router_acceptance_is_not_model_readiness(tmp_path, monkeypatch):
+    from test_models import gguf
+
+    manager = service.EdgeAgent(tmp_path)
+    manager.model_dir.mkdir()
+    (manager.model_dir / service.DEFAULT_AGENT_MODEL).write_bytes(gguf())
+    manager.process = SimpleNamespace(poll=lambda: None)
+    monkeypatch.setattr(service, "find_llama_server", lambda: "llama-server")
+    states = iter(
+        [
+            {"value": "unloaded"},
+            {"value": "loading"},
+            {"value": "unloaded", "failed": True, "exit_code": 1},
+        ]
+    )
+    monkeypatch.setattr(manager, "_model_state", lambda: next(states))
+    monkeypatch.setattr(
+        manager, "_model_request", lambda *args, **kwargs: {"success": True}
+    )
+    with pytest.raises(RuntimeError, match="failed to load"):
+        manager._start_child("base", None, None)
+    assert manager.active_model == ""
+    assert manager.mode != "base"
+    assert not manager.config_path.exists()
+
+
+def test_router_keeps_parent_and_waits_for_loaded_model(tmp_path, monkeypatch):
+    from test_models import gguf
+
+    manager = service.EdgeAgent(tmp_path)
+    manager.model_dir.mkdir()
+    (manager.model_dir / service.DEFAULT_AGENT_MODEL).write_bytes(gguf())
+    parent = SimpleNamespace(poll=lambda: None)
+    manager.process = parent
+    monkeypatch.setattr(service, "find_llama_server", lambda: "llama-server")
+    states = iter([{"value": "unloaded"}, {"value": "loading"}, {"value": "loaded"}])
+    monkeypatch.setattr(manager, "_model_state", lambda: next(states))
+    monkeypatch.setattr(
+        manager, "_model_request", lambda *args, **kwargs: {"success": True}
+    )
+    manager._start_child("base", None, None)
+    assert manager.process is parent
+    assert manager.active_model == service.DEFAULT_AGENT_MODEL
+    assert manager.chat.model == service.DEFAULT_AGENT_MODEL

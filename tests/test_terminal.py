@@ -4,7 +4,7 @@ import threading
 import time
 from pathlib import Path
 
-from e4b_core.terminal import NativeTerminal, TerminalSession
+from edge_agent.terminal import NativeTerminal, TerminalSession
 
 
 def test_terminal_preserves_cwd_variables_unicode_and_exit_codes(

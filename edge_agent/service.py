@@ -15,23 +15,29 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import uuid4
 
-from e4b_core.chat import THINKING_PROFILES, NativeChat, attachment_context
-from e4b_core.runtime import (
+from edge_agent.chat import THINKING_PROFILES, NativeChat, attachment_context
+from edge_agent.deploy import download
+from edge_agent.models import hub_catalog, list_models, model_filename, model_metadata
+from edge_agent.runtime import (
     CONTROL_PORT,
     CORE_ROOT,
-    DEFAULT_MODEL,
+    DEFAULT_AGENT_MODEL,
     GENERAL_CONTEXT_SIZE,
     GENERAL_PORT,
     MODEL_DIR,
     build_server_args,
     find_llama_server,
 )
-from e4b_core.terminal import NativeTerminal
-from e4b_core.web import NATIVE_CHAT_HTML
+from edge_agent.terminal import NativeTerminal
+from edge_agent.web import NATIVE_CHAT_HTML
 
 DEFAULT_CONFIG: dict[str, object] = {
-    "thinking_effort": "medium",
+    "thinking_effort": "off",
     "agent": True,
+    "model": DEFAULT_AGENT_MODEL,
+    "context_size": GENERAL_CONTEXT_SIZE,
+    "gpu_layers": 99,
+    "low_vram": True,
 }
 
 
@@ -107,13 +113,13 @@ def _process_image(pid: int) -> Path | None:
 
 
 def _clear_reserved_port(port: int) -> None:
-    """Recover only an orphaned llama-server on an E4B-owned model port."""
+    """Recover only an orphaned llama-server on an EdgeAgent-owned model port."""
     pid = _listening_pid(port)
     if pid is None:
         return
     image = _process_image(pid)
     if image is None or image.name.lower() != "llama-server.exe":
-        raise RuntimeError(f"reserved E4B port {port} is occupied by PID {pid}")
+        raise RuntimeError(f"reserved EdgeAgent port {port} is occupied by PID {pid}")
     import ctypes
 
     terminate = 0x0001
@@ -133,7 +139,7 @@ def _clear_reserved_port(port: int) -> None:
         )
 
 
-class E4BCore:
+class EdgeAgent:
     """Owns the model process; applications can only lease it through HTTP."""
 
     def __init__(self, core_dir: Path = CORE_ROOT) -> None:
@@ -154,8 +160,12 @@ class E4BCore:
         self.loading = False
         self.config_path = self.core_dir / "config.json"
         self.config = self._load_config()
-        self.chat = NativeChat(model_port=GENERAL_PORT)
+        self.chat = NativeChat(model_port=GENERAL_PORT, core_dir=self.core_dir)
         self.terminal = NativeTerminal()
+        self.active_model = ""
+        self.active_context_size = 0
+        self.model_job_lock = threading.Lock()
+        self.model_job: dict[str, object] = {"state": "idle"}
 
     def _load_config(self) -> dict[str, object]:
         if not self.config_path.is_file():
@@ -180,19 +190,162 @@ class E4BCore:
         agent = merged["agent"]
         if not isinstance(agent, bool):
             raise TypeError("agent must be a boolean")
+        model_filename(merged["model"])
+        EdgeAgent._bounded_int(merged, "context_size", 4096, 262144)
+        EdgeAgent._bounded_int(merged, "gpu_layers", 0, 999)
+        if not isinstance(merged["low_vram"], bool):
+            raise TypeError("low_vram must be a boolean")
         return {
-            "thinking_effort": effort,
-            "agent": agent,
+            **merged,
         }
 
     def update_config(self, value: dict[str, object]) -> dict[str, object]:
-        config = self._validated_config({**self.config, **value})
-        self.config_path.write_text(
+        if set(value) & {"model", "context_size", "gpu_layers", "low_vram"}:
+            raise ValueError("請透過模型切換套用推論設定")
+        with self.lock:
+            return self._save_config({**self.config, **value})
+
+    def _save_config(self, value: dict[str, object]) -> dict[str, object]:
+        config = self._validated_config(value)
+        temporary = self.config_path.with_suffix(".json.part")
+        temporary.write_text(
             json.dumps(config, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+        temporary.replace(self.config_path)
         self.config = config
         return dict(config)
+
+    def models_status(self) -> dict[str, object]:
+        # Capture completion before scanning; a download finishing mid-scan
+        # must not report done with a model list from before publication.
+        job = dict(self.model_job)
+        return {
+            "models": list_models(self.model_dir),
+            "config": dict(self.config),
+            "active_model": self.active_model,
+            "context_size": self.active_context_size,
+            "job": job,
+            "mode": self.mode,
+            "loading": self.loading,
+            "error": self.error,
+        }
+
+    def start_model_job(
+        self, action: str, payload: dict[str, object]
+    ) -> dict[str, object]:
+        if not self.model_job_lock.acquire(blocking=False):
+            raise PermissionError("模型下載或切換正在進行")
+        try:
+            if action == "switch":
+                model_filename(payload.get("model"))
+                if set(payload) - {"model", "context_size", "gpu_layers", "low_vram"}:
+                    raise ValueError("unknown model settings")
+                self._validated_config({**self.config, **payload})
+            elif action == "download":
+                model_filename(Path(self._required_string(payload, "filename")).name)
+                self._required_string(payload, "repository")
+            else:
+                raise ValueError("unknown model action")
+            self.model_job = {
+                "id": uuid4().hex,
+                "state": "running",
+                "action": action,
+                "received": 0,
+                "total": 0,
+                "error": "",
+            }
+            threading.Thread(
+                target=self._run_model_job,
+                args=(action, dict(payload)),
+                name="model-" + action,
+                daemon=True,
+            ).start()
+            return dict(self.model_job)
+        except Exception:
+            self.model_job_lock.release()
+            raise
+
+    def _run_model_job(self, action: str, payload: dict[str, object]) -> None:
+        try:
+            if action == "download":
+                catalog = hub_catalog(payload["repository"])
+                entry = next(
+                    (
+                        entry
+                        for entry in catalog["files"]
+                        if entry["filename"] == payload["filename"]
+                    ),
+                    None,
+                )
+                if entry is None:
+                    raise ValueError("找不到可驗證的單檔 GGUF")
+                name = model_filename(Path(str(entry["filename"])).name)
+                target = self.model_dir / name
+                if target.exists():
+                    raise ValueError("此檔名已存在；請直接選擇已下載的模型")
+
+                def progress(received: int, total: int) -> None:
+                    self.model_job = {
+                        **self.model_job,
+                        "received": received,
+                        "total": total,
+                        "filename": name,
+                    }
+
+                download(
+                    str(entry["url"]), target, str(entry["sha256"]), progress=progress
+                )
+                metadata = model_metadata(target)
+                if metadata["adapter"] or metadata["split"]:
+                    raise ValueError(
+                        "下載完成，但此檔是配件或分片，不能作為獨立回覆模型"
+                    )
+            else:
+                self.select_model(payload)
+            self.model_job = {**self.model_job, "state": "done"}
+        except Exception as exc:  # noqa: BLE001 - report background failures to UI
+            self.model_job = {**self.model_job, "state": "failed", "error": str(exc)}
+        finally:
+            self.model_job_lock.release()
+
+    def select_model(self, payload: dict[str, object]) -> dict[str, object]:
+        # Never interrupt an active turn or an application's character lease.
+        if not self.lock.acquire(blocking=False):
+            raise PermissionError("工作正在進行；完成或停止後再切換模型")
+        try:
+            if self.mode == "character":
+                raise PermissionError("SilentTalk 正在使用模型；結束角色連線後再切換")
+            candidate = self._validated_config({**self.config, **payload})
+            metadata = model_metadata(self._model_path(str(candidate["model"])))
+            if metadata["adapter"] or metadata["split"]:
+                raise ValueError("請選擇單檔回覆模型，不能選 LoRA 或分片")
+            limit = metadata["context_length"]
+            if isinstance(limit, int) and limit > 0:
+                candidate["context_size"] = min(int(candidate["context_size"]), limit)
+            if int(candidate["context_size"]) < 4096:
+                raise ValueError("此模型的 context 少於 4096，無法支援目前工作工具")
+            if candidate == self.config and self.status()["ready"]:
+                return self.status()
+            previous = dict(self.config)
+            self.loading = True
+            self.error = ""
+            self.config = candidate
+            try:
+                self._start_child("base", None, None)
+                self._save_config(candidate)
+            except Exception as exc:
+                self.config = previous
+                try:
+                    self._start_child("base", None, None)
+                except Exception as restore_exc:  # noqa: BLE001 - preserve both failures
+                    self.error = f"切換失敗：{exc}；恢復失敗：{restore_exc}"
+                raise RuntimeError(f"模型切換失敗：{exc}") from exc
+            finally:
+                self.loading = False
+            return self.status()
+        finally:
+            self.lock.release()
 
     def list_directories(self, value: object = None) -> dict[str, object]:
         if value is None or value == "":
@@ -244,7 +397,7 @@ class E4BCore:
         if not info["git"]:
             raise ValueError("open a Git project before creating a worktree")
         token = uuid4().hex[:12]
-        branch = "e4b/" + token
+        branch = "edge-agent/" + token
         destination = self.core_dir / ".worktrees" / token
         destination.parent.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
@@ -276,10 +429,10 @@ class E4BCore:
             not self.loading
             and process is not None
             and process.poll() is None
-            and _health_ok(self.port)
+            and self._model_ready()
         )
         return {
-            "service": "e4b-core",
+            "service": "edge-agent",
             "mode": self.mode,
             "ready": ready,
             "port": self.port,
@@ -287,7 +440,23 @@ class E4BCore:
             "model_url": f"http://127.0.0.1:{self.port}",
             "owner_pid": self.owner_pid,
             "error": self.error,
+            "model": self.active_model,
+            "context_size": self.active_context_size,
         }
+
+    def _model_ready(self) -> bool:
+        if not self.active_model:
+            return False
+        try:
+            return self._model_state().get("value") == "loaded"
+        except (OSError, ValueError, TypeError, RuntimeError):
+            return False
+
+    def _model_state(self) -> dict[str, object]:
+        models = self._model_request("/models", timeout=2).get("data", [])
+        return next(
+            (item.get("status", {}) for item in models if item.get("id") == "local"), {}
+        )
 
     def switch(
         self,
@@ -296,6 +465,15 @@ class E4BCore:
         character: dict[str, object] | None = None,
     ) -> dict[str, object]:
         with self.lock:
+            if (
+                mode == "character"
+                and self.mode == "character"
+                and self.owner_pid is not None
+                and owner_pid != self.owner_pid
+                and _pid_alive(self.owner_pid)
+                and time.monotonic() >= self.handoff_until
+            ):
+                raise PermissionError("SilentTalk still owns character mode")
             if (
                 mode == "base"
                 and self.mode == "character"
@@ -306,9 +484,10 @@ class E4BCore:
                 raise PermissionError("SilentTalk still owns character mode")
             if (
                 mode == self.mode
+                and (mode != "character" or character is None)
                 and self.process is not None
                 and self.process.poll() is None
-                and _health_ok(self.port)
+                and self._model_ready()
             ):
                 if mode == "character" and owner_pid is not None:
                     self.owner_pid = owner_pid
@@ -318,7 +497,6 @@ class E4BCore:
 
             self.loading = True
             self.error = ""
-            self._stop_child()
             try:
                 self._start_child(mode, owner_pid, character)
             except Exception as exc:
@@ -340,12 +518,18 @@ class E4BCore:
         character: dict[str, object] | None,
     ) -> None:
         if mode == "base":
-            model_path = self._model_path(DEFAULT_MODEL)
+            model_path = self._model_path(str(self.config["model"]))
             lora_path = None
-            context_size = GENERAL_CONTEXT_SIZE
+            metadata = model_metadata(model_path)
+            if metadata["adapter"] or metadata["split"]:
+                raise ValueError("selected file is not a standalone model")
+            context_size = int(self.config["context_size"])
+            limit = metadata["context_length"]
+            if isinstance(limit, int) and limit > 0:
+                context_size = min(context_size, limit)
             port = GENERAL_PORT
-            gpu_layers = 99
-            low_vram = True
+            gpu_layers = int(self.config["gpu_layers"])
+            low_vram = bool(self.config["low_vram"])
         elif mode == "character":
             if character is None:
                 raise ValueError("character configuration required")
@@ -355,60 +539,119 @@ class E4BCore:
             context_size = self._bounded_int(character, "context_size", 1_024, 32_768)
             port = self._bounded_int(character, "port", 1_024, 65_535)
             if port in (CONTROL_PORT, GENERAL_PORT):
-                raise ValueError("character port conflicts with E4B core")
+                raise ValueError("character port conflicts with EdgeAgent")
             gpu_layers = self._bounded_int(character, "gpu_layers", 0, 999)
             low_vram = character.get("low_vram") is True
         else:
-            raise ValueError(f"unknown E4B core mode: {mode}")
+            raise ValueError(f"unknown EdgeAgent mode: {mode}")
 
-        threads = max(2, min(6, (os.cpu_count() or 4) // 2))
-        _clear_reserved_port(port)
+        # The upstream router owns model processes, loading and hot replacement.
+        # Keep one public inference endpoint for the Agent and leased clients.
         args = build_server_args(
             find_llama_server(),
             model_path,
-            port=port,
+            port=GENERAL_PORT,
             context_size=context_size,
-            threads=threads,
+            threads=max(2, min(6, (os.cpu_count() or 4) // 2)),
             gpu_layers=gpu_layers,
             low_vram=low_vram,
             lora_path=lora_path,
-            agent_tools=mode == "base",
         )
-        self.process = subprocess.Popen(
-            args,
-            cwd=self.core_dir,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        self.mode = mode
-        self.port = port
+        preset = self.core_dir / ".runtime/models.ini"
+        preset.parent.mkdir(parents=True, exist_ok=True)
+        lines = ["version = 1", "", "[local]"]
+        index = 1
+        while index < len(args):
+            key = args[index].removeprefix("--")
+            index += 1
+            value = "true"
+            if index < len(args) and not args[index].startswith("--"):
+                value = args[index].replace("\\", "/")
+                index += 1
+            if key not in {"host", "port"}:
+                lines.append(f"{key} = {value}")
+        temporary = preset.with_suffix(".ini.part")
+        temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        temporary.replace(preset)
+        if self.process is None or self.process.poll() is not None:
+            _clear_reserved_port(GENERAL_PORT)
+            self.process = subprocess.Popen(
+                [
+                    find_llama_server(),
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(GENERAL_PORT),
+                    "--models-preset",
+                    str(preset),
+                    "--models-max",
+                    "1",
+                    "--no-models-autoload",
+                ],
+                cwd=self.core_dir,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            deadline = time.monotonic() + 30
+            while not _health_ok(GENERAL_PORT):
+                if self.process.poll() is not None:
+                    raise RuntimeError(
+                        f"model router exited with {self.process.returncode}"
+                    )
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("model router did not become ready")
+                time.sleep(0.1)
+        self._model_request("/models?reload=1", timeout=60)
+        if self._model_state().get("value") not in {"loaded", "loading"}:
+            result = self._model_request(
+                "/models/load", {"model": "local"}, timeout=300
+            )
+            if result.get("success") is not True:
+                raise RuntimeError("model router rejected loading the selected model")
+        deadline = time.monotonic() + 300
+        while True:
+            state = self._model_state()
+            if state.get("failed"):
+                raise RuntimeError(
+                    f"model failed to load (exit {state.get('exit_code')})"
+                )
+            if state.get("value") == "loaded":
+                break
+            if self.process.poll() is not None:
+                raise RuntimeError("model router exited during loading")
+            if time.monotonic() >= deadline:
+                raise TimeoutError("selected model did not become ready")
+            time.sleep(0.1)
+        self.mode, self.port = mode, GENERAL_PORT
+        self.active_model, self.active_context_size = model_path.name, context_size
         self.owner_pid = owner_pid if mode == "character" else None
         self.owner_dead_since = None
-        if mode == "character":
-            self.handoff_until = 0.0
-        deadline = time.monotonic() + 300
-        while time.monotonic() < deadline:
-            if self.process.poll() is not None:
-                code = self.process.returncode
-                self.process = None
-                raise RuntimeError(f"llama-server exited with {code}")
-            if _health_ok(port) and (
-                os.name != "nt" or _listening_pid(port) == self.process.pid
-            ):
-                return
-            time.sleep(0.25)
-        self._stop_child()
-        raise TimeoutError(f"llama-server on port {port} did not become ready")
+        self.handoff_until = 0.0
+        if mode == "base":
+            self.chat.configure_context(context_size, model_path.name)
+
+    @staticmethod
+    def _model_request(
+        endpoint: str, payload: dict[str, object] | None = None, *, timeout: float = 5
+    ) -> dict[str, object]:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{GENERAL_PORT}" + endpoint,
+            data=json.dumps(payload).encode() if payload is not None else None,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                result = json.load(response)
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(exc.read().decode("utf-8", errors="replace")) from exc
+        if not isinstance(result, dict):
+            raise TypeError("invalid model router response")
+        return result
 
     def _model_path(self, filename: str) -> Path:
-        if (
-            not filename
-            or Path(filename).name != filename
-            or not filename.endswith(".gguf")
-        ):
-            raise ValueError("model must be a .gguf filename")
+        model_filename(filename)
         path = (self.model_dir / filename).resolve()
         if path.parent != self.model_dir or not path.is_file():
             raise FileNotFoundError(path)
@@ -435,8 +678,20 @@ class E4BCore:
     def _stop_child(self) -> None:
         process = self.process
         self.process = None
+        self.active_model = ""
+        self.active_context_size = 0
         if process is None or process.poll() is not None:
             return
+        try:
+            self._model_request("/models/unload", {"model": "local"}, timeout=15)
+        except (OSError, RuntimeError, TypeError):
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    capture_output=True,
+                    check=False,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
         process.terminate()
         try:
             process.wait(5)
@@ -478,7 +733,6 @@ class E4BCore:
 
     def stop_service(self) -> dict[str, object]:
         self.chat.cancel_all()
-        self.terminal.close_all()
         with self.lock:
             if (
                 self.mode == "character"
@@ -486,6 +740,8 @@ class E4BCore:
                 and _pid_alive(self.owner_pid)
             ):
                 raise PermissionError("SilentTalk still owns character mode")
+            self.chat.close()
+            self.terminal.close_all()
             self.loading = True
             self._stop_child()
             self.mode = "stopped"
@@ -498,13 +754,15 @@ class E4BCore:
 
 
 class Handler(BaseHTTPRequestHandler):
-    core: E4BCore
+    core: EdgeAgent
 
     def do_GET(self) -> None:
         if self.path == "/status":
             self._json(HTTPStatus.OK, self.core.status())
         elif self.path == "/config":
             self._json(HTTPStatus.OK, self.core.config)
+        elif self.path == "/models":
+            self._json(HTTPStatus.OK, self.core.models_status())
         elif self.path in ("/", "/index.html"):
             self._html(NATIVE_CHAT_HTML)
         else:
@@ -525,6 +783,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             payload = self._payload()
+            if self.path == "/models/catalog":
+                self._json(HTTPStatus.OK, hub_catalog(payload.get("repository")))
+                return
+            if self.path in {"/models/download", "/models/switch"}:
+                result = self.core.start_model_job(
+                    self.path.rsplit("/", 1)[-1], payload
+                )
+                self._json(HTTPStatus.ACCEPTED, result)
+                return
             if self.path == "/chat":
                 self._chat(payload)
                 return
@@ -554,8 +821,11 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("valid call_id required")
                 if not isinstance(approved, bool):
                     raise TypeError("approved must be a boolean")
+                scope = payload.get("scope", "once")
+                if scope not in {"once", "turn"}:
+                    raise ValueError("invalid approval scope")
                 accepted = self.core.chat.resolve_approval(
-                    session_id, call_id, approved
+                    session_id, call_id, approved, str(scope)
                 )
                 self._json(HTTPStatus.OK, {"accepted": accepted})
                 return
@@ -682,7 +952,7 @@ class Handler(BaseHTTPRequestHandler):
             with self.core.lock:
                 status = self.core.status()
                 if status["mode"] != "base" or status["ready"] is not True:
-                    raise RuntimeError("E4B core is currently leased by SilentTalk")
+                    raise RuntimeError("EdgeAgent is currently leased by SilentTalk")
                 for event, data in self.core.chat.stream_reply(
                     session_id,
                     text.strip(),
@@ -753,18 +1023,20 @@ class ExclusiveHTTPServer(ThreadingHTTPServer):
 
 
 def main() -> int:
-    from e4b_core.runtime import activate_deployment_tools
+    from edge_agent.runtime import activate_deployment_tools
 
     activate_deployment_tools()
     parser = argparse.ArgumentParser()
     parser.add_argument("--core-dir", type=Path, default=CORE_ROOT)
     args = parser.parse_args()
-    core = E4BCore(args.core_dir.resolve())
+    core = EdgeAgent(args.core_dir.resolve())
     Handler.core = core
     server = ExclusiveHTTPServer(("127.0.0.1", CONTROL_PORT), Handler)
-    threading.Thread(target=core.monitor_owner, name="e4b-owner", daemon=True).start()
     threading.Thread(
-        target=lambda: core.switch("base"), name="e4b-bootstrap", daemon=True
+        target=core.monitor_owner, name="edge-agent-owner", daemon=True
+    ).start()
+    threading.Thread(
+        target=lambda: core.switch("base"), name="edge-agent-bootstrap", daemon=True
     ).start()
     try:
         server.serve_forever(poll_interval=0.25)

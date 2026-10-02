@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import threading
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from e4b_core import deploy, runtime
+from edge_agent import deploy, runtime
 
 
 @pytest.fixture
@@ -29,7 +30,11 @@ def download_server():
                     "Content-Range", f"bytes {offset}-{len(payload) - 1}/{len(payload)}"
                 )
             self.end_headers()
-            self.wfile.write(data)
+            if self.path == "/truncated" and len(seen) == 1:
+                self.wfile.write(data[:500])
+                self.close_connection = True
+            else:
+                self.wfile.write(data)
 
         def log_message(self, *args):
             pass
@@ -68,6 +73,15 @@ def test_invalid_checksum_never_overwrites_existing_asset(tmp_path, download_ser
         deploy.download(url, target, "0" * 64, attempts=1)
     assert target.read_bytes() == b"existing user asset"
     assert list(tmp_path.glob("asset.bin.part.invalid.*"))
+
+
+def test_truncated_transfer_preserves_bytes_for_resume(tmp_path, download_server):
+    url, payload, seen = download_server
+    target = tmp_path / "asset.bin"
+    deploy.download(url + "/truncated", target, hashlib.sha256(payload).hexdigest())
+    assert target.read_bytes() == payload
+    assert seen == [0, 500]
+    assert not list(tmp_path.glob("*.invalid.*"))
 
 
 def test_file_change_invalidates_verification_cache(tmp_path):
@@ -109,7 +123,7 @@ def test_runtime_rejects_external_server_in_deployment_marker(tmp_path, monkeypa
     monkeypatch.setattr(runtime, "CORE_ROOT", tmp_path)
     monkeypatch.setattr(runtime.shutil, "which", lambda name: None)
     monkeypatch.setattr(runtime, "_winget_llama_server", lambda: None)
-    with pytest.raises(runtime.E4BCoreError):
+    with pytest.raises(runtime.EdgeAgentError):
         runtime.find_llama_server()
 
 
@@ -123,3 +137,32 @@ def test_service_tools_find_portable_git_without_system_git(tmp_path, monkeypatc
     assert (
         runtime.os.environ["PATH"].split(runtime.os.pathsep).count(str(directory)) == 1
     )
+
+
+def test_agent_install_does_not_require_private_toy_assets(tmp_path, monkeypatch):
+    downloads = []
+    monkeypatch.setattr(
+        deploy, "download", lambda url, target, digest: downloads.append(target.name)
+    )
+    monkeypatch.setattr(deploy, "install_agent_runtime", lambda root: None)
+    monkeypatch.setattr(
+        deploy,
+        "install_character_assets",
+        lambda root: pytest.fail("toy must be opt-in"),
+    )
+
+    def extract(archive, directory):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "llama-server.exe").touch()
+
+    monkeypatch.setattr(deploy, "extract_zip", extract)
+    monkeypatch.setattr(
+        deploy.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            [], 0, b"--models-preset", b""
+        ),
+    )
+    assert deploy.install(tmp_path, "cpu")["backend"] == "cpu"
+    assert downloads[0] == runtime.DEFAULT_AGENT_MODEL
+    assert deploy.LORA_NAME not in downloads

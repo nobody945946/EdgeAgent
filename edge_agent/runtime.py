@@ -6,23 +6,25 @@ import shutil
 import subprocess
 from pathlib import Path
 
-GENERAL_CONTEXT_SIZE = 98_304
+GENERAL_CONTEXT_SIZE = 16_384
 CONTROL_PORT = 18_087
 GENERAL_PORT = 18_089
 DEFAULT_MODEL = "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf"
+DEFAULT_AGENT_MODEL = "Qwen3.5-4B-Q4_K_M.gguf"
+NODE_VERSION = "22.23.3"
 CORE_ROOT = Path(__file__).resolve().parents[1]
 MODEL_DIR = CORE_ROOT / "models"
 
 
-class E4BCoreError(RuntimeError):
-    """Raised when the local E4B core cannot satisfy a request."""
+class EdgeAgentError(RuntimeError):
+    """Raised when the local EdgeAgent cannot satisfy a request."""
 
 
 def activate_deployment_tools(root: Path = CORE_ROOT) -> None:
     paths = [root / ".runtime/git/cmd"]
     local = os.environ.get("LOCALAPPDATA")
     if local:
-        paths.append(Path(local) / "E4B/GitHubCLI/2.102.0/bin")
+        paths.append(Path(local) / "EdgeAgent/GitHubCLI/2.102.0/bin")
     existing = os.environ.get("PATH", "").split(os.pathsep)
     additions = [
         str(path) for path in paths if path.is_dir() and str(path) not in existing
@@ -40,7 +42,6 @@ def build_server_args(
     gpu_layers: int,
     low_vram: bool,
     lora_path: Path | None = None,
-    agent_tools: bool = False,
 ) -> list[str]:
     """Build the one canonical llama-server command for every core mode."""
     slots = 2 if lora_path is not None else 1
@@ -64,14 +65,6 @@ def build_server_args(
     ]
     if lora_path is not None:
         args += ["--lora", str(lora_path)]
-    if agent_tools:
-        args += [
-            "--tools",
-            "all",
-            "--cors-origins",
-            "localhost",
-            "--no-ui",
-        ]
     if low_vram:
         args += [
             "--flash-attn",
@@ -103,7 +96,7 @@ def find_llama_server() -> str:
         or _winget_llama_server()
     )
     if not executable:
-        raise E4BCoreError("llama-server.exe is not installed")
+        raise EdgeAgentError("llama-server.exe is not installed")
     return executable
 
 

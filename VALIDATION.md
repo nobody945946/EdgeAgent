@@ -1,0 +1,25 @@
+# EdgeAgent validation 2026-10-02
+
+- product_renamed: EdgeAgent 2.0.0; package edge_agent; launcher edge-agent.
+- upstream_agent: Pi coding-agent SDK 1.0.0; lockfile installed; RAM sessions.
+- upstream_inference: llama.cpp b11193; router models-max 1; shared port 18089.
+- core_pytest: 68 passed; exit 0.
+- core_ruff: exit 0.
+- silenttalk_lease_pytest: 86 passed; exit 0.
+- silenttalk_changed_scope_ruff: exit 0.
+- silenttalk_existing_test_fixture_exception: SlowFakeLLM.state; background task; pytest exit 0.
+- silenttalk_existing_ruff_findings: DTZ005 1; BLE001 7; baseline confirmed.
+- model_sha256_verified: Qwen3.5-4B-Q4_K_M.gguf; 2740937888 bytes; 00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4.
+- model_context: 16384; thinking off; GPU memory 3159 MiB / 4096 MiB.
+- real_coding_cases: 2 passed; 36.47 s / 111.39 s; independent pytest exit 0; test files unchanged.
+- smaller_model_no_progress: 2B; stopped 21.06 s; test files unchanged; completion not claimed.
+- real_edge_cdp: exit 0; browser exceptions/network failures 0; viewports 8.
+- real_ui_agent: write approval; tool output; change review; queued validation; independent pytest exit 0; test files unchanged.
+- real_ui_features: Hub catalog; cross-architecture hot swap; RAM context retained; Unicode folder navigation; Git worktree; terminal state/cancel; attachments; touch controls.
+- queue_failure_probe: paused; per-thread queue restored; explicit resume executed once; exit 0.
+- real_character_lease: ready; LoRA loaded; context 32768; port 18089; acquire 8.41 s; Agent restored.
+- model_hotplug: 4B / Qwen3-0.6B / character base and compatible LoRA; original Agent restored.
+- sdk_cancel_probe: approval denied before abort; no file mutation; exit 0.
+- privacy_probe: no Pi state directory; no session JSONL or inference transcript created.
+- ollama_audit: 0.35.0; LoRA create rejected; HTTP 400.
+- capabilities_scope: small Python fixes verified; large-project capability not established; terminal is persistent PowerShell, not ConPTY.

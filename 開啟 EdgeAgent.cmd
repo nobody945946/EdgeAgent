@@ -8,7 +8,7 @@ if /i "%~1"=="--check" (
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\bootstrap.ps1"
 )
 if errorlevel 1 (
-    echo ERROR: E4B setup failed. Run this launcher again to retry.
+    echo ERROR: EdgeAgent setup failed. Run this launcher again to retry.
     pause
     exit /b 1
 )

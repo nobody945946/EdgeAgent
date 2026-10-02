@@ -16,11 +16,16 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from e4b_core.api import request_base, service_status, shutdown_service
-from e4b_core.runtime import CONTROL_PORT, CORE_ROOT, E4BCoreError
+from edge_agent.api import (
+    ensure_service,
+    request_base,
+    service_status,
+    shutdown_service,
+)
+from edge_agent.runtime import CONTROL_PORT, CORE_ROOT, EdgeAgentError
 
-AUTOSTART_NAME = "E4B Edge AI.cmd"
-LEGACY_AUTOSTART_NAME = "E4B Edge AI.lnk"
+AUTOSTART_NAME = "EdgeAgent.cmd"
+LEGACY_AUTOSTART_NAME = "EdgeAgent.lnk"
 DISABLED_AUTOSTART_DIR = CORE_ROOT / "disabled-autostart"
 
 
@@ -39,18 +44,18 @@ def install_command() -> Path:
         raise RuntimeError("LOCALAPPDATA is unavailable")
     links = Path(local_appdata) / "Microsoft" / "WinGet" / "Links"
     links.mkdir(parents=True, exist_ok=True)
-    shim = links / "e4b.cmd"
+    shim = links / "edge-agent.cmd"
     python = CORE_ROOT / ".venv" / "Scripts" / "python.exe"
-    cli = CORE_ROOT / "e4b_core" / "cli.py"
+    cli = CORE_ROOT / "edge_agent" / "cli.py"
     if not python.is_file() or not cli.is_file():
-        raise RuntimeError(f"E4B Core is not installed at {CORE_ROOT}")
+        raise RuntimeError(f"EdgeAgent is not installed at {CORE_ROOT}")
 
     # ASCII launch files work even when cmd.exe has no console/code-page handle.
     # Paths decode to Unicode inside PowerShell; user arguments stay separate.
     def encoded_path(path: Path) -> str:
         return base64.b64encode(str(path).encode("utf-16-le")).decode("ascii")
 
-    launcher = links / "e4b-launch.ps1"
+    launcher = links / "edge-agent-launch.ps1"
     launcher.write_text(
         "$ErrorActionPreference = 'Stop'\n"
         f"$python = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded_path(python)}'))\n"
@@ -59,9 +64,15 @@ def install_command() -> Path:
         encoding="ascii",
     )
     shim.write_text(
-        '@echo off\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0e4b-launch.ps1" %*\n',
+        '@echo off\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0edge-agent-launch.ps1" %*\n',
         encoding="ascii",
     )
+    # Retire the former product's launch artifacts after the replacement exists.
+    for previous in (links / "e4b.cmd", links / "e4b-launch.ps1"):
+        previous.unlink(missing_ok=True)
+    startup = _startup_dir()
+    for previous in (startup / "E4B Edge AI.cmd", startup / "E4B Edge AI.lnk"):
+        _preserve_disabled(previous)
     if os.name == "nt":
         _register_command_path(links)
     return shim
@@ -117,7 +128,7 @@ def set_autostart(enabled: bool) -> None:
     legacy = startup / LEGACY_AUTOSTART_NAME
     if enabled:
         pythonw = CORE_ROOT / ".venv" / "Scripts" / "pythonw.exe"
-        cli = CORE_ROOT / "e4b_core" / "cli.py"
+        cli = CORE_ROOT / "edge_agent" / "cli.py"
         command.write_text(
             f'@echo off\nstart "" "{pythonw}" "{cli}" start\n',
             encoding="utf-8",
@@ -131,15 +142,15 @@ def set_autostart(enabled: bool) -> None:
 def print_status() -> None:
     status = service_status()
     if status is None:
-        print("E4B stopped (GPU and model memory released)")
+        print("EdgeAgent stopped (GPU and model memory released)")
         return
     mode = status.get("mode")
     if mode == "base":
-        print(f"E4B core running: {status.get('url')}")
+        print(f"EdgeAgent running: {status.get('url')}")
     elif mode == "character":
-        print("E4B core is leased to SilentTalk (character LoRA)")
+        print("EdgeAgent is leased to SilentTalk (character LoRA)")
     else:
-        print(f"E4B core status: {mode}")
+        print(f"EdgeAgent status: {mode}")
 
 
 def _iter_sse(lines: Iterable[bytes]) -> Iterator[tuple[str, dict[str, object]]]:
@@ -191,12 +202,14 @@ def _chat_turn(session_id: str, text: str, thinking_effort: str) -> None:
                 elif event == "done":
                     completed = True
                 elif event == "error":
-                    print(f"\nE4B error: {payload.get('message', 'unknown error')}")
+                    print(
+                        f"\nEdgeAgent error: {payload.get('message', 'unknown error')}"
+                    )
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        print(f"\nE4B error ({exc.code}): {detail}")
+        print(f"\nEdgeAgent error ({exc.code}): {detail}")
     except (OSError, ValueError, urllib.error.URLError) as exc:
-        print(f"\nE4B error: {exc}")
+        print(f"\nEdgeAgent error: {exc}")
     if completed:
         print()
     elif not sys.stdout.isatty():
@@ -208,7 +221,7 @@ def _chat_turn(session_id: str, text: str, thinking_effort: str) -> None:
 def run_chat(thinking_effort: str) -> int:
     request_base()
     session_id = uuid4().hex
-    print("E4B terminal chat  |  /reset 重設對話  |  /exit 離開")
+    print("EdgeAgent terminal chat  |  /reset 重設對話  |  /exit 離開")
     while True:
         try:
             text = input("你> ").strip()
@@ -223,7 +236,7 @@ def run_chat(thinking_effort: str) -> int:
             session_id = uuid4().hex
             print("[已開始新對話]")
             continue
-        print("E4B> ", end="", flush=True)
+        print("EdgeAgent> ", end="", flush=True)
         try:
             _chat_turn(session_id, text, thinking_effort)
         except KeyboardInterrupt:
@@ -231,13 +244,15 @@ def run_chat(thinking_effort: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="e4b", description="Local E4B Core")
+    parser = argparse.ArgumentParser(prog="edge-agent", description="Local EdgeAgent")
     subparsers = parser.add_subparsers(dest="command")
-    subparsers.add_parser("start", help="start E4B Core without opening a browser")
-    subparsers.add_parser("stop", help="stop E4B Core and release GPU memory")
-    subparsers.add_parser("status", help="show the current E4B Core mode")
-    subparsers.add_parser("install", help="install or refresh the global e4b command")
-    chat = subparsers.add_parser("chat", help="chat with E4B in this terminal")
+    subparsers.add_parser("start", help="start EdgeAgent without opening a browser")
+    subparsers.add_parser("stop", help="stop EdgeAgent and release GPU memory")
+    subparsers.add_parser("status", help="show the current EdgeAgent mode")
+    subparsers.add_parser(
+        "install", help="install or refresh the global edge-agent command"
+    )
+    chat = subparsers.add_parser("chat", help="chat with EdgeAgent in this terminal")
     chat.add_argument(
         "--thinking-effort",
         choices=("off", "low", "medium", "high"),
@@ -251,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "chat":
             return run_chat(args.thinking_effort)
         if args.command is None:
-            status = request_base()
+            status = ensure_service(require_ready=False)
             webbrowser.open(str(status["url"]))
             return 0
         if args.command == "start":
@@ -273,10 +288,10 @@ def main(argv: list[str] | None = None) -> int:
                 set_autostart(True)
             elif args.state == "off":
                 set_autostart(False)
-            print("E4B autostart: " + ("on" if autostart_enabled() else "off"))
+            print("EdgeAgent autostart: " + ("on" if autostart_enabled() else "off"))
             return 0
-    except (E4BCoreError, OSError, RuntimeError) as exc:
-        print(f"E4B error: {exc}", file=sys.stderr)
+    except (EdgeAgentError, OSError, RuntimeError) as exc:
+        print(f"EdgeAgent error: {exc}", file=sys.stderr)
         return 1
     return 2
 

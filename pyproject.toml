@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "e4b-core"
-version = "1.1.3"
-description = "Independent local E4B model service and agent UI"
+name = "edge-agent"
+version = "2.0.0"
+description = "Local coding agent with hot-swappable models and shared inference leases"
 requires-python = ">=3.12"
 dependencies = ["pypdf==6.19.0"]
 
@@ -13,10 +13,13 @@ dependencies = ["pypdf==6.19.0"]
 dev = ["pytest>=8", "ruff>=0.11"]
 
 [project.scripts]
-e4b = "e4b_core.cli:main"
+edge-agent = "edge_agent.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["e4b_core*"]
+include = ["edge_agent*"]
+
+[tool.setuptools.package-data]
+edge_agent = ["*.mjs", "pi-runtime*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
