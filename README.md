@@ -30,7 +30,9 @@ Agent 的寫檔、編輯及 PowerShell 執行由介面批准，可批准單次�
 
 模型推論端點為 `127.0.0.1:18089`，UI／控制端點為 `127.0.0.1:18087`。SilentTalk 租借角色模型與相容 LoRA，使用租借回傳的端點；歸還後載入原 Agent 模型。LoRA 必須與其訓練基底相容，不能任意套用其他模型。
 
-Agent 安裝不要求私人角色 LoRA。SilentTalk 的既有安裝器使用同一個 EdgeAgent 安裝器，額外部署角色基底／LoRA；登入私人資產 repository 只適用於這些資產。
+LoRA 預設為空，不附帶或下載個人 adapter。在「模型模組」選擇自己安裝的相容 GGUF LoRA；切換基底時會清除上一個 adapter 選擇，載入失敗會恢復原配置。架構一致只是最低檢查，adapter 仍須使用訓練時的相同基底模型。
+
+SilentTalk 使用同一個 EdgeAgent 安裝器，額外部署公開角色基底。Agent、角色基底與 runtime 的部署不要求私人 LoRA 或 GitHub 登入；私人原始碼的取得授權與 runtime 安裝分開處理。
 
 可抽換模型仍須由目前 llama.cpp 版本支援其架構。下載模型不需要重建 Agent；更新 runtime 必須重新驗證協定與工具行為。
 

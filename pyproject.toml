@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "edge-agent"
-version = "2.0.0"
+version = "2.0.1"
 description = "Local coding agent with hot-swappable models and shared inference leases"
 requires-python = ">=3.12"
 dependencies = ["pypdf==6.19.0"]

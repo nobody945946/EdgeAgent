@@ -13,11 +13,11 @@ import pytest
 from edge_agent import api, models, service
 
 
-def gguf(*, context=8192, adapter=False, split=1):
+def gguf(*, context=8192, adapter=False, split=1, architecture="qwen2"):
     entries = {
-        "general.architecture": "qwen2",
+        "general.architecture": architecture,
         "general.name": "Fixture",
-        "qwen2.context_length": context,
+        architecture + ".context_length": context,
         "split.count": split,
         "tokenizer.chat_template": "{% if tools %}tool_calls{% endif %}",
     }
@@ -99,6 +99,31 @@ def test_bad_model_is_rejected_before_stopping_current_model(core):
     with pytest.raises(ValueError):
         manager.select_model({"model": "bad.gguf"})
     assert manager.process is not None
+    assert starts == [service.DEFAULT_AGENT_MODEL]
+
+
+def test_optional_user_adapter_can_be_selected_and_cleared(core):
+    manager, _ = core
+    (manager.model_dir / "mine.gguf").write_bytes(gguf(adapter=True))
+    manager.select_model({"model": service.DEFAULT_AGENT_MODEL, "lora": "mine.gguf"})
+    assert manager.config["lora"] == "mine.gguf"
+    manager.select_model({"model": "replacement.gguf"})
+    assert manager.config["lora"] == ""
+
+
+def test_wrong_adapter_rejected_before_interrupting_current_model(core):
+    manager, starts = core
+    (manager.model_dir / "wrong.gguf").write_bytes(
+        gguf(adapter=True, architecture="gemma4")
+    )
+    with pytest.raises(ValueError, match="architecture"):
+        manager.select_model(
+            {"model": service.DEFAULT_AGENT_MODEL, "lora": "wrong.gguf"}
+        )
+    with pytest.raises(ValueError, match="adapter"):
+        manager.select_model(
+            {"model": service.DEFAULT_AGENT_MODEL, "lora": "replacement.gguf"}
+        )
     assert starts == [service.DEFAULT_AGENT_MODEL]
 
 

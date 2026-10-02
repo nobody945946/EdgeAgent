@@ -65,31 +65,6 @@ function Ensure-Python312 {
     return $python
 }
 
-function Ensure-GitHub {
-    param([string]$CacheDir)
-    $command = Get-Command gh.exe -ErrorAction SilentlyContinue
-    if ($command) { return $command.Source }
-    $directory = Join-Path $env:LOCALAPPDATA 'EdgeAgent\GitHubCLI\2.102.0'
-    $executable = Join-Path $directory 'bin\gh.exe'
-    if (-not (Test-Path -LiteralPath $executable)) {
-        $archive = Join-Path $CacheDir 'gh_2.102.0_windows_amd64.zip'
-        Get-VerifiedFile 'https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_windows_amd64.zip' $archive 'ae64e556ecc240b200f7eba60d550e4bb60d78e860e69dd88c449405b86067f4'
-        Expand-Archive -LiteralPath $archive -DestinationPath $directory -Force
-    }
-    if (-not (Test-Path -LiteralPath $executable)) { throw 'GitHub CLI archive did not contain gh.exe' }
-    $env:PATH = "$(Split-Path $executable -Parent);$env:PATH"
-    return $executable
-}
-
-function Ensure-GitHubLogin {
-    param([string]$Gh)
-    & $Gh auth status *> $null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host 'Sign in once to download the private character adapter. No token is stored by this installer.'
-        Invoke-Checked $Gh @('auth', 'login', '--hostname', 'github.com', '--git-protocol', 'https', '--web')
-    }
-}
-
 function Ensure-Git {
     param([string]$Root, [string]$CacheDir)
     $existing = Get-Command git.exe -ErrorAction SilentlyContinue
@@ -125,10 +100,6 @@ function Install-EdgeAgent {
     if (-not $dependenciesReady -or -not $importsReady) {
         Invoke-Checked $venv @('-m', 'pip', 'install', '--disable-pip-version-check', '-e', $Root)
         Set-Content -LiteralPath $receipt -Value $projectHash -Encoding ASCII
-    }
-    if ($CharacterAssets -and -not (Test-Path -LiteralPath (Join-Path $Root 'models\character-e4b-lora-v3.q8_0.gguf'))) {
-        $gh = Ensure-GitHub $cache
-        Ensure-GitHubLogin $gh
     }
     Push-Location $Root
     try {

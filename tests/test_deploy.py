@@ -6,6 +6,7 @@ import subprocess
 import threading
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -165,4 +166,96 @@ def test_agent_install_does_not_require_private_toy_assets(tmp_path, monkeypatch
     )
     assert deploy.install(tmp_path, "cpu")["backend"] == "cpu"
     assert downloads[0] == runtime.DEFAULT_AGENT_MODEL
-    assert deploy.LORA_NAME not in downloads
+    assert not any("lora" in name.lower() for name in downloads)
+
+
+def test_character_install_downloads_only_public_base(tmp_path, monkeypatch):
+    downloads = []
+    monkeypatch.setattr(
+        deploy,
+        "download",
+        lambda url, target, digest: downloads.append((url, target.name)),
+    )
+    monkeypatch.setattr(
+        deploy.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("private asset lookup"),
+    )
+    deploy.install_character_assets(tmp_path)
+    assert downloads == [(deploy.MODEL_URL, runtime.DEFAULT_MODEL)]
+
+
+def test_missing_engine_file_is_repaired_with_existing_install_receipt(
+    tmp_path, monkeypatch
+):
+    def download(url, target, digest):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.suffix == ".zip":
+            with zipfile.ZipFile(target, "w") as archive:
+                archive.writestr("llama-server.exe", b"fixture executable")
+                archive.writestr("required.dll", b"fixture library")
+        else:
+            target.write_bytes(b"model fixture")
+
+    monkeypatch.setattr(deploy, "download", download)
+    monkeypatch.setattr(deploy, "install_agent_runtime", lambda root: None)
+    monkeypatch.setattr(
+        deploy.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            [], 0, b"--models-preset", b""
+        ),
+    )
+    first = deploy.install(tmp_path, "cpu")
+    engine = tmp_path / first["server"]
+    library = engine.parent / "required.dll"
+    library.unlink()
+    deploy.install(tmp_path, "cpu")
+    assert library.read_bytes() == b"fixture library"
+
+
+@pytest.mark.parametrize("repair_succeeds", [True, False])
+def test_matching_sdk_receipt_does_not_hide_broken_dependency(
+    tmp_path, monkeypatch, repair_succeeds
+):
+    node = tmp_path / f".runtime/node/node-v{runtime.NODE_VERSION}-win-x64/node.exe"
+    node.parent.mkdir(parents=True)
+    node.write_bytes(b"fixture")
+    npm = node.parent / "node_modules/npm/bin/npm-cli.js"
+    npm.parent.mkdir(parents=True)
+    npm.write_bytes(b"fixture")
+    destination = tmp_path / ".runtime/pi"
+    package = destination / "node_modules/@earendil-works/pi-coding-agent/dist/index.js"
+    package.parent.mkdir(parents=True)
+    package.write_bytes(b"fixture")
+    receipt = destination / ".installed.sha256"
+    lock = Path(deploy.__file__).parent / "pi-runtime-lock.json"
+    receipt.write_text(deploy.sha256(lock))
+    calls = []
+    repaired = False
+
+    def run(arguments, **kwargs):
+        nonlocal repaired
+        calls.append(arguments)
+        if "ci" in arguments:
+            repaired = True
+            receipt.unlink()
+        elif "--input-type=module" in arguments:
+            if not repaired or not repair_succeeds:
+                raise subprocess.CalledProcessError(1, arguments)
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr(deploy, "download", lambda *args: None)
+    monkeypatch.setattr(deploy.subprocess, "run", run)
+    if repair_succeeds:
+        deploy.install_agent_runtime(tmp_path)
+        assert receipt.read_text() == deploy.sha256(lock)
+        deploy.install_agent_runtime(tmp_path)
+    else:
+        with pytest.raises(subprocess.CalledProcessError):
+            deploy.install_agent_runtime(tmp_path)
+        assert not receipt.exists()
+    assert sum("ci" in arguments for arguments in calls) == 1
+    assert sum("--input-type=module" in arguments for arguments in calls) == (
+        3 if repair_succeeds else 2
+    )

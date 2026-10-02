@@ -42,9 +42,11 @@ def build_server_args(
     gpu_layers: int,
     low_vram: bool,
     lora_path: Path | None = None,
+    slots: int = 1,
 ) -> list[str]:
     """Build the one canonical llama-server command for every core mode."""
-    slots = 2 if lora_path is not None else 1
+    if slots not in (1, 2):
+        raise ValueError("slots must be 1 or 2")
     args = [
         executable,
         "--model",

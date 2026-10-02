@@ -30,9 +30,6 @@ MODEL_URL = (
     "8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/" + DEFAULT_MODEL
 )
 MODEL_SHA = "df0fd4ee07072c607c29a0a1cb4f98918426cca12f45a2776bdd6ee6d09a4de3"
-LORA_NAME = "character-e4b-lora-v3.q8_0.gguf"
-LORA_SHA = "bf7fd9e3189fe0be7c15f8b79e5ccaa45bbbd5d5f9670c695a428c5bb88ebac0"
-ASSET_RELEASE = "runtime-assets-v1"
 AGENT_MODEL_URL = (
     "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/"
     "e87f176479d0855a907a41277aca2f8ee7a09523/" + DEFAULT_AGENT_MODEL
@@ -200,43 +197,8 @@ def has_nvidia() -> bool:
 
 
 def install_character_assets(root: Path) -> None:
-    """Install the toy's compatible base/adapter pair only when requested."""
-    assets = root / "models"
-    cache = root / ".runtime/downloads"
-    cache.mkdir(parents=True, exist_ok=True)
-    download(MODEL_URL, assets / DEFAULT_MODEL, MODEL_SHA)
-    lora = assets / LORA_NAME
-    if not verified(lora, LORA_SHA):
-        gh = shutil.which("gh")
-        if not gh:
-            raise RuntimeError(
-                "GitHub CLI is required to fetch the private character adapter"
-            )
-        staging = cache / f"adapter-{time.time_ns()}"
-        staging.mkdir()
-        subprocess.run(
-            [
-                gh,
-                "release",
-                "download",
-                ASSET_RELEASE,
-                "--repo",
-                "nobody945946/EdgeAgent",
-                "--pattern",
-                LORA_NAME,
-                "--dir",
-                str(staging),
-            ],
-            check=True,
-        )
-        downloaded = staging / LORA_NAME
-        if sha256(downloaded) != LORA_SHA:
-            raise RuntimeError("Character adapter SHA256 mismatch")
-        if lora.exists():
-            lora.rename(lora.with_name(lora.name + f".invalid.{time.time_ns()}"))
-        assets.mkdir(parents=True, exist_ok=True)
-        downloaded.replace(lora)
-        verified(lora, LORA_SHA)
+    """Install the toy's public base model; adapters remain user-owned."""
+    download(MODEL_URL, root / "models" / DEFAULT_MODEL, MODEL_SHA)
 
 
 def install_agent_runtime(root: Path) -> None:
@@ -246,7 +208,8 @@ def install_agent_runtime(root: Path) -> None:
     archive = node_root / (name + ".zip")
     download(f"https://nodejs.org/dist/v{NODE_VERSION}/{name}.zip", archive, NODE_SHA)
     node = node_root / name / "node.exe"
-    if not node.is_file():
+    npm = node.parent / "node_modules/npm/bin/npm-cli.js"
+    if not node.is_file() or not npm.is_file():
         extract_zip(archive, node_root)
     subprocess.run([str(node), "--version"], check=True, timeout=30)
     destination = root / ".runtime/pi"
@@ -256,10 +219,26 @@ def install_agent_runtime(root: Path) -> None:
     receipt = destination / ".installed.sha256"
     digest = sha256(lock)
     package = destination / "node_modules/@earendil-works/pi-coding-agent/dist/index.js"
-    if not package.is_file() or not receipt.is_file() or receipt.read_text() != digest:
+    probe = [
+        str(node),
+        "--input-type=module",
+        "-e",
+        f"await import({json.dumps(package.as_uri())})",
+    ]
+    installed = (
+        package.is_file() and receipt.is_file() and receipt.read_text() == digest
+    )
+    if installed:
+        try:
+            subprocess.run(
+                probe, cwd=destination, capture_output=True, check=True, timeout=30
+            )
+            return
+        except (OSError, subprocess.SubprocessError):
+            installed = False
+    if not installed:
         shutil.copyfile(sources / "pi-runtime.json", destination / "package.json")
         shutil.copyfile(lock, destination / "package-lock.json")
-        npm = node.parent / "node_modules/npm/bin/npm-cli.js"
         subprocess.run(
             [str(node), str(npm), "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
             cwd=destination,
@@ -270,19 +249,14 @@ def install_agent_runtime(root: Path) -> None:
             check=True,
             timeout=600,
         )
-        receipt.write_text(digest, encoding="ascii")
     # Probe imports as well as executable presence after interrupted installations.
     subprocess.run(
-        [
-            str(node),
-            "--input-type=module",
-            "-e",
-            f"await import({json.dumps(package.as_uri())})",
-        ],
+        probe,
         cwd=destination,
         check=True,
         timeout=30,
     )
+    receipt.write_text(digest, encoding="ascii")
 
 
 def install(
@@ -304,7 +278,18 @@ def install(
         download(f"{LLAMA_ROOT}/{name}", archive, digest)
         # Extract once after full hash validation; retries complete unfinished installs.
         marker = directory / f".{name}.installed"
-        if not marker.exists():
+        complete = marker.exists()
+        if complete:
+            with zipfile.ZipFile(archive) as bundle:
+                complete = all(
+                    item.is_dir()
+                    or (
+                        (directory / item.filename).is_file()
+                        and (directory / item.filename).stat().st_size == item.file_size
+                    )
+                    for item in bundle.infolist()
+                )
+        if not complete:
             extract_zip(archive, directory)
             marker.write_text(digest, encoding="ascii")
     executable = next(directory.rglob("llama-server.exe"), None)
@@ -337,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--character",
         action="store_true",
-        help="also install the SilentTalk base/LoRA pair",
+        help="also install the SilentTalk public base model",
     )
     args = parser.parse_args(argv)
     try:

@@ -1,9 +1,9 @@
 # EdgeAgent validation 2026-10-02
 
-- product_renamed: EdgeAgent 2.0.0; package edge_agent; launcher edge-agent.
+- product_renamed: EdgeAgent 2.0.1; package edge_agent; launcher edge-agent.
 - upstream_agent: Pi coding-agent SDK 1.0.0; lockfile installed; RAM sessions.
 - upstream_inference: llama.cpp b11193; router models-max 1; shared port 18089.
-- core_pytest: 68 passed; exit 0.
+- core_pytest: 74 passed; exit 0.
 - core_ruff: exit 0.
 - silenttalk_lease_pytest: 86 passed; exit 0.
 - silenttalk_changed_scope_ruff: exit 0.
@@ -23,3 +23,10 @@
 - privacy_probe: no Pi state directory; no session JSONL or inference transcript created.
 - ollama_audit: 0.35.0; LoRA create rejected; HTTP 400.
 - capabilities_scope: small Python fixes verified; large-project capability not established; terminal is persistent PowerShell, not ConPTY.
+- optional_adapter_framework: empty default; user-selected GGUF; architecture validation; model change clears selection; failed load restores previous Agent.
+- character_install_assets: public base only; no private adapter retrieval.
+- interrupted_deployment_repair: missing engine library; matching SDK receipt with broken imports; successful import required before receipt.
+- optional_adapter_ui_javascript: syntax check exit 0.
+- optional_adapter_real_runtime: compatible adapter loaded; adapter removed; original Agent restored; exit 0.
+- incompatible_adapter_real_runtime: same architecture; load rejected; previous Agent restored and ready.
+- optional_adapter_ui_browser: new control not tested in real browser; browser launch rejected by tool policy; browser connector has no active browsers.

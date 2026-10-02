@@ -35,6 +35,7 @@ DEFAULT_CONFIG: dict[str, object] = {
     "thinking_effort": "off",
     "agent": True,
     "model": DEFAULT_AGENT_MODEL,
+    "lora": "",
     "context_size": GENERAL_CONTEXT_SIZE,
     "gpu_layers": 99,
     "low_vram": True,
@@ -191,6 +192,10 @@ class EdgeAgent:
         if not isinstance(agent, bool):
             raise TypeError("agent must be a boolean")
         model_filename(merged["model"])
+        if not isinstance(merged["lora"], str):
+            raise TypeError("lora must be a filename or an empty string")
+        if merged["lora"]:
+            model_filename(merged["lora"])
         EdgeAgent._bounded_int(merged, "context_size", 4096, 262144)
         EdgeAgent._bounded_int(merged, "gpu_layers", 0, 999)
         if not isinstance(merged["low_vram"], bool):
@@ -200,7 +205,7 @@ class EdgeAgent:
         }
 
     def update_config(self, value: dict[str, object]) -> dict[str, object]:
-        if set(value) & {"model", "context_size", "gpu_layers", "low_vram"}:
+        if set(value) & {"model", "lora", "context_size", "gpu_layers", "low_vram"}:
             raise ValueError("請透過模型切換套用推論設定")
         with self.lock:
             return self._save_config({**self.config, **value})
@@ -239,7 +244,13 @@ class EdgeAgent:
         try:
             if action == "switch":
                 model_filename(payload.get("model"))
-                if set(payload) - {"model", "context_size", "gpu_layers", "low_vram"}:
+                if set(payload) - {
+                    "model",
+                    "lora",
+                    "context_size",
+                    "gpu_layers",
+                    "low_vram",
+                }:
                     raise ValueError("unknown model settings")
                 self._validated_config({**self.config, **payload})
             elif action == "download":
@@ -316,10 +327,18 @@ class EdgeAgent:
         try:
             if self.mode == "character":
                 raise PermissionError("SilentTalk 正在使用模型；結束角色連線後再切換")
-            candidate = self._validated_config({**self.config, **payload})
+            selection = {**self.config, **payload}
+            if (
+                "model" in payload
+                and payload["model"] != self.config["model"]
+                and "lora" not in payload
+            ):
+                selection["lora"] = ""
+            candidate = self._validated_config(selection)
             metadata = model_metadata(self._model_path(str(candidate["model"])))
             if metadata["adapter"] or metadata["split"]:
                 raise ValueError("請選擇單檔回覆模型，不能選 LoRA 或分片")
+            self._adapter_path(metadata, str(candidate["lora"]))
             limit = metadata["context_length"]
             if isinstance(limit, int) and limit > 0:
                 candidate["context_size"] = min(int(candidate["context_size"]), limit)
@@ -519,10 +538,10 @@ class EdgeAgent:
     ) -> None:
         if mode == "base":
             model_path = self._model_path(str(self.config["model"]))
-            lora_path = None
             metadata = model_metadata(model_path)
             if metadata["adapter"] or metadata["split"]:
                 raise ValueError("selected file is not a standalone model")
+            lora_path = self._adapter_path(metadata, str(self.config["lora"]))
             context_size = int(self.config["context_size"])
             limit = metadata["context_length"]
             if isinstance(limit, int) and limit > 0:
@@ -535,7 +554,7 @@ class EdgeAgent:
                 raise ValueError("character configuration required")
             model_path = self._model_path(self._required_string(character, "model"))
             lora_name = self._required_string(character, "lora")
-            lora_path = self._model_path(lora_name) if lora_name else None
+            lora_path = self._adapter_path(model_metadata(model_path), lora_name)
             context_size = self._bounded_int(character, "context_size", 1_024, 32_768)
             port = self._bounded_int(character, "port", 1_024, 65_535)
             if port in (CONTROL_PORT, GENERAL_PORT):
@@ -556,6 +575,7 @@ class EdgeAgent:
             gpu_layers=gpu_layers,
             low_vram=low_vram,
             lora_path=lora_path,
+            slots=2 if mode == "character" and lora_path else 1,
         )
         preset = self.core_dir / ".runtime/models.ini"
         preset.parent.mkdir(parents=True, exist_ok=True)
@@ -649,6 +669,17 @@ class EdgeAgent:
         if not isinstance(result, dict):
             raise TypeError("invalid model router response")
         return result
+
+    def _adapter_path(self, base: dict[str, object], filename: str) -> Path | None:
+        if not filename:
+            return None
+        path = self._model_path(filename)
+        adapter = model_metadata(path)
+        if not adapter["adapter"] or adapter["split"]:
+            raise ValueError("selected LoRA must be a single adapter GGUF")
+        if adapter["architecture"] != base["architecture"]:
+            raise ValueError("LoRA architecture does not match the selected base model")
+        return path
 
     def _model_path(self, filename: str) -> Path:
         model_filename(filename)

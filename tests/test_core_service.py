@@ -108,6 +108,7 @@ def test_character_server_gets_two_slots_and_lora() -> None:
         gpu_layers=99,
         low_vram=True,
         lora_path=Path("character.gguf"),
+        slots=2,
     )
 
     assert _value_after(args, "--ctx-size") == "65536"
