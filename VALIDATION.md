@@ -58,6 +58,8 @@ Windows 發行包的首次部署已在新目錄完成，使用新的 SilentTalk�
 | LoRA UI JavaScript syntax | exit 0 |
 | [EdgeAgent 後續 CI](https://github.com/nobody945946/EdgeAgent/actions/runs/37024149273) | success |
 
+文件更新的 SilentTalk CI [37026837937](https://github.com/nobody945946/SilentTalk/actions/runs/37026837937) 有 223 passed、1 failed、1 skipped；失敗為既有的冷場回覆測試 `test_a_lull_line_is_dropped_if_someone_speaks_meanwhile`。這次只改文件，沒有改角色 runtime；此失敗未宣稱已修復，歷史通過不代表該輪通過。
+
 SilentTalk 原有測試 fixture 曾產生 `SlowFakeLLM.state` 背景例外，pytest 仍為 exit 0；原有 Ruff 問題為 DTZ005 一項、BLE001 七項，已確認屬於基線。上述限制沒有以「測試全綠」掩蓋。
 
 Ollama 0.35.0 的實際 LoRA 建立請求回傳 HTTP 400。本次採用 llama.cpp 是為了所需的 LoRA 與共享模型管理；沒有在相同模型、量化與 context 下比較吞吐量，不能宣稱它比 Ollama 快。
