@@ -67,11 +67,12 @@ def sandbox(name: str, mounts: list[tuple[Path, str, str]], env: dict[str, str],
     return [*args, image, *command]
 
 
-def code_mounts(bridge: Path | None = None) -> list[tuple[Path, str, str]]:
+def code_mounts(bridge: Path | None = None,
+                product: Path = ROOT / "edge_agent") -> list[tuple[Path, str, str]]:
     """What the agent's sandbox may see: the product code and the two bench
     files it runs. Never the tasks (hidden tests and solutions live there).
     `bridge` overlays a variant of the product's agent_bridge.mjs."""
-    mounts = [(ROOT / "edge_agent", "/opt/edgeagent/edge_agent", "ro"),
+    mounts = [(product, "/opt/edgeagent/edge_agent", "ro"),
               (BENCH / "relay.py", "/opt/bench/relay.py", "ro"),
               (BENCH / "agent_runner.py", "/opt/bench/agent_runner.py", "ro")]
     if bridge is not None:
@@ -79,13 +80,13 @@ def code_mounts(bridge: Path | None = None) -> list[tuple[Path, str, str]]:
     return mounts
 
 
-def bridge_variant(config: dict, run_dir: Path) -> Path | None:
+def bridge_variant(config: dict, run_dir: Path, product: Path) -> Path | None:
     """The product bridge with the config's extra system-prompt lines, so a
     prompt change is measured before it is made in the product."""
     extra = config.get("system_prompt_append")
     if not extra:
         return None
-    source = (ROOT / "edge_agent/agent_bridge.mjs").read_text(encoding="utf-8")
+    source = (product / "agent_bridge.mjs").read_text(encoding="utf-8")
     anchor = "appendSystemPrompt: ["
     if source.count(anchor) != 1:
         raise SystemExit("agent_bridge.mjs changed; update bridge_variant")
@@ -185,8 +186,11 @@ class Server:
         self.log.close()
 
 
+TASK_ROOT = BENCH / "tasks"
+
+
 def load_tasks(pattern: str) -> list[Path]:
-    found = sorted(p.parent for p in (BENCH / "tasks").glob("*/task.json"))
+    found = sorted(p.parent for p in TASK_ROOT.glob("*/task.json"))
     patterns = pattern.split(",")
     return [p for p in found if any(fnmatch.fnmatch(p.name, x) for x in patterns)]
 
@@ -271,7 +275,7 @@ def selftest(pattern: str) -> None:
 
 
 def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: Path,
-            sock_dir: Path, keep: bool, bridge: Path | None) -> dict:
+            sock_dir: Path, keep: bool, bridge: Path | None, product: Path) -> dict:
     task = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
     job = f"{task_dir.name}-r{rep}"
     workspace, original = run_dir / "ws" / job, run_dir / "orig" / job
@@ -284,7 +288,7 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
             "timeout_s": timeout}
     name = f"eab-{config_name}-{job}".replace("_", "-")[:120]
     command = sandbox(name, [(workspace, "/work", "rw"), (sock_dir, "/sock", "ro"),
-                             *code_mounts(bridge)],
+                             *code_mounts(bridge, product)],
                       {"BENCH_SPEC": json.dumps(spec, ensure_ascii=False)},
                       ["python", "/opt/bench/agent_runner.py"],
                       image=task.get("image", IMAGE))
@@ -358,7 +362,15 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=18189)
     parser.add_argument("--keep", action="store_true", help="keep workspaces")
     parser.add_argument("--tag", help="run directory name (default: the config name)")
+    parser.add_argument("--product", type=Path, default=ROOT / "edge_agent",
+                        help="edge_agent package to test (e.g. a development worktree)")
+    parser.add_argument("--task-root", type=Path,
+                        help="task directory (default bench/tasks; training tasks live in "
+                             ".runtime/agentdata/tasks)")
     args = parser.parse_args()
+    if args.task_root:
+        global TASK_ROOT
+        TASK_ROOT = args.task_root.resolve()
     if args.build:
         build_image()
         return
@@ -387,7 +399,13 @@ def main() -> None:
         return
     revision = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
                               capture_output=True, text=True).stdout.strip()
-    bridge = bridge_variant(config, run_dir)
+    # Pin the product code for this run: later edits never reach a run in
+    # progress, and a resumed run keeps the code it started with.
+    product = run_dir / "edge_agent"
+    if not product.is_dir():
+        shutil.copytree(args.product.resolve(), product,
+                        ignore=shutil.ignore_patterns("__pycache__"))
+    bridge = bridge_variant(config, run_dir, product)
     server = Server(config, run_dir, args.parallel, args.port)
     # A stopped run must not leave llama-server holding VRAM.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
@@ -397,7 +415,7 @@ def main() -> None:
 
         def work(job: tuple[Path, int]) -> None:
             row = run_job(job[0], job[1], args.config, config, run_dir, server.sock_dir,
-                          args.keep, bridge)
+                          args.keep, bridge, product)
             row["revision"] = revision
             with lock, results.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
