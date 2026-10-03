@@ -20,6 +20,7 @@ import fnmatch
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -66,12 +67,32 @@ def sandbox(name: str, mounts: list[tuple[Path, str, str]], env: dict[str, str],
     return [*args, image, *command]
 
 
-def code_mounts() -> list[tuple[Path, str, str]]:
+def code_mounts(bridge: Path | None = None) -> list[tuple[Path, str, str]]:
     """What the agent's sandbox may see: the product code and the two bench
-    files it runs. Never the tasks (hidden tests and solutions live there)."""
-    return [(ROOT / "edge_agent", "/opt/edgeagent/edge_agent", "ro"),
-            (BENCH / "relay.py", "/opt/bench/relay.py", "ro"),
-            (BENCH / "agent_runner.py", "/opt/bench/agent_runner.py", "ro")]
+    files it runs. Never the tasks (hidden tests and solutions live there).
+    `bridge` overlays a variant of the product's agent_bridge.mjs."""
+    mounts = [(ROOT / "edge_agent", "/opt/edgeagent/edge_agent", "ro"),
+              (BENCH / "relay.py", "/opt/bench/relay.py", "ro"),
+              (BENCH / "agent_runner.py", "/opt/bench/agent_runner.py", "ro")]
+    if bridge is not None:
+        mounts.append((bridge, "/opt/edgeagent/edge_agent/agent_bridge.mjs", "ro"))
+    return mounts
+
+
+def bridge_variant(config: dict, run_dir: Path) -> Path | None:
+    """The product bridge with the config's extra system-prompt lines, so a
+    prompt change is measured before it is made in the product."""
+    extra = config.get("system_prompt_append")
+    if not extra:
+        return None
+    source = (ROOT / "edge_agent/agent_bridge.mjs").read_text(encoding="utf-8")
+    anchor = "appendSystemPrompt: ["
+    if source.count(anchor) != 1:
+        raise SystemExit("agent_bridge.mjs changed; update bridge_variant")
+    lines = "".join(json.dumps(line, ensure_ascii=False) + ", " for line in extra)
+    path = run_dir / "agent_bridge.mjs"
+    path.write_text(source.replace(anchor, anchor + lines), encoding="utf-8")
+    return path
 
 
 def build_image() -> None:
@@ -250,7 +271,7 @@ def selftest(pattern: str) -> None:
 
 
 def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: Path,
-            sock_dir: Path, keep: bool) -> dict:
+            sock_dir: Path, keep: bool, bridge: Path | None) -> dict:
     task = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
     job = f"{task_dir.name}-r{rep}"
     workspace, original = run_dir / "ws" / job, run_dir / "orig" / job
@@ -263,7 +284,7 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
             "timeout_s": timeout}
     name = f"eab-{config_name}-{job}".replace("_", "-")[:120]
     command = sandbox(name, [(workspace, "/work", "rw"), (sock_dir, "/sock", "ro"),
-                             *code_mounts()],
+                             *code_mounts(bridge)],
                       {"BENCH_SPEC": json.dumps(spec, ensure_ascii=False)},
                       ["python", "/opt/bench/agent_runner.py"],
                       image=task.get("image", IMAGE))
@@ -366,14 +387,17 @@ def main() -> None:
         return
     revision = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
                               capture_output=True, text=True).stdout.strip()
+    bridge = bridge_variant(config, run_dir)
     server = Server(config, run_dir, args.parallel, args.port)
+    # A stopped run must not leave llama-server holding VRAM.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     lock = threading.Lock()
     try:
         print(f"server ready, {server.speed()} tok/s single stream", flush=True)
 
         def work(job: tuple[Path, int]) -> None:
             row = run_job(job[0], job[1], args.config, config, run_dir, server.sock_dir,
-                          args.keep)
+                          args.keep, bridge)
             row["revision"] = revision
             with lock, results.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")

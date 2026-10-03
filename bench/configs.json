@@ -26,5 +26,64 @@
   "vram_base_mib": 4000,
   "vram_slot_mib": 2400,
   "search_tools": true
+ },
+ "qwen35-4b-search-think": {
+  "_note": "qwen35-4b-search with thinking on (Qwen thinking is on/off; effort medium).",
+  "model": "Qwen3.5-4B-Q4_K_M.gguf",
+  "vision": true,
+  "context_size": 131072,
+  "max_output_tokens": 8192,
+  "working_context_size": 32768,
+  "effort": "medium",
+  "low_vram": true,
+  "prompt_cache_mib": 256,
+  "vram_base_mib": 4000,
+  "vram_slot_mib": 2400,
+  "search_tools": true
+ },
+ "qwen35-4b-q6-search": {
+  "_note": "Same model at Q6_K (3.5 GB; a few layers on CPU on the laptop).",
+  "model": "Qwen3.5-4B-Q6_K.gguf",
+  "vision": true,
+  "context_size": 131072,
+  "max_output_tokens": 8192,
+  "working_context_size": 32768,
+  "effort": "off",
+  "low_vram": true,
+  "prompt_cache_mib": 256,
+  "vram_base_mib": 4800,
+  "vram_slot_mib": 2400,
+  "search_tools": true
+ },
+ "qwen35-9b-iq3-search": {
+  "_note": "Qwen3.5-9B at UD-IQ3_XXS (4.0 GB; about 1 GB on CPU on the laptop).",
+  "model": "Qwen3.5-9B-UD-IQ3_XXS.gguf",
+  "vision": true,
+  "context_size": 131072,
+  "max_output_tokens": 8192,
+  "working_context_size": 32768,
+  "effort": "off",
+  "low_vram": true,
+  "prompt_cache_mib": 256,
+  "vram_base_mib": 5600,
+  "vram_slot_mib": 2400,
+  "search_tools": true
+ },
+ "qwen35-4b-search-scripted": {
+  "_note": "qwen35-4b-search plus one system-prompt line: compute with scripts, verify before reporting.",
+  "model": "Qwen3.5-4B-Q4_K_M.gguf",
+  "vision": true,
+  "context_size": 131072,
+  "max_output_tokens": 8192,
+  "working_context_size": 32768,
+  "effort": "off",
+  "low_vram": true,
+  "prompt_cache_mib": 256,
+  "vram_base_mib": 4000,
+  "vram_slot_mib": 2400,
+  "search_tools": true,
+  "system_prompt_append": [
+   "Use tools to compute: count, compare, deduplicate, search and convert file contents by writing and running a script (PowerShell or Python) and reading its output; never estimate by reading files yourself. Before reporting, verify the actual result (list or open the outputs, rerun the relevant check) and report only what you verified."
+  ]
  }
 }
