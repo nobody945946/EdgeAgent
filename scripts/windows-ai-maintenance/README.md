@@ -1,0 +1,67 @@
+# Windows AI 維護紀錄
+
+唯一實作位於 EdgeAgent 的 `scripts/windows-ai-maintenance/`。本機 `.codex/windows-ai-maintenance/` 的入口只轉呼叫這裡。
+系統原值及量測資料留在 `%USERPROFILE%\.codex\windows-ai-maintenance`，不加入 Git；從 repo 執行也使用同一份還原快照。
+此工具獨立於 EdgeAgent 啟動流程，不會隨應用啟動自動修改 Windows。
+
+## 新增輕量化部署腳本：已驗證，尚未永久套用
+
+`deploy.cmd` 是 `maintain.ps1` 的一鍵入口；雙擊會要求 Windows UAC 提升權限。
+使用同一個 Windows 帳號提升權限，不能輸入另一個管理員帳號來修改不同的 HKCU。
+不需要重新開機。瀏覽器依其政策刷新時間生效；少數介面可能需要重新登入才完整更新。
+
+| 指令 | 行為 |
+|---|---|
+| `deploy.cmd` 或 `deploy.cmd ApplyLight` | Edge 關閉 Startup Boost／背景模式、Chrome 關閉背景模式；DiagTrack 停止並停用；六項動畫與透明效果關閉 |
+| `deploy.cmd PlanLight` | 只讀檢視目前設定與部署範圍，不提升權限 |
+| `deploy.cmd RestoreLight` | 還原新增設定的原值、registry type、存在狀態、服務啟動方式及執行狀態；若有 Search 暫停工作階段，也一併恢復 |
+| `deploy.cmd BeginAI` | 暫時將 Windows Search 改為 Manual 並停止；保存當次原設定 |
+| `deploy.cmd EndAI` | 完整恢復該次 Search 原設定，包含 delayed automatic start；工作中斷後也可執行 |
+
+原值存在既有 `original-state.json`，不另建立第二份維護流程。重複 ApplyLight 不覆寫最初原值；部分部署失敗會嘗試恢復原設定並回報錯誤。
+`RestoreLight` 恢復這次新增部署之前的設定；既有 `Restore` 則恢復全部維護項目，包含先前 WLAN 調整，因此會短暫重啟 Wi-Fi。
+
+此版本保留 SysMain、Windows Update、Defender、pagefile、memory compression、DWM 與字型平滑。
+沒有安裝 Mem Reduct、移除系統套件或自動關閉開啟中的瀏覽器。
+本機沒有 Copilot、Cortana、Widgets 的對應 Appx 套件，不需修改；Windows 11 Home 不在 Microsoft Widgets 管理政策的支援版本清單中。
+
+驗證：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verify.ps1`，31 checks passed。
+真實 Win32 動畫 API 關閉／還原測試已恢復原值；服務操作使用隔離替身，registry 使用測試專用暫存 key，測完已刪除。
+已測既有 DWORD／ExpandString 的原值與 type、原本不存在的值、重複套用／還原、注入失敗回復、Search 工作階段、延遲自動啟動與含空白路徑的一鍵入口參數。
+
+2026-10-03 本機取樣：SysMain 工作集 6.8 MiB、WSearch 29.1 MiB、DiagTrack 29.4 MiB；wuauserv 已為 Manual／Stopped。
+工作集包含共用頁面，不能把這些數字視為實測釋放 RAM；備用快取已包含在 Available RAM 中，不能再加一次。
+沒有進行永久部署或效能 A/B 測試，因此尚無新增設定的實測 RAM／VRAM 淨增量。
+
+參考：[Windows 快取與可用記憶體](https://learn.microsoft.com/en-us/windows-server/administration/performance-tuning/subsystem/cache-memory-management/)、[Search 索引負載退避](https://learn.microsoft.com/en-us/troubleshoot/windows-client/shell-experience/windows-search-performance-issues)、[更新與使用時間](https://learn.microsoft.com/en-us/windows/deployment/update/waas-restart)、[Widgets 支援版本](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-newsandinterests)、[Mem Reduct 原始碼](https://github.com/henrypp/memreduct/blob/master/src/main.c)。
+
+2026-10-03，ASUS TUF Dash F15 FX516PE，Windows 11 Home，8 GB RAM。
+
+本次保留 Windows、Defender、Windows Update、pagefile、memory compression、Wi-Fi 核心驅動、ASUS 風扇／電源／熱鍵服務與現有使用中的瀏覽器、編輯器、Discord、遠端連線。沒有移除軟體、driver package、DLL 或使用者資料。
+
+## 已套用
+
+| 項目 | 現在狀態 | 可還原的原值 |
+|---|---|---|
+| Discord、Steam、Edge 登入自啟動 | 移除各自 HKCU Run 值 | 保存存在狀態、資料與 registry type |
+| Edge StartupBoostEnabled、BackgroundModeEnabled | 0 | 保存原值；原本不存在的值在還原時移除 |
+| ASUSSystemAnalysis、ASUSSystemDiagnosis | Manual、Stopped | 原本 Auto、Running；DelayedAutoStart 也保存 |
+| 兩個 ASUS 診斷排程 | Disabled | 原本 Enabled |
+| Intel AX201 的 IHV ExtensibilityDLL 登錄 | 移除該值，DLL 與 driver 原檔保留 | 保存原字串、registry type、網卡 identity |
+| 閒置 Steam | 正常 shutdown，遊戲程序不存在 | 應用程式仍安裝；可正常重新開啟 |
+
+WLANExt 原本 PID 4796，私有提交記憶體 6,865 MiB、working set 約 23 MiB。重啟 WLAN 後新 PID 6760 起初約 4 MiB，19 分鐘後約 30 MiB，顯示重啟只能暫時釋放累積。停用此網卡的 Intel 廠商延伸登錄後，WLANExt 未再啟動。當前 WPA2-Personal 連線、DNS、GitHub HTTPS 200 已驗證。這個變更會停用 Intel IHV 的廠商延伸功能；未測試特殊企業驗證或其他專有 Wi-Fi 功能。驅動更新可能重新註冊該延伸，後續檢查應確認實際狀態，不能只看本紀錄。
+
+ASUS 診斷程序先前是 Windows 服務，單獨關閉程序會被服務復原重啟並重建排程。最終改從服務 owner 設成 Manual 並正常 Stop-Service，再停用其診斷排程；沒有增加背景監控、重複殺程序或定期修補的工作。
+
+## 還原與驗證
+
+唯一執行入口是 `maintain.ps1`，原值保存在 `original-state.json`，最後狀態保存在 `after-state.json`。腳本支援 Inspect、Apply、Restore、RestartWifi、DisableWifiExtension。Apply 不覆寫已保存的原值；新增的設定只有第一次接管時保存。Wi-Fi 修改會先核對網卡 identity 與 Personal 連線，連線測試失敗會復原該登錄並重启 WLAN。
+
+Restore 會恢复原 registry 值與類型、排程啟用狀態、診斷服務啟動類型與執行狀態，以及 Wi-Fi 延伸登錄。實際 Restore 後逐項比對通過，再重新套用精簡狀態。恢復 Wi-Fi 設定會短暫重啟 WLAN；不需要刪除或重新安裝驅動。
+
+執行此腳本修改服務、排程與 HKLM 需要系統管理員權限。需要還原時由維護 agent 執行 Restore，不必手動重建設定。
+
+提交記憶體和實體 RAM 是不同量測。WLANExt 的 6.7 GiB 大部分當時不在 working set，不能宣稱釋放了 6.7 GiB 實體 RAM。可用 RAM 同時受使用中的 Edge、VS Code、Discord 與模型是否載入影響，數字記錄在狀態檔。
+
+參考：[Microsoft IHV 延伸架構](https://learn.microsoft.com/en-us/windows-hardware/drivers/network/overview-of-ihv-extensibility)、[Intel 社群同版驅動的相近回報](https://community.intel.com/t5/Wireless/Bug-Report-AX211-WlanExt-exe-memory-leak-80-MB-h-regression/m-p/1758756?profile.language=en)。社群回報網卡是 AX211，本機是 AX201；判斷依本機累積及停用後的連線實測，沒有把不同機器的回報視為已確認根因。
