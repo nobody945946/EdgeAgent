@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import os
 import shutil
@@ -284,7 +285,8 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
     if record_port is not None:
         # This job's own relay, keeping every request the Agent sends (the
         # exact prompts training rows are rendered from).
-        sock_dir = run_dir / "jobsock" / job
+        # Unix socket paths are limited to ~108 bytes: a short name per job.
+        sock_dir = run_dir / "s" / hashlib.sha1(job.encode()).hexdigest()[:10]
         sock_dir.mkdir(parents=True, exist_ok=True)
         relay = subprocess.Popen(
             [sys.executable, str(BENCH / "relay.py"), "--listen",
@@ -427,8 +429,13 @@ def main() -> None:
                         ignore=shutil.ignore_patterns("__pycache__"))
     bridge = bridge_variant(config, run_dir, product)
     server = Server(config, run_dir, args.parallel, args.port)
-    # A stopped run must not leave llama-server holding VRAM.
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    # A stopped run must not leave llama-server holding VRAM. The main thread
+    # sits in the worker pool, so exiting there would wait for every job.
+    def stop(*_: object) -> None:
+        server.close()
+        os._exit(143)
+
+    signal.signal(signal.SIGTERM, stop)
     lock = threading.Lock()
     try:
         print(f"server ready, {server.speed()} tok/s single stream", flush=True)
