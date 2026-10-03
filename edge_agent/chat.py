@@ -20,6 +20,7 @@ from uuid import uuid4
 from edge_agent.runtime import (
     CORE_ROOT,
     DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_WORKING_CONTEXT_SIZE,
     GENERAL_CONTEXT_SIZE,
     NODE_VERSION,
 )
@@ -157,6 +158,7 @@ class NativeChat:
         self.model_url = f"http://127.0.0.1:{model_port}"
         self.context_size = GENERAL_CONTEXT_SIZE
         self.max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS
+        self.working_context_size = DEFAULT_WORKING_CONTEXT_SIZE
         self.model = ""
         self.capabilities = {"vision": False, "audio": False}
         self._sessions: dict[str, ChatSession] = {}
@@ -174,11 +176,16 @@ class NativeChat:
         model: str | None = None,
         capabilities: dict[str, bool] | None = None,
         max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+        working_context_size: int = DEFAULT_WORKING_CONTEXT_SIZE,
     ) -> None:
         self.context_size = context_size
         # One owner for the effective budget passed to Pi and displayed by UI.
         # Reserve at least half the window for instructions, media and history.
         self.max_output_tokens = min(max_output_tokens, context_size // 2)
+        # A history-compaction target, not a reduction of the model's window.
+        self.working_context_size = min(
+            context_size, max(working_context_size, self.max_output_tokens * 2)
+        )
         if model is not None:
             self.model = model
         if capabilities is not None:
@@ -347,6 +354,7 @@ class NativeChat:
             self.model,
             self.context_size,
             self.max_output_tokens,
+            self.working_context_size,
             self.capabilities.get("vision", False),
             self.capabilities.get("audio", False),
             effort,
@@ -402,6 +410,7 @@ class NativeChat:
                 "capabilities": self.capabilities,
                 "context_size": self.context_size,
                 "max_output_tokens": self.max_output_tokens,
+                "working_context_size": self.working_context_size,
                 "thinking_effort": effort,
                 "agent": agent,
                 "plan": plan,
@@ -620,7 +629,7 @@ class NativeChat:
                                 )
                             except (OSError, UnicodeError):
                                 pass
-                    elif kind == "auto_compaction_end" and event.get("result"):
+                    elif kind == "compaction_end" and event.get("result"):
                         yield (
                             "compacted",
                             {

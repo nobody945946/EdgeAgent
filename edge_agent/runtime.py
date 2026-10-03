@@ -8,6 +8,7 @@ from pathlib import Path
 
 GENERAL_CONTEXT_SIZE = 131_072
 DEFAULT_MAX_OUTPUT_TOKENS = 8_192
+DEFAULT_WORKING_CONTEXT_SIZE = 32_768
 MIN_AGENT_CONTEXT_SIZE = 8_192
 CONTROL_PORT = 18_087
 GENERAL_PORT = 18_089
@@ -46,6 +47,7 @@ def build_server_args(
     lora_path: Path | None = None,
     projector_path: Path | None = None,
     slots: int = 1,
+    prompt_cache_mib: int | None = None,
 ) -> list[str]:
     """Build the one canonical llama-server command for every core mode."""
     if slots not in (1, 2):
@@ -72,6 +74,12 @@ def build_server_args(
         # Upstream owns device-memory fitting. Explicit context plus fit-ctx
         # preserves the chosen window while weights can move to CPU.
         args += ["--fit", "on", "--fit-ctx", str(context_size), "--fit-target", "512"]
+    if prompt_cache_mib is not None:
+        if prompt_cache_mib < 0:
+            raise ValueError("prompt_cache_mib must be nonnegative")
+        # Saved prompt states are separate from active KV memory. Bound only
+        # the Agent's cache; character leases retain their upstream defaults.
+        args += ["--cache-ram", str(prompt_cache_mib), "--ctx-checkpoints", "2"]
     if lora_path is not None:
         args += ["--lora", str(lora_path)]
     if projector_path is not None:

@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import zipfile
+from datetime import UTC
 from types import SimpleNamespace
 
 import pytest
@@ -322,7 +323,7 @@ def test_handled_command_finishes_without_agent_settled(tmp_path):
 def test_compaction_events_precede_prompt_response_and_preserve_messages(tmp_path):
     chat = RPCFixture(
         [
-            {"type": "auto_compaction_end", "result": {"summary": "fixture"}},
+            {"type": "compaction_end", "result": {"summary": "fixture"}},
             {"type": "response", "success": True, "data": {"disposition": "started"}},
             *ending(),
         ]
@@ -470,6 +471,7 @@ def repeating_model():
                     ({}, "tool_calls"),
                 ]
                 if not state.get("answer")
+                and state["calls"] < state.get("answer_after", float("inf"))
                 else [({"role": "assistant", "content": "fixture"}, None), ({}, "stop")]
             )
             for delta, stop in chunks:
@@ -505,6 +507,213 @@ def installed_pi():
         CORE_ROOT
         / ".runtime/pi/node_modules/@earendil-works/pi-coding-agent/dist/index.js"
     ).is_file()
+
+
+def test_ram_retrieval_contract():
+    import shutil
+    import subprocess
+
+    from edge_agent.runtime import CORE_ROOT, NODE_VERSION
+
+    pinned = CORE_ROOT / f".runtime/node/node-v{NODE_VERSION}-win-x64/node.exe"
+    node = str(pinned) if pinned.is_file() else shutil.which("node")
+    if node is None:
+        pytest.skip("requires Node")
+    subprocess.run([node, str(CORE_ROOT / "tests/memory_check.mjs")], check=True)
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_retrieves_archived_fact_without_replaying_original_history(
+    tmp_path, repeating_model
+):
+    from datetime import datetime
+
+    port, state = repeating_model
+    state["answer"] = True
+    chat = NativeChat(model_port=port)
+    stamp = datetime.now(UTC).isoformat()
+    chat.session("archive").entries = [
+        {
+            "type": "session",
+            "version": 3,
+            "id": "archive",
+            "timestamp": stamp,
+            "cwd": str(tmp_path),
+        },
+        {
+            "type": "message",
+            "id": "fact",
+            "parentId": None,
+            "timestamp": stamp,
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "ticket-567 uses alpha.py. "
+                        + "unrelated-padding " * 2000,
+                    }
+                ],
+                "timestamp": 0,
+            },
+        },
+        {
+            "type": "message",
+            "id": "kept",
+            "parentId": "fact",
+            "timestamp": stamp,
+            "message": {"role": "user", "content": "recent item", "timestamp": 0},
+        },
+        {
+            "type": "compaction",
+            "id": "compact",
+            "parentId": "kept",
+            "timestamp": stamp,
+            "summary": "Rolling summary",
+            "firstKeptEntryId": "kept",
+            "tokensBefore": 30000,
+        },
+    ]
+    try:
+        assert (
+            list(chat.stream_reply("archive", "ticket-567", working_dir=tmp_path))[-1][
+                0
+            ]
+            == "done"
+        )
+        request = state["requests"][-1]
+        wire = json.dumps(request["messages"])
+        assert "ticket-567 uses alpha.py" in wire
+        assert "Historical reference excerpts" in wire
+        assert len(wire) < 10000
+        assert (
+            len(
+                [
+                    entry
+                    for entry in chat.session("archive").entries
+                    if entry.get("id") == "fact"
+                ]
+            )
+            == 1
+        )
+        assert not any(
+            entry.get("message", {}).get("customType") == "edge-history"
+            for entry in chat.session("archive").entries
+        )
+        assert "search_history" in [
+            tool["function"]["name"] for tool in request["tools"]
+        ]
+        previous_pid = chat._process.pid
+        chat.configure_context(131072, working_context_size=65536)
+        assert (
+            list(chat.stream_reply("archive", "ticket-567", working_dir=tmp_path))[-1][
+                0
+            ]
+            == "done"
+        )
+        assert chat._process.pid != previous_pid
+        assert "ticket-567 uses alpha.py" in json.dumps(
+            state["requests"][-1]["messages"]
+        )
+        assert (
+            list(chat.stream_reply("other", "ticket-567", working_dir=tmp_path))[-1][0]
+            == "done"
+        )
+        assert "ticket-567 uses alpha.py" not in json.dumps(
+            state["requests"][-1]["messages"]
+        )
+        assert not list(tmp_path.iterdir())
+    finally:
+        chat.close()
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_compacts_at_working_target_and_retains_ram_archive(
+    tmp_path, repeating_model
+):
+    port, state = repeating_model
+    state["answer"] = True
+    chat = NativeChat(model_port=port)
+    try:
+        assert (
+            list(
+                chat.stream_reply(
+                    "compact", "archive-padding " * 4000, working_dir=tmp_path
+                )
+            )[-1][0]
+            == "done"
+        )
+        result = list(
+            chat.stream_reply("compact", "recent-padding " * 2400, working_dir=tmp_path)
+        )
+        assert any(name == "compacted" for name, _ in result)
+        assert result[-1][0] == "done"
+        assert any(
+            entry.get("type") == "compaction"
+            for entry in chat.session("compact").entries
+        )
+        assert any(
+            "archive-padding" in json.dumps(entry.get("message", {}))
+            for entry in chat.session("compact").entries
+        )
+        assert (
+            list(chat.stream_reply("compact", "next-item", working_dir=tmp_path))[-1][0]
+            == "done"
+        )
+        wire = json.dumps(state["requests"][-1]["messages"])
+        assert "archive-padding" not in wire
+        assert "recent-padding" in wire
+        assert "fixture" in wire
+        assert chat.context_size == 131072
+        assert chat.max_output_tokens == 8192
+        assert not list(tmp_path.iterdir())
+    finally:
+        chat.close()
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_history_tool_recovers_original_text_without_write_approval(
+    tmp_path, repeating_model
+):
+    port, state = repeating_model
+    state["answer"] = True
+    chat = NativeChat(model_port=port)
+    try:
+        assert (
+            list(
+                chat.stream_reply(
+                    "lookup", "ticket-567 uses alpha.py", working_dir=tmp_path
+                )
+            )[-1][0]
+            == "done"
+        )
+        state.update(
+            answer=False,
+            tool="search_history",
+            input={"query": "ticket-567"},
+            answer_after=3,
+        )
+        result = list(
+            chat.stream_reply("lookup", "look up earlier item", working_dir=tmp_path)
+        )
+        assert result[-1][0] == "done"
+        assert not any(name == "approval" for name, _ in result)
+        assert any(
+            name == "tool"
+            and payload["tool"] == "search_history"
+            and payload["phase"] == "finished"
+            for name, payload in result
+        )
+        lookup = next(
+            message
+            for message in state["requests"][-1]["messages"]
+            if message["role"] == "tool"
+        )
+        assert "ticket-567 uses alpha.py" in json.dumps(lookup)
+        assert "Historical reference excerpts" in json.dumps(lookup)
+        assert not list(tmp_path.iterdir())
+    finally:
+        chat.close()
 
 
 def media_fixture():
@@ -584,6 +793,7 @@ def test_real_sdk_media_reaches_provider_and_ram_history(
             == "done"
         )
         for request in state["requests"]:
+            assert request["cache_prompt"] is True
             assert request["reasoning_effort"] == "none"
             assert request["max_completion_tokens"] == 8192
             assert request["chat_template_kwargs"]["enable_thinking"] is False

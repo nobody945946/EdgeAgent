@@ -98,6 +98,22 @@ try {
   assert(await evaluate('[...document.querySelector("#model-select").options].every(option=>!option.value.includes("lora"))'),'adapters excluded from model picker');
   assert(await evaluate('!!document.querySelector("#model-active").textContent'),'active model displayed');
   assert(await evaluate('Number(document.querySelector("#model-output").value)===modelState.config.max_output_tokens&&document.querySelector("#model-active").textContent.includes("輸出上限 "+modelState.max_output_tokens)'),'separate configured and effective output budgets displayed');
+  assert(await evaluate('Number(document.querySelector("#model-working").value)===modelState.config.working_context_size&&document.querySelector("#model-active").textContent.includes("工作目標 "+modelState.working_context_size)'),'working target displayed separately from engine capacity');
+  if(process.env.EDGE_AGENT_TEST_MEMORY){
+    const original=await evaluate('({...modelState.config})');
+    const before=await evaluate('({session,cwd:cwd.value,threads:threads.size})');
+    try{
+      await fill('#model-working','65536');await click('#model-switch');
+      await wait('modelState?.job.action==="switch"');await waitJob(original.model);
+      assert(await evaluate('modelState.working_context_size===65536&&modelState.context_size===131072&&modelState.max_output_tokens===8192'),'working target changed without reducing engine/output capacity');
+      assert.deepEqual(await evaluate('({session,cwd:cwd.value,threads:threads.size})'),before,'memory setting preserves conversation and workspace');
+      console.log('PASS: real UI working-target change, 128K capacity, 8K output and session retention');
+    }finally{
+      await fill('#model-working',String(original.working_context_size));await click('#model-switch');
+      await wait('modelState?.job.state==="running"||modelState?.config.working_context_size==='+original.working_context_size);await waitJob(original.model);
+      assert.deepEqual(await evaluate('({...modelState.config})'),original,'memory configuration restored');
+    }
+  }
   // Exercise polling with a synthetic adapter catalog in RAM; no private
   // adapter is selected, loaded, changed or downloaded.
   await evaluate(`(()=>{const original=window.fetch;window.__restoreModelFetch=()=>{window.fetch=original;delete window.__restoreModelFetch};window.fetch=async(...args)=>{const response=await original(...args);if(args[0]!=='/models')return response;const data=await response.clone().json(),base=data.models.find(item=>item.filename===data.config.model);data.config.lora='fixture-adapter.gguf';data.models.push({filename:'fixture-adapter.gguf',architecture:base.architecture,adapter:true,bytes:1});return new Response(JSON.stringify(data),{status:response.status,headers:response.headers})}})()`);
@@ -436,6 +452,6 @@ try {
   if(errors.length) console.error(JSON.stringify(errors));
   assert.deepEqual(expectedDirectoryStatuses,[400],'only the deliberate missing-directory request returns an expected error');
   assert.equal(errors.length,0,'browser errors');
-  console.log(JSON.stringify({event:'edge_browser_verification',passed:true,adapter_checks:process.env.EDGE_AGENT_TEST_ADAPTER_FILE?8:0,viewports:8,unexpected_errors:errors.length,expected_directory_http400:expectedDirectoryStatuses.length,expected_error_logs:expectedErrors.length}));
+  console.log(JSON.stringify({event:'edge_browser_verification',passed:true,memory_checks:process.env.EDGE_AGENT_TEST_MEMORY?5:1,adapter_checks:process.env.EDGE_AGENT_TEST_ADAPTER_FILE?8:0,viewports:8,unexpected_errors:errors.length,expected_directory_http400:expectedDirectoryStatuses.length,expected_error_logs:expectedErrors.length}));
   console.log('PASS: sidebar, new conversation, conversation switching, project dialog, workspace context, agent toggle, desktop and compact layout; 0 unexpected browser errors');
 } finally { socket.close(); }

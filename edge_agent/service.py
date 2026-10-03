@@ -23,6 +23,7 @@ from edge_agent.runtime import (
     CORE_ROOT,
     DEFAULT_AGENT_MODEL,
     DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_WORKING_CONTEXT_SIZE,
     GENERAL_CONTEXT_SIZE,
     GENERAL_PORT,
     MIN_AGENT_CONTEXT_SIZE,
@@ -41,6 +42,7 @@ DEFAULT_CONFIG: dict[str, object] = {
     "mmproj": "",
     "context_size": GENERAL_CONTEXT_SIZE,
     "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
+    "working_context_size": DEFAULT_WORKING_CONTEXT_SIZE,
     "gpu_layers": -1,
     "low_vram": True,
 }
@@ -213,6 +215,7 @@ class EdgeAgent:
             model_filename(merged["mmproj"])
         EdgeAgent._bounded_int(merged, "context_size", MIN_AGENT_CONTEXT_SIZE, 262144)
         EdgeAgent._bounded_int(merged, "max_output_tokens", 512, 131072)
+        EdgeAgent._bounded_int(merged, "working_context_size", 8192, 262144)
         EdgeAgent._bounded_int(merged, "gpu_layers", -1, 999)
         if not isinstance(merged["low_vram"], bool):
             raise TypeError("low_vram must be a boolean")
@@ -227,6 +230,7 @@ class EdgeAgent:
             "mmproj",
             "context_size",
             "max_output_tokens",
+            "working_context_size",
             "gpu_layers",
             "low_vram",
         }:
@@ -258,6 +262,9 @@ class EdgeAgent:
             "max_output_tokens": self.chat.max_output_tokens
             if self.mode == "base"
             else None,
+            "working_context_size": self.chat.working_context_size
+            if self.mode == "base"
+            else None,
             "job": job,
             "mode": self.mode,
             "loading": self.loading,
@@ -278,6 +285,7 @@ class EdgeAgent:
                     "mmproj",
                     "context_size",
                     "max_output_tokens",
+                    "working_context_size",
                     "gpu_layers",
                     "low_vram",
                 }:
@@ -630,6 +638,7 @@ class EdgeAgent:
             lora_path=lora_path,
             projector_path=projector_path,
             slots=2 if mode == "character" and lora_path else 1,
+            prompt_cache_mib=256 if mode == "base" else None,
         )
         preset = self.core_dir / ".runtime/models.ini"
         preset.parent.mkdir(parents=True, exist_ok=True)
@@ -723,6 +732,7 @@ class EdgeAgent:
                 model_path.name,
                 self.capabilities,
                 int(self.config["max_output_tokens"]),
+                int(self.config["working_context_size"]),
             )
 
     def _projector_path(self, filename: str) -> Path:

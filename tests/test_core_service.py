@@ -123,6 +123,7 @@ def test_automatic_device_fitting_preserves_large_context_and_cache_precision():
         threads=4,
         gpu_layers=-1,
         low_vram=True,
+        prompt_cache_mib=256,
     )
     assert _value_after(args, "--n-gpu-layers") == "auto"
     assert _value_after(args, "--ctx-size") == "131072"
@@ -130,6 +131,8 @@ def test_automatic_device_fitting_preserves_large_context_and_cache_precision():
     assert _value_after(args, "--fit-target") == "512"
     assert _value_after(args, "--cache-type-k") == "q8_0"
     assert _value_after(args, "--cache-type-v") == "q8_0"
+    assert _value_after(args, "--cache-ram") == "256"
+    assert _value_after(args, "--ctx-checkpoints") == "2"
 
 
 def test_character_server_gets_two_slots_and_lora() -> None:
@@ -149,6 +152,8 @@ def test_character_server_gets_two_slots_and_lora() -> None:
     assert _value_after(args, "--parallel") == "2"
     assert _value_after(args, "--lora") == "character.gguf"
     assert "--tools" not in args
+    assert "--cache-ram" not in args
+    assert "--ctx-checkpoints" not in args
 
 
 def test_config_never_persists_workspace_or_chat(tmp_path: Path) -> None:
@@ -182,6 +187,29 @@ def test_output_budget_is_validated_and_leased_client_is_separate(tmp_path):
     assert manager.models_status()["max_output_tokens"] is None
     with pytest.raises(ValueError):
         manager.update_config({"max_output_tokens": 8192})
+
+
+def test_working_target_is_separate_from_physical_capacity_and_output(tmp_path):
+    manager = service.EdgeAgent(tmp_path)
+    for value in (True, 0, 4096, 262145, "32768"):
+        with pytest.raises((ValueError, TypeError)):
+            manager._validated_config({"working_context_size": value})
+    with pytest.raises(ValueError):
+        manager.update_config({"working_context_size": 32768})
+    manager.chat.configure_context(
+        131072, max_output_tokens=8192, working_context_size=32768
+    )
+    assert manager.chat.context_size == 131072
+    assert manager.chat.max_output_tokens == 8192
+    assert manager.chat.working_context_size == 32768
+    manager.chat.configure_context(131072, working_context_size=131072)
+    assert manager.chat.working_context_size == 131072
+    manager.chat.configure_context(
+        16384, max_output_tokens=8192, working_context_size=8192
+    )
+    assert manager.chat.working_context_size == 16384
+    manager.mode = "character"
+    assert manager.models_status()["working_context_size"] is None
 
 
 def test_legacy_low_agent_context_migrates_without_resetting_other_settings(tmp_path):

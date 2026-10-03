@@ -2,6 +2,20 @@
 
 驗證日期：2026-10-02。平台為 Windows x64、RTX 3050 Ti 4 GB 筆電；產品版本 2.0.1。以下是已完成的實測，不是對任意模型或大型專案能力的保證。
 
+## RAM 工作記憶與前綴快取（2026-10-03）
+
+Agent 引擎仍使用實際 131,072 context、8,192 輸出額度、自動 GPU 分配與 q8 KV。新增 32,768 日常工作目標，透過既有 Pi compaction owner 提早整理歷史；沒有建立第二個摘要迴圈。原始 session tree 只留 RAM，檢索不含媒體／thinking、不跨對話，也不將自動節錄再次寫入 session。工作目標是摘要門檻的依據，不是硬截斷；SDK 保留訊息邊界，單則大訊息可能暫時超過目標。
+
+真實 pinned SDK 測試通過：20,480 token 整理門檻、原始歷史仍在 RAM、後續請求只含摘要與近期資料、按問題取回被摘要替換的舊文字、`search_history` 實際工具執行、跨 session 隔離，以及媒體／思考排除。SDK 當前完成事件是 `compaction_end`；host 已修正事件名稱，UI 能收到實際摘要完成通知。
+
+Agent 的 server preset 已實際套用 `cache-ram = 256`、`ctx-checkpoints = 2`，請求明確啟用 `cache_prompt`。這是已保存 prompt-state 快取的額度，不是 active KV 或模型權重的 RAM 上限。原生 Qwen 128K API 實測第一輪處理 517 prompt tokens、未命中快取，總時間 9.12 秒；第二輪 534 prompt tokens 中命中 513，只處理 21 個新增 tokens，總時間 1.61 秒。兩輪輸出均為 2 tokens，沒有據此推論其他工作能得到同樣加速。
+
+真實 Qwen 128K／32K 工作目標的修碼案例在 106.81 秒完成，使用 read、find、ls、edit、PowerShell。獨立 pytest exit 0、1 passed，三個平均值斷言通過，測試檔 SHA256 未改。最後回答 usage 為 input 36、cacheRead 2,947、output 21、total 3,004；無輸出截斷。這是單一小型案例，不代表填滿 100K 輸入或大型專案能力已建立。
+
+真實 Edge 的工作目標變更與還原有五項斷言通過：設定顯示、改為 65,536、保留 131,072 容量與 8,192 輸出、保留 UI session／workspace、完整配置還原。八種視窗尺寸通過；未預期 runtime／console／network 錯誤 0，預期不存在目錄 HTTP 400 為 1。原生瀏覽器與模型 API 各自驗證，沒有用 source grep 代替 UI 行為。
+
+完整 pytest 92 passed、39.61 秒、exit 0；Ruff check／format、JavaScript syntax 與 Git diff check 通過。角色租借未套用 Agent 的 RAM prompt-cache 額度或工作目標；SilentTalk runtime 未改。
+
 ## 128K context 與輸出額度驗證（2026-10-03）
 
 Agent 預設 context 改為 131,072，輸出上限獨立設定為 8,192，thinking off。此筆電實體 RAM 為 8,266,268,672 bytes，GPU 為 RTX 3050 Ti 4 GB。Qwen3.5-4B 與 E4B 都已實際載入 131,072；不是只修改介面數字。載入流程比對原生 `/props?model=local` 的 `n_ctx` 與要求值，不相符會拒絕成功狀態。
