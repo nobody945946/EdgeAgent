@@ -67,11 +67,12 @@ def sandbox(name: str, mounts: list[tuple[Path, str, str]], env: dict[str, str],
     return [*args, image, *command]
 
 
-def code_mounts(bridge: Path | None = None) -> list[tuple[Path, str, str]]:
+def code_mounts(bridge: Path | None = None,
+                product: Path = ROOT / "edge_agent") -> list[tuple[Path, str, str]]:
     """What the agent's sandbox may see: the product code and the two bench
     files it runs. Never the tasks (hidden tests and solutions live there).
     `bridge` overlays a variant of the product's agent_bridge.mjs."""
-    mounts = [(ROOT / "edge_agent", "/opt/edgeagent/edge_agent", "ro"),
+    mounts = [(product, "/opt/edgeagent/edge_agent", "ro"),
               (BENCH / "relay.py", "/opt/bench/relay.py", "ro"),
               (BENCH / "agent_runner.py", "/opt/bench/agent_runner.py", "ro")]
     if bridge is not None:
@@ -79,13 +80,13 @@ def code_mounts(bridge: Path | None = None) -> list[tuple[Path, str, str]]:
     return mounts
 
 
-def bridge_variant(config: dict, run_dir: Path) -> Path | None:
+def bridge_variant(config: dict, run_dir: Path, product: Path) -> Path | None:
     """The product bridge with the config's extra system-prompt lines, so a
     prompt change is measured before it is made in the product."""
     extra = config.get("system_prompt_append")
     if not extra:
         return None
-    source = (ROOT / "edge_agent/agent_bridge.mjs").read_text(encoding="utf-8")
+    source = (product / "agent_bridge.mjs").read_text(encoding="utf-8")
     anchor = "appendSystemPrompt: ["
     if source.count(anchor) != 1:
         raise SystemExit("agent_bridge.mjs changed; update bridge_variant")
@@ -128,7 +129,8 @@ class Server:
 
     def __init__(self, config: dict, run_dir: Path, parallel: int, port: int) -> None:
         self.port = port
-        model = MODELS / config["model"]
+        # Relative to the student models folder; teachers live next to it.
+        model = (MODELS / config["model"]).resolve()
         args = build_server_args(
             str(SERVER), model, port=port, context_size=config["context_size"],
             threads=8, gpu_layers=99, low_vram=config.get("low_vram", True),
@@ -137,7 +139,7 @@ class Server:
         # Bench-only: N agents share one server; each slot keeps the full window.
         args[args.index("--parallel") + 1] = str(parallel)
         args[args.index("--ctx-size") + 1] = str(config["context_size"] * parallel)
-        args += ["--fit", "off"]
+        args += ["--fit", "off", *config.get("extra_args", [])]
         # Weights and buffers, plus one full context window per parallel slot.
         need = config["vram_base_mib"] + config["vram_slot_mib"] * parallel
         while free_vram_mib() < need:
@@ -185,8 +187,11 @@ class Server:
         self.log.close()
 
 
+TASK_ROOT = BENCH / "tasks"
+
+
 def load_tasks(pattern: str) -> list[Path]:
-    found = sorted(p.parent for p in (BENCH / "tasks").glob("*/task.json"))
+    found = sorted(p.parent for p in TASK_ROOT.glob("*/task.json"))
     patterns = pattern.split(",")
     return [p for p in found if any(fnmatch.fnmatch(p.name, x) for x in patterns)]
 
@@ -271,9 +276,22 @@ def selftest(pattern: str) -> None:
 
 
 def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: Path,
-            sock_dir: Path, keep: bool, bridge: Path | None) -> dict:
+            sock_dir: Path, keep: bool, bridge: Path | None, product: Path,
+            record_port: int | None = None) -> dict:
     task = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
     job = f"{task_dir.name}-r{rep}"
+    relay = None
+    if record_port is not None:
+        # This job's own relay, keeping every request the Agent sends (the
+        # exact prompts training rows are rendered from).
+        sock_dir = run_dir / "jobsock" / job
+        sock_dir.mkdir(parents=True, exist_ok=True)
+        relay = subprocess.Popen(
+            [sys.executable, str(BENCH / "relay.py"), "--listen",
+             f"unix:{sock_dir / 'model.sock'}", "--connect", f"tcp:127.0.0.1:{record_port}",
+             "--record", str(run_dir / "records" / job)], stdout=subprocess.PIPE)
+        assert relay.stdout is not None
+        relay.stdout.readline()
     workspace, original = run_dir / "ws" / job, run_dir / "orig" / job
     prepare(task_dir, task, workspace, original)
     timeout = task.get("timeout_s", 900)
@@ -284,7 +302,7 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
             "timeout_s": timeout}
     name = f"eab-{config_name}-{job}".replace("_", "-")[:120]
     command = sandbox(name, [(workspace, "/work", "rw"), (sock_dir, "/sock", "ro"),
-                             *code_mounts(bridge)],
+                             *code_mounts(bridge, product)],
                       {"BENCH_SPEC": json.dumps(spec, ensure_ascii=False)},
                       ["python", "/opt/bench/agent_runner.py"],
                       image=task.get("image", IMAGE))
@@ -297,6 +315,10 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
         subprocess.run(["docker", "kill", name], capture_output=True)
         result = {"outcome": "killed"}
     wall = round(time.monotonic() - started, 1)
+    if relay is not None:
+        relay.terminate()
+        relay.wait(timeout=30)
+        shutil.rmtree(sock_dir, ignore_errors=True)
     trajectory = result.pop("trajectory", None)
     grade = grade_workspace(name, task_dir, original, workspace)
     if trajectory is not None:
@@ -358,7 +380,17 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=18189)
     parser.add_argument("--keep", action="store_true", help="keep workspaces")
     parser.add_argument("--tag", help="run directory name (default: the config name)")
+    parser.add_argument("--record", action="store_true",
+                        help="keep each job's model requests in run_dir/records (training data)")
+    parser.add_argument("--product", type=Path, default=ROOT / "edge_agent",
+                        help="edge_agent package to test (e.g. a development worktree)")
+    parser.add_argument("--task-root", type=Path,
+                        help="task directory (default bench/tasks; training tasks live in "
+                             ".runtime/agentdata/tasks)")
     args = parser.parse_args()
+    if args.task_root:
+        global TASK_ROOT
+        TASK_ROOT = args.task_root.resolve()
     if args.build:
         build_image()
         return
@@ -387,7 +419,13 @@ def main() -> None:
         return
     revision = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
                               capture_output=True, text=True).stdout.strip()
-    bridge = bridge_variant(config, run_dir)
+    # Pin the product code for this run: later edits never reach a run in
+    # progress, and a resumed run keeps the code it started with.
+    product = run_dir / "edge_agent"
+    if not product.is_dir():
+        shutil.copytree(args.product.resolve(), product,
+                        ignore=shutil.ignore_patterns("__pycache__"))
+    bridge = bridge_variant(config, run_dir, product)
     server = Server(config, run_dir, args.parallel, args.port)
     # A stopped run must not leave llama-server holding VRAM.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
@@ -397,7 +435,8 @@ def main() -> None:
 
         def work(job: tuple[Path, int]) -> None:
             row = run_job(job[0], job[1], args.config, config, run_dir, server.sock_dir,
-                          args.keep, bridge)
+                          args.keep, bridge, product,
+                          record_port=server.port if args.record else None)
             row["revision"] = revision
             with lock, results.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")

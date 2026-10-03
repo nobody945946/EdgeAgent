@@ -17,7 +17,12 @@ import subprocess
 from pathlib import Path
 
 BENCH = Path(__file__).resolve().parent
+# Bench (evaluation) repositories, plus the open-source repositories training
+# tasks are cut from (bench/make_tasks.py). The two sets never overlap.
 REPOS = {"silenttalk": Path("/home/clawd/SilentTalk")}
+TRAINING_REPOS = BENCH.parent / ".runtime/agentdata/repos"
+if TRAINING_REPOS.is_dir():
+    REPOS.update({p.name: p for p in sorted(TRAINING_REPOS.iterdir()) if (p / ".git").is_dir()})
 
 
 def git(repo: Path, *args: str) -> str:

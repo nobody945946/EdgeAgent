@@ -1,0 +1,10 @@
+# Training-task sandbox: the bench sandbox plus test dependencies of the
+# open-source repositories that training tasks are cut from. /work and
+# /work/src are importable, so any repository copied to /work runs its tests
+# without installation.
+ARG BASE
+FROM ${BASE}
+RUN pip install --no-cache-dir hypothesis freezegun text-unidecode Unidecode typeguard \
+    more-itertools simplejson pytz typing_extensions cloudpickle pympler pytest-xdist \
+    jaraco.text jaraco.context backports.tarfile \
+ && python -c "import site; open(site.getsitepackages()[0] + '/work.pth', 'w').write('/work/src\n/work\n')"
