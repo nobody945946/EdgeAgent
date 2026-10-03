@@ -1,0 +1,21 @@
+{
+ "kind": "repo",
+ "repo": "silenttalk",
+ "base": "835736d479a2e360faf69fa1f74cc80b0cffdf32",
+ "git": true,
+ "image": "edgeagent-bench-silenttalk:1",
+ "prompt": "這個專案要完成這項修改：「character_data: refine in random order, fall back to script lines」。對應的測試已經寫好在 tests/test_character_data.py，目前會失敗。請修改程式讓這些測試通過，不要修改測試檔，也不要動其他不相關的東西。",
+ "keep": [
+  "tests/test_character_data.py"
+ ],
+ "check": [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "tests/test_character_data.py"
+ ],
+ "timeout_s": 1500
+}

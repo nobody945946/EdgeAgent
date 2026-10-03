@@ -1,0 +1,18 @@
+{
+ "kind": "code",
+ "git": true,
+ "may_change": [
+  "report.py",
+  "tests/*"
+ ],
+ "prompt": "report.py 的 monthly_totals 遇到「1,234」這種有千分位的金額，或「2026/9/3」這種日期就會出錯。請修好，結果要依月份由舊到新排序。",
+ "check": [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "bench_hidden"
+ ]
+}

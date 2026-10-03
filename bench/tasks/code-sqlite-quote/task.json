@@ -1,0 +1,19 @@
+{
+ "kind": "code",
+ "git": true,
+ "may_change": [
+  "notes.py",
+  "tests/*",
+  "test_*.py"
+ ],
+ "prompt": "notes.py 存筆記時，標題裡有單引號（例如 it's）就會壞掉。請修好，順便把安全問題一起處理。",
+ "check": [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "bench_hidden"
+ ]
+}

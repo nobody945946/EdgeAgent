@@ -1,0 +1,23 @@
+{
+ "kind": "repo",
+ "repo": "silenttalk",
+ "base": "192620bd916fcdac1cc5ad4b01b47d978d8d5b45",
+ "git": true,
+ "image": "edgeagent-bench-silenttalk:1",
+ "prompt": "這個專案要完成這項修改：「Deploy SilentTalk from first launch through the independent E4B installer」。對應的測試已經寫好在 tests/test_edge_ai.py、tests/test_setup_copilot.py，目前會失敗。請修改程式讓這些測試通過，不要修改測試檔，也不要動其他不相關的東西。",
+ "keep": [
+  "tests/test_edge_ai.py",
+  "tests/test_setup_copilot.py"
+ ],
+ "check": [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "tests/test_edge_ai.py",
+  "tests/test_setup_copilot.py"
+ ],
+ "timeout_s": 1500
+}

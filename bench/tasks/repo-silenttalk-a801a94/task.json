@@ -1,0 +1,21 @@
+{
+ "kind": "repo",
+ "repo": "silenttalk",
+ "base": "78501b8bf4bff12e25920bc7d58dcf7b0301e753",
+ "git": true,
+ "image": "edgeagent-bench-silenttalk:1",
+ "prompt": "這個專案要完成這項修改：「Preset 凱哥 no longer asks for 欸/好啦 in every line」。對應的測試已經寫好在 tests/test_copilot_persona.py，目前會失敗。請修改程式讓這些測試通過，不要修改測試檔，也不要動其他不相關的東西。",
+ "keep": [
+  "tests/test_copilot_persona.py"
+ ],
+ "check": [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "tests/test_copilot_persona.py"
+ ],
+ "timeout_s": 1500
+}

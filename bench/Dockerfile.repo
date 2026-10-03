@@ -1,0 +1,9 @@
+# Bench sandbox plus one repository's own dependencies (its requirements*.txt
+# are copied into the build context by bench/run.py --build).
+ARG BASE
+FROM ${BASE}
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libportaudio2 libopus0 \
+ && rm -rf /var/lib/apt/lists/*
+COPY requirements*.txt /tmp/req/
+RUN pip install --no-cache-dir -r /tmp/req/requirements-dev.txt

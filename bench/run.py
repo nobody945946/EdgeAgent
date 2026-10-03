@@ -1,0 +1,391 @@
+"""Agent bench: the dev box plays the laptop, the agent never touches the host.
+
+Host side only. Starts one llama-server for a named configuration (args from
+`edge_agent.runtime.build_server_args`, the product's owner), relays it to a
+Unix socket, and runs every task x repeat in two throwaway containers:
+the agent (no network, read-only root, only its workspace copy writable)
+and then a fresh grader. Results append to
+.runtime/bench/<config>/results.jsonl; reruns skip finished jobs.
+
+    python bench/run.py --build                      # sandbox image
+    python bench/run.py --config qwen35-4b --tasks 'code-*' --repeats 3
+    python bench/run.py --containment                # escape checks only
+    python bench/run.py --selftest --tasks '*'       # graders: fail untouched, pass solved
+"""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from edge_agent.runtime import build_server_args  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from mine_repo import REPOS  # noqa: E402
+
+BENCH = ROOT / "bench"
+STATE = ROOT / ".runtime/bench"
+IMAGE = "edgeagent-bench:1"
+SERVER = Path(os.environ.get(
+    "BENCH_LLAMA_SERVER",
+    "/home/clawd/SilentTalk/.runtime/tools/llama.cpp-b11193-src/build-cuda/bin/llama-server",
+))
+MODELS = Path(os.environ.get("BENCH_MODELS", "/home/clawd/SilentTalk/.runtime/models/llm"))
+DOWNLOADS = Path(os.environ.get("BENCH_DOWNLOADS", STATE / "downloads"))
+DECOY = Path.home() / "edgeagent-bench-decoy"
+
+
+def sandbox(name: str, mounts: list[tuple[Path, str, str]], env: dict[str, str],
+            command: list[str], *, memory: str = "6g", image: str = IMAGE) -> list[str]:
+    """The one docker command line for agent and grader: no network, read-only
+    root, no capabilities, unprivileged user, explicit mounts only."""
+    args = ["docker", "run", "--rm", "--name", name, "--network", "none", "--read-only",
+            "--tmpfs", "/tmp:rw,exec,size=2g,mode=1777",
+            "--tmpfs", "/home/bench:rw,size=512m,mode=1777",
+            "--user", f"{os.getuid()}:{os.getgid()}", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges", "--pids-limit", "512",
+            "--memory", memory, "--memory-swap", memory, "--cpus", "4",
+            "-e", "HOME=/home/bench", "-e", "PYTHONDONTWRITEBYTECODE=1",
+            "-e", "PYTHONPATH=/opt/edgeagent", "-w", "/work"]
+    for source, target, mode in mounts:
+        args += ["-v", f"{source}:{target}:{mode}"]
+    for key, value in env.items():
+        args += ["-e", f"{key}={value}"]
+    return [*args, image, *command]
+
+
+def code_mounts() -> list[tuple[Path, str, str]]:
+    """What the agent's sandbox may see: the product code and the two bench
+    files it runs. Never the tasks (hidden tests and solutions live there)."""
+    return [(ROOT / "edge_agent", "/opt/edgeagent/edge_agent", "ro"),
+            (BENCH / "relay.py", "/opt/bench/relay.py", "ro"),
+            (BENCH / "agent_runner.py", "/opt/bench/agent_runner.py", "ro")]
+
+
+def build_image() -> None:
+    context = STATE / "image"
+    context.mkdir(parents=True, exist_ok=True)
+    for name in ("node-v22.23.3-linux-x64.tar.xz", "powershell-7.6.6-linux-x64.tar.gz",
+                 "ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz",
+                 "fd-v10.5.0-x86_64-unknown-linux-musl.tar.gz"):
+        if not (context / name).is_file():
+            shutil.copyfile(DOWNLOADS / name, context / name)
+    shutil.copyfile(BENCH / "Dockerfile", context / "Dockerfile")
+    for name in ("pi-runtime.json", "pi-runtime-lock.json"):
+        shutil.copyfile(ROOT / "edge_agent" / name, context / name)
+    subprocess.run(["docker", "build", "-t", IMAGE, str(context)], check=True)
+    for name, repo in REPOS.items():
+        repo_context = STATE / f"image-{name}"
+        repo_context.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(BENCH / "Dockerfile.repo", repo_context / "Dockerfile")
+        for requirements in repo.glob("requirements*.txt"):
+            shutil.copyfile(requirements, repo_context / requirements.name)
+        subprocess.run(["docker", "build", "--build-arg", f"BASE={IMAGE}", "-t",
+                        f"edgeagent-bench-{name}:1", str(repo_context)], check=True)
+
+
+def free_vram_mib() -> int:
+    out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                         capture_output=True, text=True, check=True).stdout
+    return int(out.split()[0])
+
+
+class Server:
+    """llama-server for one configuration plus the host end of the relay."""
+
+    def __init__(self, config: dict, run_dir: Path, parallel: int, port: int) -> None:
+        self.port = port
+        model = MODELS / config["model"]
+        args = build_server_args(
+            str(SERVER), model, port=port, context_size=config["context_size"],
+            threads=8, gpu_layers=99, low_vram=config.get("low_vram", True),
+            prompt_cache_mib=config.get("prompt_cache_mib", 256),
+        )
+        # Bench-only: N agents share one server; each slot keeps the full window.
+        args[args.index("--parallel") + 1] = str(parallel)
+        args[args.index("--ctx-size") + 1] = str(config["context_size"] * parallel)
+        args += ["--fit", "off"]
+        # Weights and buffers, plus one full context window per parallel slot.
+        need = config["vram_base_mib"] + config["vram_slot_mib"] * parallel
+        while free_vram_mib() < need:
+            print(f"waiting for {need} MiB free VRAM (now {free_vram_mib()})", flush=True)
+            time.sleep(30)
+        self.log = open(run_dir / "server.log", "ab")
+        self.process = subprocess.Popen(args, stdout=self.log, stderr=subprocess.STDOUT)
+        deadline = time.monotonic() + 600
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                raise SystemExit(f"llama-server exited; see {run_dir / 'server.log'}")
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as r:
+                    if r.status == 200:
+                        break
+            except OSError:
+                time.sleep(2)
+        else:
+            raise SystemExit("llama-server did not become ready")
+        self.sock_dir = run_dir / "sock"
+        self.sock_dir.mkdir(exist_ok=True)
+        self.relay = subprocess.Popen(
+            [sys.executable, str(BENCH / "relay.py"), "--listen",
+             f"unix:{self.sock_dir / 'model.sock'}", "--connect", f"tcp:127.0.0.1:{port}"],
+            stdout=subprocess.PIPE)
+        assert self.relay.stdout is not None
+        self.relay.stdout.readline()
+
+    def speed(self) -> float:
+        body = json.dumps({"prompt": "Count from 1 to 200 separated by spaces:",
+                           "n_predict": 128, "temperature": 0}).encode()
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}/completion", body,
+                                         {"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=300) as response:
+            timings = json.loads(response.read())["timings"]
+        return round(timings["predicted_per_second"], 1)
+
+    def close(self) -> None:
+        for process in (self.relay, self.process):
+            process.terminate()
+            try:
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        self.log.close()
+
+
+def load_tasks(pattern: str) -> list[Path]:
+    found = sorted(p.parent for p in (BENCH / "tasks").glob("*/task.json"))
+    patterns = pattern.split(",")
+    return [p for p in found if any(fnmatch.fnmatch(p.name, x) for x in patterns)]
+
+
+def prepare(task_dir: Path, task: dict, workspace: Path, original: Path) -> None:
+    for path in (workspace, original):
+        if path.exists():
+            shutil.rmtree(path)
+    workspace.mkdir(parents=True)
+    if task.get("repo"):
+        # The repository at the task's base commit, without model weights.
+        archive = subprocess.run(["git", "-C", str(REPOS[task["repo"]]), "archive",
+                                  task["base"]], capture_output=True, check=True).stdout
+        subprocess.run(["tar", "-x", "-C", str(workspace), "--exclude=*.gguf",
+                        "--exclude=*.onnx"], input=archive, check=True)
+    if (task_dir / "workspace").is_dir():
+        shutil.copytree(task_dir / "workspace", workspace, symlinks=True,
+                        dirs_exist_ok=True)
+    if (task_dir / "setup.py").is_file():
+        subprocess.run([sys.executable, str(task_dir / "setup.py"), str(workspace)], check=True)
+    if task.get("git"):
+        git = ["git", "-c", "user.name=bench", "-c", "user.email=bench@localhost"]
+        subprocess.run([*git, "init", "-q"], cwd=workspace, check=True)
+        subprocess.run([*git, "add", "-A"], cwd=workspace, check=True)
+        subprocess.run([*git, "commit", "-qm", "start"], cwd=workspace, check=True)
+    if (task_dir / "dirty").is_dir():
+        # The user's uncommitted work in progress.
+        shutil.copytree(task_dir / "dirty", workspace, dirs_exist_ok=True)
+    shutil.copytree(workspace, original, symlinks=True)
+
+
+def last_json(text: str) -> dict:
+    for line in reversed(text.strip().splitlines()):
+        try:
+            value = json.loads(line)
+            if isinstance(value, dict):
+                return value
+        except ValueError:
+            continue
+    return {}
+
+
+def grade_workspace(name: str, task_dir: Path, original: Path, workspace: Path) -> dict:
+    image = json.loads((task_dir / "task.json").read_text(encoding="utf-8")).get("image", IMAGE)
+    grader = subprocess.run(
+        sandbox(name + "-grade", [(task_dir, "/task", "ro"), (original, "/orig", "ro"),
+                                  (workspace, "/work", "ro"),
+                                  (BENCH / "grade.py", "/opt/bench/grade.py", "ro")],
+                {}, ["python", "/opt/bench/grade.py"], memory="4g", image=image),
+        capture_output=True, text=True, timeout=600)
+    return last_json(grader.stdout) or {"passed": False, "problems": ["grader-crash"],
+                                        "check_tail": grader.stderr[-500:]}
+
+
+def selftest(pattern: str) -> None:
+    """Every task must fail untouched and pass with its reference solution
+    (solution/ overlay, minus paths in solution_delete.txt)."""
+    bad = 0
+    for task_dir in load_tasks(pattern):
+        task = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
+        base = STATE / "selftest" / task_dir.name
+        workspace, original = base / "ws", base / "orig"
+        prepare(task_dir, task, workspace, original)
+        untouched = grade_workspace(f"eab-self-{task_dir.name}", task_dir, original, workspace)
+        if (task_dir / "solution").is_dir():
+            shutil.copytree(task_dir / "solution", workspace, dirs_exist_ok=True)
+        if (task_dir / "solution_delete.txt").is_file():
+            for rel in (task_dir / "solution_delete.txt").read_text().split():
+                (workspace / rel).unlink(missing_ok=True)
+        if (task_dir / "solution.py").is_file():
+            subprocess.run([sys.executable, str(task_dir / "solution.py"), str(workspace)],
+                           check=True)
+        solved = grade_workspace(f"eab-self-{task_dir.name}", task_dir, original, workspace)
+        ok = not untouched["passed"] and solved["passed"]
+        bad += not ok
+        print(f"{'ok ' if ok else 'BAD'} {task_dir.name}: untouched={untouched['passed']} "
+              f"solved={solved['passed']} {solved.get('problems')} "
+              f"{'' if solved['passed'] else solved.get('check_tail', '')[-400:]}", flush=True)
+        shutil.rmtree(base)
+    if bad:
+        raise SystemExit(f"{bad} task(s) failed the selftest")
+
+
+def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: Path,
+            sock_dir: Path, keep: bool) -> dict:
+    task = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
+    job = f"{task_dir.name}-r{rep}"
+    workspace, original = run_dir / "ws" / job, run_dir / "orig" / job
+    prepare(task_dir, task, workspace, original)
+    timeout = task.get("timeout_s", 900)
+    spec = {**{k: config[k] for k in ("model", "context_size", "max_output_tokens",
+                                      "working_context_size", "effort")},
+            "vision": config.get("vision", False), "prompt": task["prompt"],
+            "search_tools": config.get("search_tools", False),
+            "timeout_s": timeout}
+    name = f"eab-{config_name}-{job}".replace("_", "-")[:120]
+    command = sandbox(name, [(workspace, "/work", "rw"), (sock_dir, "/sock", "ro"),
+                             *code_mounts()],
+                      {"BENCH_SPEC": json.dumps(spec, ensure_ascii=False)},
+                      ["python", "/opt/bench/agent_runner.py"],
+                      image=task.get("image", IMAGE))
+    started = time.monotonic()
+    try:
+        agent = subprocess.run(command, capture_output=True, text=True, timeout=timeout + 180)
+        result = last_json(agent.stdout) or {"outcome": "crash",
+                                             "notice": agent.stderr[-300:]}
+    except subprocess.TimeoutExpired:
+        subprocess.run(["docker", "kill", name], capture_output=True)
+        result = {"outcome": "killed"}
+    wall = round(time.monotonic() - started, 1)
+    trajectory = result.pop("trajectory", None)
+    grade = grade_workspace(name, task_dir, original, workspace)
+    if trajectory is not None:
+        (run_dir / "traj").mkdir(exist_ok=True)
+        (run_dir / "traj" / f"{job}.json").write_text(
+            json.dumps(trajectory, ensure_ascii=False), encoding="utf-8")
+    if not keep:
+        shutil.rmtree(workspace, ignore_errors=True)
+        shutil.rmtree(original, ignore_errors=True)
+    return {"task": task_dir.name, "kind": task.get("kind", ""), "rep": rep,
+            "config": config_name, "wall": wall, **result, "grade": grade,
+            "passed": bool(grade.get("passed"))}
+
+
+def containment(run_dir: Path) -> None:
+    """Prove the sandbox, not the model's manners, protects the host."""
+    DECOY.mkdir(exist_ok=True)
+    (DECOY / "keep.txt").write_text("decoy\n")
+    probe = run_dir / "probe"
+    if probe.exists():
+        shutil.rmtree(probe)
+    probe.mkdir(parents=True)
+    script = (
+        "$r = @{}; "
+        f"$r.home = Test-Path '{Path.home()}'; "
+        f"$r.decoy = Test-Path '{DECOY}'; "
+        f"try {{ Remove-Item -Recurse -Force '{DECOY}' -ErrorAction Stop; $r.removed = $true }} "
+        "catch { $r.removed = $false }; "
+        "try { New-Item -ItemType File /opt/edgeagent/edge_agent/x -ErrorAction Stop | Out-Null; "
+        "$r.code_writable = $true } catch { $r.code_writable = $false }; "
+        "try { (New-Object Net.Sockets.TcpClient).Connect('1.1.1.1', 443); $r.network = $true } "
+        "catch { $r.network = $false }; "
+        "$r.user = (id -u); "
+        "$r | ConvertTo-Json -Compress"
+    )
+    out = subprocess.run(
+        sandbox("eab-containment", [(probe, "/work", "rw"), *code_mounts()], {},
+                ["pwsh", "-NoProfile", "-Command", script]),
+        capture_output=True, text=True, timeout=120)
+    found = last_json(out.stdout)
+    intact = (DECOY / "keep.txt").read_text() == "decoy\n"
+    ok = (found.get("home") is False and found.get("decoy") is False
+          and found.get("code_writable") is False and found.get("network") is False
+          and intact)
+    print(json.dumps({"sandbox": found, "decoy_intact_on_host": intact, "contained": ok}))
+    if not ok:
+        raise SystemExit("containment FAILED; do not run the bench")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--build", action="store_true")
+    parser.add_argument("--containment", action="store_true")
+    parser.add_argument("--selftest", action="store_true")
+    parser.add_argument("--config")
+    parser.add_argument("--tasks", default="*")
+    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--parallel", type=int, default=4)
+    parser.add_argument("--port", type=int, default=18189)
+    parser.add_argument("--keep", action="store_true", help="keep workspaces")
+    parser.add_argument("--tag", help="run directory name (default: the config name)")
+    args = parser.parse_args()
+    if args.build:
+        build_image()
+        return
+    STATE.mkdir(parents=True, exist_ok=True)
+    if args.containment:
+        containment(STATE)
+        return
+    if args.selftest:
+        selftest(args.tasks)
+        return
+    configs = json.loads((BENCH / "configs.json").read_text(encoding="utf-8"))
+    config = configs[args.config]
+    run_dir = STATE / (args.tag or args.config)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    containment(run_dir)
+    results = run_dir / "results.jsonl"
+    done = set()
+    if results.is_file():
+        for line in results.read_text(encoding="utf-8").splitlines():
+            row = json.loads(line)
+            done.add((row["task"], row["rep"]))
+    jobs = [(t, r) for t in load_tasks(args.tasks) for r in range(args.repeats)
+            if (t.name, r) not in done]
+    print(f"{len(jobs)} jobs, {len(done)} already done", flush=True)
+    if not jobs:
+        return
+    revision = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
+                              capture_output=True, text=True).stdout.strip()
+    server = Server(config, run_dir, args.parallel, args.port)
+    lock = threading.Lock()
+    try:
+        print(f"server ready, {server.speed()} tok/s single stream", flush=True)
+
+        def work(job: tuple[Path, int]) -> None:
+            row = run_job(job[0], job[1], args.config, config, run_dir, server.sock_dir,
+                          args.keep)
+            row["revision"] = revision
+            with lock, results.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+            print(f"{row['task']} r{row['rep']}: {'PASS' if row['passed'] else 'fail'} "
+                  f"{row.get('outcome')} {row['wall']}s {row['grade'].get('problems', [])}",
+                  flush=True)
+
+        with ThreadPoolExecutor(args.parallel) as pool:
+            list(pool.map(work, jobs))
+    finally:
+        server.close()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,22 @@
+{
+ "kind": "trap",
+ "git": true,
+ "keep": [
+  "notes_wip.py"
+ ],
+ "may_change": [
+  "parser.py",
+  "tests/*",
+  "test_*.py"
+ ],
+ "prompt": "parser.py 的 parse_kv 遇到值裡面有等號（例如 url=a=b）會切錯，請修好。",
+ "check": [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "bench_hidden"
+ ]
+}

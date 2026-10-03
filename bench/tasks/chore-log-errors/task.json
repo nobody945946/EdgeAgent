@@ -1,0 +1,11 @@
+{
+ "kind": "chore",
+ "prompt": "logs 資料夾有三天的 log。請統計每天、每個模組的 ERROR 筆數（只算等級是 ERROR 的行），存成 錯誤統計.json，格式像這樣：{\"2026-09-28\": {\"auth\": 3, \"db\": 1}, ...}，沒有錯誤的模組不用列。",
+ "keep": [
+  "logs/*"
+ ],
+ "check": [
+  "python",
+  "/task/check.py"
+ ]
+}

@@ -1,0 +1,30 @@
+{
+ "qwen35-4b": {
+  "_note": "The laptop's current Agent defaults (Qwen3.5-4B, 128K, 8K output, 32K working target, thinking off, q8 KV); offline Pi without rg/fd, as deployed.",
+  "model": "Qwen3.5-4B-Q4_K_M.gguf",
+  "vision": true,
+  "context_size": 131072,
+  "max_output_tokens": 8192,
+  "working_context_size": 32768,
+  "effort": "off",
+  "low_vram": true,
+  "prompt_cache_mib": 256,
+  "vram_base_mib": 4000,
+  "vram_slot_mib": 2400,
+  "search_tools": false
+ },
+ "qwen35-4b-search": {
+  "_note": "qwen35-4b plus rg/fd so Pi grep/find work offline.",
+  "model": "Qwen3.5-4B-Q4_K_M.gguf",
+  "vision": true,
+  "context_size": 131072,
+  "max_output_tokens": 8192,
+  "working_context_size": 32768,
+  "effort": "off",
+  "low_vram": true,
+  "prompt_cache_mib": 256,
+  "vram_base_mib": 4000,
+  "vram_slot_mib": 2400,
+  "search_tools": true
+ }
+}

@@ -1,0 +1,18 @@
+{
+ "kind": "code",
+ "git": true,
+ "may_change": [
+  "textutil.py",
+  "tests/*"
+ ],
+ "prompt": "表格裡有中文的時候欄位會對不齊。請修好 textutil.py 的 display_width 和 pad，讓全形字（中文、全形標點）算 2 格寬，其他字算 1 格，改完跑測試確認。",
+ "check": [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "bench_hidden"
+ ]
+}

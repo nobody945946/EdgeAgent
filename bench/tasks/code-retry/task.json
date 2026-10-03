@@ -1,0 +1,19 @@
+{
+ "kind": "code",
+ "git": true,
+ "may_change": [
+  "net.py",
+  "tests/*",
+  "test_*.py"
+ ],
+ "prompt": "幫我在 net.py 實作 retry，規格寫在 docstring 裡。",
+ "check": [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "bench_hidden"
+ ]
+}

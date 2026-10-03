@@ -1,0 +1,25 @@
+{
+ "kind": "repo",
+ "repo": "silenttalk",
+ "base": "a3ab8bf203900dc6642222fb45f28f530d753aa6",
+ "git": true,
+ "image": "edgeagent-bench-silenttalk:1",
+ "prompt": "這個專案要完成這項修改：「Fix effective Copilot setup and owner voice」。對應的測試已經寫好在 tests/test_copilot_runtime.py、tests/test_setup_copilot.py、tests/test_voice_receive.py，目前會失敗。請修改程式讓這些測試通過，不要修改測試檔，也不要動其他不相關的東西。",
+ "keep": [
+  "tests/test_copilot_runtime.py",
+  "tests/test_setup_copilot.py",
+  "tests/test_voice_receive.py"
+ ],
+ "check": [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "tests/test_copilot_runtime.py",
+  "tests/test_setup_copilot.py",
+  "tests/test_voice_receive.py"
+ ],
+ "timeout_s": 1500
+}

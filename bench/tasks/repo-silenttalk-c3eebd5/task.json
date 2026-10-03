@@ -1,0 +1,21 @@
+{
+ "kind": "repo",
+ "repo": "silenttalk",
+ "base": "4455ba7c0b891ade3e77e40ed34c7a95b29d47a4",
+ "git": true,
+ "image": "edgeagent-bench-silenttalk:1",
+ "prompt": "這個專案要完成這項修改：「STT check paced by the reader; RTP loss from sequence numbers」。對應的測試已經寫好在 tests/test_voice_receive.py，目前會失敗。請修改程式讓這些測試通過，不要修改測試檔，也不要動其他不相關的東西。",
+ "keep": [
+  "tests/test_voice_receive.py"
+ ],
+ "check": [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "tests/test_voice_receive.py"
+ ],
+ "timeout_s": 1500
+}

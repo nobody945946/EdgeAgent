@@ -1,0 +1,19 @@
+{
+ "kind": "code",
+ "git": true,
+ "may_change": [
+  "fetcher.py",
+  "tests/*",
+  "test_*.py"
+ ],
+ "prompt": "fetcher.py 的 fetch_all 現在一次把所有網址同時送出，對方伺服器會擋。請改成最多同時 limit 個（預設 3），結果要照輸入順序回傳；某個網址失敗時不要整批失敗，那一格放那個例外物件就好。",
+ "check": [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "bench_hidden"
+ ]
+}

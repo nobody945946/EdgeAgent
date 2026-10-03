@@ -1,0 +1,11 @@
+{
+ "kind": "chore",
+ "keep": [
+  "文件/*"
+ ],
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "prompt": "幫我寫一個 PowerShell 腳本 備份.ps1，放在目前資料夾：把 文件 資料夾整個複製到 備份\\yyyyMMdd（今天的日期），但不要複製 .tmp 檔和 ~$ 開頭的 Office 暫存檔。寫好後執行一次確認可以用。"
+}

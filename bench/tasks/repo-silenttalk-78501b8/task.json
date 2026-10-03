@@ -1,0 +1,23 @@
+{
+ "kind": "repo",
+ "repo": "silenttalk",
+ "base": "cda507623a2689bed5a1cf020813924dbd11a9b6",
+ "git": true,
+ "image": "edgeagent-bench-silenttalk:1",
+ "prompt": "這個專案要完成這項修改：「Tell the model particles are an occasional habit, not a quota」。對應的測試已經寫好在 tests/test_copilot_llm.py、tests/test_copilot_persona.py，目前會失敗。請修改程式讓這些測試通過，不要修改測試檔，也不要動其他不相關的東西。",
+ "keep": [
+  "tests/test_copilot_llm.py",
+  "tests/test_copilot_persona.py"
+ ],
+ "check": [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "tests/test_copilot_llm.py",
+  "tests/test_copilot_persona.py"
+ ],
+ "timeout_s": 1500
+}

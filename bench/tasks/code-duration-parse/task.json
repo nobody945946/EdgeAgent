@@ -1,0 +1,19 @@
+{
+ "kind": "code",
+ "git": true,
+ "may_change": [
+  "timeparse.py",
+  "tests/*",
+  "test_*.py"
+ ],
+ "prompt": "timeparse.py 裡 parse_duration 和 parse_timeout 幾乎是重複的程式，請整理成共用一份，並且支援中文寫法：「1小時30分」、「45秒」、「2天」、「1天2小時」（也可以混用英文 1h30m）。",
+ "check": [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "bench_hidden"
+ ]
+}

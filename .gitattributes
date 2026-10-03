@@ -1,0 +1,2 @@
+# Dev-box agent bench: never part of the player/source distribution.
+bench/ export-ignore

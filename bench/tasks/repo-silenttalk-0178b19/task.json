@@ -1,0 +1,21 @@
+{
+ "kind": "repo",
+ "repo": "silenttalk",
+ "base": "08cdc9d1daafcfa694f56baada7bd2759a575f12",
+ "git": true,
+ "image": "edgeagent-bench-silenttalk:1",
+ "prompt": "這個專案要完成這項修改：「Let \"active\" mode join in only after a quiet stretch」。對應的測試已經寫好在 tests/test_copilot_llm.py，目前會失敗。請修改程式讓這些測試通過，不要修改測試檔，也不要動其他不相關的東西。",
+ "keep": [
+  "tests/test_copilot_llm.py"
+ ],
+ "check": [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "tests/test_copilot_llm.py"
+ ],
+ "timeout_s": 1500
+}
