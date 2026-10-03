@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
+from edge_agent.permissions import DEFAULT_PERMISSIONS, bridge_rules
 from edge_agent.runtime import (
     CORE_ROOT,
     DEFAULT_MAX_OUTPUT_TOKENS,
@@ -346,7 +347,13 @@ class NativeChat:
             process.stdout.close()
 
     def _start(
-        self, session: ChatSession, cwd: Path, effort: str, agent: bool, plan: bool
+        self,
+        session: ChatSession,
+        cwd: Path,
+        effort: str,
+        agent: bool,
+        plan: bool,
+        permissions: dict[str, str],
     ) -> None:
         key = (
             id(session),
@@ -360,6 +367,7 @@ class NativeChat:
             effort,
             agent,
             plan,
+            tuple(sorted(permissions.items())),
         )
         if self._active_key == key and self._process and self._process.poll() is None:
             return
@@ -414,6 +422,7 @@ class NativeChat:
                 "thinking_effort": effort,
                 "agent": agent,
                 "plan": plan,
+                "permissions": permissions,
                 "entries": session.entries,
                 "pending_messages": session.messages,
             }
@@ -431,6 +440,7 @@ class NativeChat:
         working_dir: Path | None = None,
         plan: bool = False,
         media: list[dict[str, str]] | None = None,
+        permissions: dict[str, str] | None = None,
     ) -> Iterator[tuple[str, dict[str, object]]]:
         if thinking_effort not in THINKING_PROFILES:
             raise ValueError("invalid thinking_effort")
@@ -487,7 +497,8 @@ class NativeChat:
                         raise ValueError(
                             "此對話包含目前模型不支援的附件；請換回支援的模型或開啟新對話。"
                         )
-                self._start(session, cwd, thinking_effort, agent, plan)
+                rules = permissions or bridge_rules(DEFAULT_PERMISSIONS["ui"])
+                self._start(session, cwd, thinking_effort, agent, plan, rules)
                 prompt_id = uuid4().hex
                 self._send(
                     {
