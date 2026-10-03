@@ -24,6 +24,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -238,6 +239,86 @@ def write_task(name: str, base: str, candidate: dict, result: dict, tests: list[
                                         encoding="utf-8")
 
 
+DESCRIBE_SYSTEM = (
+    "你在幫忙產生寫程式助理的練習題。給你一份題目規格（哪個函式有問題、哪些測試失敗），"
+    "請寫出一位台灣開發者實際會打給他的程式助理的一段請求，用台灣繁體中文。"
+)
+STYLES = ("很簡短，像在聊天室隨手打的", "有禮貌、交代清楚", "有點急、只描述症狀",
+          "像在回報 issue，附上失敗的測試名稱", "口語，夾雜一兩個英文技術詞",
+          "先說自己在做什麼專案，再說遇到的問題")
+
+
+def describe_prompt(task: dict, style: str) -> str:
+    spec = task["spec"]
+    what = ("這個函式的實作被拿掉了，要請助理依照函式名稱、docstring 和測試把它實作出來"
+            if spec["kind"] == "implement" else "這個函式有一個 bug，導致下面的測試失敗")
+    return f"""題目規格：
+- 專案：{task["repo"]}（Python 開源函式庫）
+- 檔案：{spec["file"]}
+- 函式：{spec["function"]}
+- 狀況：{what}
+- 失敗的測試：{", ".join(spec["failing_tests"][:6])}
+- 錯誤訊息節錄：
+{spec["error_excerpt"][:900]}
+
+寫法：{style}。
+規則：
+1. 只描述現象和要做的事，不要說出要怎麼修、錯在哪一行或正確的程式碼。
+2. 可以提檔名、函式名或測試名，但不一定全部都提；不要提到「題目」「規格」「練習」。
+3. 一到四句，不要用條列。
+只輸出 JSON：{{"request": "..."}}"""
+
+
+def describe(url: str, workers: int, seed: int) -> None:
+    """Fill each task's prompt with a request written by an open-weight
+    teacher; the spec itself never reaches the agent."""
+    rng = random.Random(seed)
+    pending = []
+    for path in sorted(TASKS.glob("*/task.json")):
+        task = json.loads(path.read_text(encoding="utf-8"))
+        if not task.get("prompt"):
+            pending.append((path, task, rng.choice(STYLES)))
+
+    def one(item: tuple[Path, dict, str]) -> bool:
+        path, task, style = item
+        body = json.dumps({
+            "messages": [{"role": "system", "content": DESCRIBE_SYSTEM},
+                         {"role": "user", "content": describe_prompt(task, style)}],
+            "temperature": 0.9, "max_tokens": 400,
+            "response_format": {"type": "json_object"},
+            "chat_template_kwargs": {"enable_thinking": False}}).encode()
+        request = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions", body,
+                                         {"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=600) as response:
+                content = json.loads(response.read())["choices"][0]["message"]["content"]
+            text = str(json.loads(content)["request"]).strip()
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+        original = (REPOS / task["repo"] / task["spec"]["file"]).read_text(encoding="utf-8")
+        mutated = task_dir_file(path) or ""
+        # Reject requests that leak the fix: a line of the original code that
+        # the mutation changed must not appear in the request.
+        changed = set(original.splitlines()) - set(mutated.splitlines())
+        if not 8 <= len(text) <= 400 or any(
+                len(line.strip()) > 12 and line.strip() in text for line in changed):
+            return False
+        task["prompt"] = text
+        task["prompt_style"] = style
+        path.write_text(json.dumps(task, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        return True
+
+    with ThreadPoolExecutor(workers) as executor:
+        done = sum(executor.map(one, pending))
+    print(f"described {done}/{len(pending)} tasks")
+
+
+def task_dir_file(task_json: Path) -> str | None:
+    task = json.loads(task_json.read_text(encoding="utf-8"))
+    path = task_json.parent / "workspace" / task["spec"]["file"]
+    return path.read_text(encoding="utf-8") if path.is_file() else None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -246,7 +327,13 @@ def main() -> None:
     c.add_argument("--per-repo", type=int, default=120)
     c.add_argument("--seed", type=int, default=1)
     c.add_argument("--workers", type=int, default=12)
+    d = sub.add_parser("describe")
+    d.add_argument("--url", required=True, help="teacher llama-server base URL")
+    d.add_argument("--workers", type=int, default=4)
+    d.add_argument("--seed", type=int, default=3)
     args = parser.parse_args()
+    if args.command == "describe":
+        describe(args.url, args.workers, args.seed)
     if args.command == "cut":
         cut(args.repos.split(","), args.per_repo, args.seed, args.workers)
 
