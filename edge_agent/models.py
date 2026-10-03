@@ -6,6 +6,7 @@ import json
 import re
 import struct
 import urllib.request
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
 
@@ -24,6 +25,13 @@ def model_filename(value: object) -> str:
 
 
 def model_metadata(path: Path) -> dict[str, object]:
+    path = path.resolve()
+    stat = path.stat()
+    return dict(_read_model_metadata(path, stat.st_size, stat.st_mtime_ns))
+
+
+@lru_cache(maxsize=128)
+def _read_model_metadata(path: Path, size: int, mtime_ns: int) -> dict[str, object]:
     """Read GGUF metadata without loading weights or tokenizer arrays into RAM."""
     sizes = {
         0: "B",
@@ -39,7 +47,6 @@ def model_metadata(path: Path) -> dict[str, object]:
         12: "d",
     }
     with path.open("rb") as stream:
-        size = path.stat().st_size
 
         def read(length: int) -> bytes:
             if length < 0 or length > 16 * 1024 * 1024:
@@ -95,6 +102,8 @@ def model_metadata(path: Path) -> dict[str, object]:
                 "adapter.type",
                 "split.count",
                 "tokenizer.chat_template",
+                "clip.has_vision_encoder",
+                "clip.has_audio_encoder",
             } or key.endswith(".context_length")
             item = value(number("I"), keep)
             if keep:
@@ -106,6 +115,9 @@ def model_metadata(path: Path) -> dict[str, object]:
         "name": metadata.get("general.name") or path.stem,
         "bytes": size,
         "architecture": architecture,
+        "projector": architecture == "clip",
+        "vision": metadata.get("clip.has_vision_encoder") is True,
+        "audio": metadata.get("clip.has_audio_encoder") is True,
         "context_length": metadata.get(architecture + ".context_length", 0),
         "adapter": metadata.get("general.type") == "adapter"
         or "adapter.type" in metadata,
@@ -155,10 +167,7 @@ def hub_catalog(repository: object) -> dict[str, object]:
         filename = sibling.get("rfilename", "")
         if not filename.lower().endswith(".gguf"):
             continue
-        # Split weights and multimodal projectors are not standalone text models.
-        if re.search(r"-\d{5}-of-\d{5}\.gguf$", filename) or Path(
-            filename
-        ).name.startswith("mmproj"):
+        if re.search(r"-\d{5}-of-\d{5}\.gguf$", filename):
             continue
         digest = (sibling.get("lfs") or {}).get("sha256", "")
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -166,6 +175,7 @@ def hub_catalog(repository: object) -> dict[str, object]:
         files.append(
             {
                 "filename": filename,
+                "projector": Path(filename).name.lower().startswith("mmproj"),
                 "sha256": digest,
                 "bytes": sibling.get("size", 0),
                 "url": f"https://huggingface.co/{repository}/resolve/{revision}/{quote(filename, safe='/')}",

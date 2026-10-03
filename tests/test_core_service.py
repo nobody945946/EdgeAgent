@@ -98,6 +98,22 @@ def test_base_server_is_one_slot_without_an_extra_agent_loop() -> None:
     assert "--tools" not in args
 
 
+def test_multimodal_projector_uses_canonical_server_and_low_vram_policy():
+    args = runtime.build_server_args(
+        "llama-server",
+        Path("base.gguf"),
+        port=runtime.GENERAL_PORT,
+        context_size=4096,
+        threads=4,
+        gpu_layers=99,
+        low_vram=True,
+        projector_path=Path("mmproj.gguf"),
+    )
+    assert _value_after(args, "--mmproj") == "mmproj.gguf"
+    assert "--no-mmproj-offload" in args
+    assert _value_after(args, "--parallel") == "1"
+
+
 def test_character_server_gets_two_slots_and_lora() -> None:
     args = runtime.build_server_args(
         "llama-server",

@@ -42,6 +42,7 @@ def build_server_args(
     gpu_layers: int,
     low_vram: bool,
     lora_path: Path | None = None,
+    projector_path: Path | None = None,
     slots: int = 1,
 ) -> list[str]:
     """Build the one canonical llama-server command for every core mode."""
@@ -67,6 +68,10 @@ def build_server_args(
     ]
     if lora_path is not None:
         args += ["--lora", str(lora_path)]
+    if projector_path is not None:
+        args += ["--mmproj", str(projector_path)]
+        if low_vram:
+            args += ["--no-mmproj-offload"]
     if low_vram:
         args += [
             "--flash-attn",

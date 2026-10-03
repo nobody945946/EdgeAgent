@@ -41,7 +41,9 @@ const modelRuntime = await sdk.ModelRuntime.create({
 });
 modelRuntime.registerProvider('local', {
   api: 'openai-completions', baseUrl: init.model_url + '/v1', apiKey: 'local',
-  models: [{ id: init.model, name: init.model_name, reasoning: true, input: ['text'],
+  models: [{ id: init.model, name: init.model_name, reasoning: true,
+    thinkingLevelMap: { off: 'none' },
+    input: init.capabilities?.vision || init.capabilities?.audio ? ['text', 'image'] : ['text'],
     contextWindow: init.context_size, maxTokens: Math.min(4096, Math.floor(init.context_size / 4)),
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     compat: { supportsDeveloperRole: false, supportsReasoningEffort: true, supportsStrictMode: false },
@@ -60,10 +62,50 @@ function policy(pi) {
   let turnApproved = false;
   let calls = 0;
   const repeats = new Map();
+  // Pi's RPC has image blocks but no audio blocks. Keep audio in a RAM custom
+  // message, bypass image resizing, then adapt at the local provider boundary.
+  let audio = [];
+  pi.on('input', event => {
+    audio = (event.images ?? []).filter(item => item.mimeType.startsWith('audio/'));
+    if (audio.length && !init.capabilities?.audio) throw new Error('目前模型不支援音訊輸入');
+    return { action: 'transform', text: event.text,
+      images: (event.images ?? []).filter(item => !item.mimeType.startsWith('audio/')) };
+  });
+  pi.on('before_agent_start', () => {
+    if (!audio.length) return;
+    const content = audio;
+    audio = [];
+    return { message: { customType: 'edge-audio', content, display: false } };
+  });
   pi.on('before_agent_start', () => { turnApproved = false; calls = 0; repeats.clear(); });
-  pi.on('before_provider_request', event => init.agent
-    ? { ...event.payload, temperature: 0.2 }
-    : event.payload);
+  pi.on('before_provider_request', event => {
+    const payload = { ...event.payload, ...(init.agent ? { temperature: 0.2 } : {}) };
+    // Gemma's chat template consumes enable_thinking directly. Keep it aligned
+    // with Pi's effort so an off turn never opens a hidden reasoning channel.
+    payload.chat_template_kwargs = { ...payload.chat_template_kwargs,
+      enable_thinking: payload.reasoning_effort !== 'none' };
+    payload.messages = payload.messages.map(message => ({ ...message,
+      content: Array.isArray(message.content) ? message.content.map(item => {
+        const match = item.type === 'image_url' && item.image_url.url.match(/^data:audio\/(wav|mpeg|flac);base64,(.+)$/s);
+        return match ? { type: 'input_audio', input_audio: { data: match[2], format: match[1] === 'mpeg' ? 'mp3' : match[1] } } : item;
+      }) : message.content,
+    }));
+    // A custom audio block belongs to the preceding user turn, rather than a
+    // second user turn with no instruction. Apply equally to restored history.
+    const messages = [];
+    for (const message of payload.messages) {
+      const previous = messages.at(-1);
+      const audioOnly = message.role === 'user' && Array.isArray(message.content)
+        && message.content.length && message.content.every(item => item.type === 'input_audio');
+      if (audioOnly && previous?.role === 'user') {
+        const content = typeof previous.content === 'string'
+          ? [{ type: 'text', text: previous.content }] : previous.content;
+        previous.content = [...content, ...message.content];
+      } else messages.push(message);
+    }
+    payload.messages = messages;
+    return payload;
+  });
   function stop(ctx, reason) {
     ctx.ui.notify('edge-stop:' + reason, 'warning');
     ctx.abort();

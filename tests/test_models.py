@@ -67,18 +67,30 @@ def test_discovery_marks_adapters_split_files_and_corruption(tmp_path):
     (tmp_path / "lora.gguf").write_bytes(gguf(adapter=True))
     (tmp_path / "split.gguf").write_bytes(gguf(split=2))
     (tmp_path / "broken.gguf").write_bytes(b"not gguf")
+    (tmp_path / "mmproj.gguf").write_bytes(gguf(architecture="clip"))
     listing = {item["filename"]: item for item in models.list_models(tmp_path)}
     assert listing["reply.gguf"]["context_length"] == 8192
     assert listing["reply.gguf"]["tool_template"] is True
     assert listing["lora.gguf"]["adapter"] is True
     assert listing["split.gguf"]["split"] is True
     assert listing["broken.gguf"]["error"]
+    assert listing["mmproj.gguf"]["projector"] is True
 
 
 @pytest.mark.parametrize("name", ["../x.gguf", "..\\x.gguf", "C:x.gguf", "x.exe", ""])
 def test_model_names_cannot_escape_model_directory(name):
     with pytest.raises(ValueError):
         models.model_filename(name)
+
+
+def test_model_metadata_cache_tracks_actual_file_changes(tmp_path):
+    path = tmp_path / "fixture.gguf"
+    path.write_bytes(gguf(context=8192))
+    first = models.model_metadata(path)
+    first["context_length"] = 1
+    assert models.model_metadata(path)["context_length"] == 8192
+    path.write_bytes(gguf(context=16384, architecture="gemma4"))
+    assert models.model_metadata(path)["context_length"] == 16384
 
 
 def test_switch_uses_model_context_limit_and_retains_ram_sessions(core):
@@ -192,7 +204,8 @@ def test_hub_catalog_pins_commit_and_checksum(monkeypatch):
         lambda *args, **kwargs: io.BytesIO(json.dumps(data).encode()),
     )
     catalog = models.hub_catalog("owner/repo")
-    assert len(catalog["files"]) == 1
+    assert len(catalog["files"]) == 2
+    assert catalog["files"][1]["projector"] is True
     assert "/resolve/" + "a" * 40 + "/" in catalog["files"][0]["url"]
     assert catalog["files"][0]["sha256"] == "b" * 64
     with pytest.raises(ValueError):

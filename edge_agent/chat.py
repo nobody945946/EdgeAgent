@@ -24,11 +24,19 @@ APPROVAL_TIMEOUT_SECONDS = 300
 
 
 def attachment_context(attachments: object) -> str:
+    return decode_attachments(attachments, {"vision": False, "audio": False})[0]
+
+
+def decode_attachments(
+    attachments: object, capabilities: dict[str, bool]
+) -> tuple[str, list[dict[str, str]]]:
     """Decode selected documents in memory, without creating uploaded files."""
     if not isinstance(attachments, list) or len(attachments) > 8:
         raise ValueError("attachments must be an array of at most 8 files")
     sections = []
+    media = []
     total = 0
+    document_total = 0
     for item in attachments:
         if not isinstance(item, dict):
             raise TypeError("attachment must be an object")
@@ -40,9 +48,43 @@ def attachment_context(attachments: object) -> str:
         except ValueError as exc:
             raise ValueError("invalid attachment encoding") from exc
         total += len(raw)
-        if total > 2_000_000:
-            raise ValueError("attachments exceed 2 MB")
+        if total > 20_000_000:
+            raise ValueError("attachments exceed 20 MB")
         extension = Path(name).suffix.lower()
+        media_formats = {
+            ".png": ("vision", "image/png"),
+            ".jpg": ("vision", "image/jpeg"),
+            ".jpeg": ("vision", "image/jpeg"),
+            ".gif": ("vision", "image/gif"),
+            ".bmp": ("vision", "image/bmp"),
+            ".wav": ("audio", "audio/wav"),
+            ".mp3": ("audio", "audio/mpeg"),
+            ".flac": ("audio", "audio/flac"),
+        }
+        if extension in media_formats:
+            capability, mime = media_formats[extension]
+            if not capabilities.get(capability):
+                label = "音訊" if capability == "audio" else "圖片"
+                raise ValueError(f"目前模型不支援{label}輸入")
+            signatures = {
+                "image/png": raw.startswith(b"\x89PNG\r\n\x1a\n"),
+                "image/jpeg": raw.startswith(b"\xff\xd8\xff"),
+                "image/gif": raw.startswith((b"GIF87a", b"GIF89a")),
+                "image/bmp": raw.startswith(b"BM"),
+                "audio/wav": raw.startswith(b"RIFF") and raw[8:12] == b"WAVE",
+                "audio/mpeg": raw.startswith(b"ID3")
+                or (len(raw) > 1 and raw[0] == 255 and raw[1] & 224 == 224),
+                "audio/flac": raw.startswith(b"fLaC"),
+            }
+            if not signatures[mime]:
+                raise ValueError("附件內容與圖片／音訊格式不符")
+            media.append({"type": "image", "data": encoded, "mimeType": mime})
+            continue
+        if extension in {".webp", ".ogg", ".m4a", ".mp4", ".webm"}:
+            raise ValueError("請使用 PNG/JPEG/GIF/BMP 圖片或 WAV/MP3/FLAC 音訊")
+        document_total += len(raw)
+        if document_total > 2_000_000:
+            raise ValueError("document attachments exceed 2 MB")
         if extension == ".pdf":
             from pypdf import PdfReader
             from pypdf.errors import PdfReadError
@@ -86,7 +128,7 @@ def attachment_context(attachments: object) -> str:
     result = "\n\n".join(sections)
     if len(result) > 250_000:
         raise ValueError("combined attachment text is too long")
-    return result
+    return result, media
 
 
 @dataclass(slots=True)
@@ -110,6 +152,7 @@ class NativeChat:
         self.model_url = f"http://127.0.0.1:{model_port}"
         self.context_size = GENERAL_CONTEXT_SIZE
         self.model = ""
+        self.capabilities = {"vision": False, "audio": False}
         self._sessions: dict[str, ChatSession] = {}
         self._sessions_lock = threading.RLock()
         self._process: subprocess.Popen[bytes] | None = None
@@ -119,10 +162,17 @@ class NativeChat:
         self._write_lock = threading.Lock()
         self._buffer: deque[dict[str, object]] = deque()
 
-    def configure_context(self, context_size: int, model: str | None = None) -> None:
+    def configure_context(
+        self,
+        context_size: int,
+        model: str | None = None,
+        capabilities: dict[str, bool] | None = None,
+    ) -> None:
         self.context_size = context_size
         if model is not None:
             self.model = model
+        if capabilities is not None:
+            self.capabilities = dict(capabilities)
 
     def session(self, session_id: str) -> ChatSession:
         with self._sessions_lock:
@@ -286,6 +336,8 @@ class NativeChat:
             str(cwd),
             self.model,
             self.context_size,
+            self.capabilities.get("vision", False),
+            self.capabilities.get("audio", False),
             effort,
             agent,
             plan,
@@ -336,6 +388,7 @@ class NativeChat:
                 "model_url": self.model_url,
                 "model": "local",
                 "model_name": self.model,
+                "capabilities": self.capabilities,
                 "context_size": self.context_size,
                 "thinking_effort": effort,
                 "agent": agent,
@@ -356,10 +409,11 @@ class NativeChat:
         agent: bool = False,
         working_dir: Path | None = None,
         plan: bool = False,
+        media: list[dict[str, str]] | None = None,
     ) -> Iterator[tuple[str, dict[str, object]]]:
         if thinking_effort not in THINKING_PROFILES:
             raise ValueError("invalid thinking_effort")
-        if user_text.strip().split(maxsplit=1)[0] == "/edge-snapshot":
+        if user_text.strip().split(maxsplit=1)[:1] == ["/edge-snapshot"]:
             raise ValueError("reserved agent control command")
         cwd = (working_dir or Path.home()).resolve()
         if not cwd.is_dir():
@@ -375,9 +429,50 @@ class NativeChat:
             steps = 0
             settled = False
             try:
+                messages = [
+                    *session.messages,
+                    *(
+                        entry.get("message", {})
+                        for entry in session.entries
+                        if entry.get("type") == "message"
+                    ),
+                    *(
+                        {"content": entry.get("content", [])}
+                        for entry in session.entries
+                        if entry.get("type") == "custom_message"
+                    ),
+                ]
+                blocks = [
+                    *(media or []),
+                    *(
+                        block
+                        for message in messages
+                        if isinstance(message.get("content"), list)
+                        for block in message["content"]
+                    ),
+                ]
+                for block in blocks:
+                    if block.get("type") != "image":
+                        continue
+                    capability = (
+                        "audio"
+                        if str(block.get("mimeType", "")).startswith("audio/")
+                        else "vision"
+                    )
+                    if not self.capabilities.get(capability):
+                        raise ValueError(
+                            "此對話包含目前模型不支援的附件；請換回支援的模型或開啟新對話。"
+                        )
                 self._start(session, cwd, thinking_effort, agent, plan)
                 prompt_id = uuid4().hex
-                self._send({"type": "prompt", "message": user_text, "id": prompt_id})
+                self._send(
+                    {
+                        "type": "prompt",
+                        "message": user_text,
+                        "id": prompt_id,
+                        "images": media or [],
+                    }
+                )
                 while True:
                     try:
                         event = self._receive(timeout=1)

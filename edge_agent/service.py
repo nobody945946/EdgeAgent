@@ -15,8 +15,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import uuid4
 
-from edge_agent.chat import THINKING_PROFILES, NativeChat, attachment_context
-from edge_agent.deploy import download
+from edge_agent.chat import THINKING_PROFILES, NativeChat, decode_attachments
+from edge_agent.deploy import download, ensure_projector
 from edge_agent.models import hub_catalog, list_models, model_filename, model_metadata
 from edge_agent.runtime import (
     CONTROL_PORT,
@@ -36,6 +36,7 @@ DEFAULT_CONFIG: dict[str, object] = {
     "agent": True,
     "model": DEFAULT_AGENT_MODEL,
     "lora": "",
+    "mmproj": "",
     "context_size": GENERAL_CONTEXT_SIZE,
     "gpu_layers": 99,
     "low_vram": True,
@@ -165,6 +166,7 @@ class EdgeAgent:
         self.terminal = NativeTerminal()
         self.active_model = ""
         self.active_context_size = 0
+        self.capabilities = {"vision": False, "audio": False}
         self.model_job_lock = threading.Lock()
         self.model_job: dict[str, object] = {"state": "idle"}
 
@@ -196,6 +198,10 @@ class EdgeAgent:
             raise TypeError("lora must be a filename or an empty string")
         if merged["lora"]:
             model_filename(merged["lora"])
+        if not isinstance(merged["mmproj"], str):
+            raise TypeError("mmproj must be a filename or an empty string")
+        if merged["mmproj"]:
+            model_filename(merged["mmproj"])
         EdgeAgent._bounded_int(merged, "context_size", 4096, 262144)
         EdgeAgent._bounded_int(merged, "gpu_layers", 0, 999)
         if not isinstance(merged["low_vram"], bool):
@@ -205,7 +211,14 @@ class EdgeAgent:
         }
 
     def update_config(self, value: dict[str, object]) -> dict[str, object]:
-        if set(value) & {"model", "lora", "context_size", "gpu_layers", "low_vram"}:
+        if set(value) & {
+            "model",
+            "lora",
+            "mmproj",
+            "context_size",
+            "gpu_layers",
+            "low_vram",
+        }:
             raise ValueError("請透過模型切換套用推論設定")
         with self.lock:
             return self._save_config({**self.config, **value})
@@ -229,6 +242,7 @@ class EdgeAgent:
             "models": list_models(self.model_dir),
             "config": dict(self.config),
             "active_model": self.active_model,
+            "capabilities": dict(self.capabilities),
             "context_size": self.active_context_size,
             "job": job,
             "mode": self.mode,
@@ -247,6 +261,7 @@ class EdgeAgent:
                 if set(payload) - {
                     "model",
                     "lora",
+                    "mmproj",
                     "context_size",
                     "gpu_layers",
                     "low_vram",
@@ -292,6 +307,9 @@ class EdgeAgent:
                 if entry is None:
                     raise ValueError("找不到可驗證的單檔 GGUF")
                 name = model_filename(Path(str(entry["filename"])).name)
+                if entry.get("projector"):
+                    repository = str(payload["repository"]).split("/")[-1]
+                    name = "mmproj-" + repository + "-" + name.removeprefix("mmproj-")
                 target = self.model_dir / name
                 if target.exists():
                     raise ValueError("此檔名已存在；請直接選擇已下載的模型")
@@ -334,11 +352,19 @@ class EdgeAgent:
                 and "lora" not in payload
             ):
                 selection["lora"] = ""
+            if (
+                "model" in payload
+                and payload["model"] != self.config["model"]
+                and "mmproj" not in payload
+            ):
+                selection["mmproj"] = ""
             candidate = self._validated_config(selection)
             metadata = model_metadata(self._model_path(str(candidate["model"])))
-            if metadata["adapter"] or metadata["split"]:
+            if metadata["adapter"] or metadata["split"] or metadata["projector"]:
                 raise ValueError("請選擇單檔回覆模型，不能選 LoRA 或分片")
             self._adapter_path(metadata, str(candidate["lora"]))
+            if candidate["mmproj"]:
+                self._projector_path(str(candidate["mmproj"]))
             limit = metadata["context_length"]
             if isinstance(limit, int) and limit > 0:
                 candidate["context_size"] = min(int(candidate["context_size"]), limit)
@@ -461,6 +487,7 @@ class EdgeAgent:
             "error": self.error,
             "model": self.active_model,
             "context_size": self.active_context_size,
+            "capabilities": dict(self.capabilities),
         }
 
     def _model_ready(self) -> bool:
@@ -539,7 +566,7 @@ class EdgeAgent:
         if mode == "base":
             model_path = self._model_path(str(self.config["model"]))
             metadata = model_metadata(model_path)
-            if metadata["adapter"] or metadata["split"]:
+            if metadata["adapter"] or metadata["split"] or metadata["projector"]:
                 raise ValueError("selected file is not a standalone model")
             lora_path = self._adapter_path(metadata, str(self.config["lora"]))
             context_size = int(self.config["context_size"])
@@ -549,6 +576,11 @@ class EdgeAgent:
             port = GENERAL_PORT
             gpu_layers = int(self.config["gpu_layers"])
             low_vram = bool(self.config["low_vram"])
+            projector_path = (
+                self._projector_path(str(self.config["mmproj"]))
+                if self.config["mmproj"]
+                else ensure_projector(model_path, str(metadata["architecture"]))
+            )
         elif mode == "character":
             if character is None:
                 raise ValueError("character configuration required")
@@ -561,6 +593,8 @@ class EdgeAgent:
                 raise ValueError("character port conflicts with EdgeAgent")
             gpu_layers = self._bounded_int(character, "gpu_layers", 0, 999)
             low_vram = character.get("low_vram") is True
+            # Character leases continue to use their existing text-only contract.
+            projector_path = None
         else:
             raise ValueError(f"unknown EdgeAgent mode: {mode}")
 
@@ -575,6 +609,7 @@ class EdgeAgent:
             gpu_layers=gpu_layers,
             low_vram=low_vram,
             lora_path=lora_path,
+            projector_path=projector_path,
             slots=2 if mode == "character" and lora_path else 1,
         )
         preset = self.core_dir / ".runtime/models.ini"
@@ -645,12 +680,26 @@ class EdgeAgent:
                 raise TimeoutError("selected model did not become ready")
             time.sleep(0.1)
         self.mode, self.port = mode, GENERAL_PORT
+        modalities = self._model_request("/props?model=local").get("modalities", {})
+        self.capabilities = {
+            "vision": isinstance(modalities, dict) and modalities.get("vision") is True,
+            "audio": isinstance(modalities, dict) and modalities.get("audio") is True,
+        }
         self.active_model, self.active_context_size = model_path.name, context_size
         self.owner_pid = owner_pid if mode == "character" else None
         self.owner_dead_since = None
         self.handoff_until = 0.0
         if mode == "base":
-            self.chat.configure_context(context_size, model_path.name)
+            self.chat.configure_context(
+                context_size, model_path.name, self.capabilities
+            )
+
+    def _projector_path(self, filename: str) -> Path:
+        path = self._model_path(filename)
+        metadata = model_metadata(path)
+        if not metadata["projector"] or metadata["split"]:
+            raise ValueError("多模態配件必須是單檔 projector GGUF")
+        return path
 
     @staticmethod
     def _model_request(
@@ -796,6 +845,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, self.core.models_status())
         elif self.path in ("/", "/index.html"):
             self._html(NATIVE_CHAT_HTML)
+        elif self.path == "/favicon.ico":
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.end_headers()
         else:
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -945,11 +997,16 @@ class Handler(BaseHTTPRequestHandler):
     def _chat(self, payload: dict[str, object]) -> None:
         session_id = self._session_id(payload)
         text = payload.get("text")
-        if not isinstance(text, str) or not text.strip():
-            raise ValueError("non-empty text required")
+        if not isinstance(text, str):
+            raise TypeError("text must be a string")
         if len(text) > 250_000:
             raise ValueError("message is too long")
-        context = attachment_context(payload.get("attachments", []))
+        context, media = decode_attachments(
+            payload.get("attachments", []), self.core.capabilities
+        )
+        if not text.strip() and not context and not media:
+            raise ValueError("text or attachments required")
+        text = text.strip() or "分析附件"
         if context:
             text += "\n\n" + context
         if len(text) > 250_000:
@@ -984,6 +1041,14 @@ class Handler(BaseHTTPRequestHandler):
                 status = self.core.status()
                 if status["mode"] != "base" or status["ready"] is not True:
                     raise RuntimeError("EdgeAgent is currently leased by SilentTalk")
+                for item in media:
+                    capability = (
+                        "audio"
+                        if str(item["mimeType"]).startswith("audio/")
+                        else "vision"
+                    )
+                    if not self.core.capabilities[capability]:
+                        raise ValueError("目前模型不支援此附件，請更換模型")
                 for event, data in self.core.chat.stream_reply(
                     session_id,
                     text.strip(),
@@ -991,6 +1056,7 @@ class Handler(BaseHTTPRequestHandler):
                     agent=agent,
                     working_dir=working_dir,
                     plan=plan,
+                    media=media,
                 ):
                     self._event(event, data)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -1009,7 +1075,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _payload(self) -> dict[str, object]:
         length = int(self.headers.get("Content-Length", "0"))
-        if length > 3_000_000:
+        if length < 0 or length > 28_000_000:
             raise ValueError("request is too large")
         value = json.loads(self.rfile.read(length) or b"{}")
         if not isinstance(value, dict):

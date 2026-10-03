@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from edge_agent.chat import NativeChat, attachment_context
+from edge_agent.chat import NativeChat, attachment_context, decode_attachments
 from edge_agent.web import NATIVE_CHAT_HTML
 
 
@@ -417,7 +417,8 @@ def repeating_model():
 
     class ModelHandler(BaseHTTPRequestHandler):
         def do_POST(self):
-            self.rfile.read(int(self.headers["Content-Length"]))
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            state.setdefault("requests", []).append(request)
             state["calls"] += 1
             call = {
                 "index": 0,
@@ -431,10 +432,15 @@ def repeating_model():
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
-            for delta, stop in [
-                ({"role": "assistant", "tool_calls": [call]}, None),
-                ({}, "tool_calls"),
-            ]:
+            chunks = (
+                [
+                    ({"role": "assistant", "tool_calls": [call]}, None),
+                    ({}, "tool_calls"),
+                ]
+                if not state.get("answer")
+                else [({"role": "assistant", "content": "fixture"}, None), ({}, "stop")]
+            )
+            for delta, stop in chunks:
                 record = {
                     "id": "fixture",
                     "model": "local",
@@ -467,6 +473,156 @@ def installed_pi():
         CORE_ROOT
         / ".runtime/pi/node_modules/@earendil-works/pi-coding-agent/dist/index.js"
     ).is_file()
+
+
+def media_fixture():
+    import struct
+    import wave
+    import zlib
+
+    def chunk(kind, data):
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    png = b"\x89PNG\r\n\x1a\n" + chunk(
+        b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    )
+    png += chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00")) + chunk(b"IEND", b"")
+    audio = io.BytesIO()
+    with wave.open(audio, "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(16000)
+        stream.writeframes(b"\x00\x00" * 1600)
+    return [
+        {"name": name, "data": base64.b64encode(data).decode()}
+        for name, data in [("fixture.png", png), ("fixture.wav", audio.getvalue())]
+    ]
+
+
+def test_media_validation_preserves_native_bytes_and_rejects_unsupported_inputs():
+    files = media_fixture()
+    context, media = decode_attachments(files, {"vision": True, "audio": True})
+    assert context == ""
+    assert [item["mimeType"] for item in media] == ["image/png", "audio/wav"]
+    assert [item["data"] for item in media] == [item["data"] for item in files]
+    for capability, index in [("vision", 0), ("audio", 1)]:
+        with pytest.raises(ValueError, match="不支援"):
+            decode_attachments([files[index]], {capability: False})
+    with pytest.raises(ValueError, match="格式不符"):
+        decode_attachments(
+            [{"name": "invalid.wav", "data": base64.b64encode(b"invalid").decode()}],
+            {"audio": True},
+        )
+    with pytest.raises(ValueError, match="20 MB"):
+        decode_attachments(
+            [{"name": "large.wav", "data": base64.b64encode(b"x" * 20000001).decode()}],
+            {"audio": True},
+        )
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+@pytest.mark.parametrize("indices", [(0, 1), (1,)])
+def test_real_sdk_media_reaches_provider_and_ram_history(
+    tmp_path, repeating_model, indices
+):
+    port, state = repeating_model
+    state["answer"] = True
+    chat = NativeChat(model_port=port)
+    chat.configure_context(16384, "fixture", {"vision": True, "audio": True})
+    files = media_fixture()
+    _, media = decode_attachments(
+        [files[index] for index in indices], chat.capabilities
+    )
+    try:
+        assert (
+            list(
+                chat.stream_reply(
+                    "fixture", "fixture", working_dir=tmp_path, media=media
+                )
+            )[-1][0]
+            == "done"
+        )
+        assert (
+            list(chat.stream_reply("fixture", "fixture", working_dir=tmp_path))[-1][0]
+            == "done"
+        )
+        for request in state["requests"]:
+            assert request["reasoning_effort"] == "none"
+            assert request["chat_template_kwargs"]["enable_thinking"] is False
+            assert any(
+                isinstance(message.get("content"), list)
+                and {"text", "input_audio"}.issubset(
+                    {item["type"] for item in message["content"]}
+                )
+                for message in request["messages"]
+            )
+            content = [
+                item
+                for message in request["messages"]
+                if isinstance(message.get("content"), list)
+                for item in message["content"]
+            ]
+            assert any(
+                item.get("type") == "image_url"
+                and item["image_url"]["url"].startswith("data:image/png;base64,")
+                for item in content
+            ) == (0 in indices)
+            assert any(
+                item.get("type") == "input_audio"
+                and item["input_audio"]["data"] == media[-1]["data"]
+                for item in content
+            )
+            assert not any(
+                item.get("type") == "image_url"
+                and "data:audio/" in item["image_url"]["url"]
+                for item in content
+            )
+        chat.configure_context(16384, "vision-only", {"vision": True, "audio": False})
+        events = list(chat.stream_reply("fixture", "fixture", working_dir=tmp_path))
+        assert events[-1][0] == "error"
+        assert "不支援" in events[-1][1]["message"]
+        assert len(state["requests"]) == 2
+        assert not list(tmp_path.iterdir())
+    finally:
+        chat.close()
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_refreshes_capabilities_for_same_base(tmp_path, repeating_model):
+    port, state = repeating_model
+    state["answer"] = True
+    chat = NativeChat(model_port=port)
+    chat.configure_context(16384, "fixture", {"vision": False, "audio": False})
+    try:
+        assert (
+            list(chat.stream_reply("fixture", "fixture", working_dir=tmp_path))[-1][0]
+            == "done"
+        )
+        previous_pid = chat._process.pid
+        chat.configure_context(16384, "fixture", {"vision": True, "audio": True})
+        _, media = decode_attachments([media_fixture()[1]], chat.capabilities)
+        assert (
+            list(
+                chat.stream_reply(
+                    "fixture", "fixture", working_dir=tmp_path, media=media
+                )
+            )[-1][0]
+            == "done"
+        )
+        assert chat._process.pid != previous_pid
+        assert any(
+            item.get("type") == "input_audio"
+            for message in state["requests"][-1]["messages"]
+            if isinstance(message.get("content"), list)
+            for item in message["content"]
+        )
+    finally:
+        chat.close()
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")

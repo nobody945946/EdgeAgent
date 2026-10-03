@@ -35,6 +35,35 @@ AGENT_MODEL_URL = (
     "e87f176479d0855a907a41277aca2f8ee7a09523/" + DEFAULT_AGENT_MODEL
 )
 AGENT_MODEL_SHA = "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
+PROJECTOR_ASSETS = {
+    DEFAULT_MODEL: (
+        "gemma4",
+        "mmproj-gemma-4-E4B-it-Q8_0.gguf",
+        (
+            "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/"
+            "b8093469224f83f5c38f691eb906c380e9e63114/mmproj-gemma-4-E4B-it-Q8_0.gguf"
+        ),
+        "197f49a93027f9843772bd24a6a9e0be2a32a788de5a3def330e9c585d86edd1",
+    ),
+    DEFAULT_AGENT_MODEL: (
+        "qwen35",
+        "mmproj-Qwen3.5-4B-F16.gguf",
+        AGENT_MODEL_URL.rsplit("/", 1)[0] + "/mmproj-F16.gguf",
+        "cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864",
+    ),
+}
+
+
+def ensure_projector(model_path: Path, architecture: str) -> Path | None:
+    """Install only the pinned public projector belonging to a shipped base."""
+    asset = PROJECTOR_ASSETS.get(model_path.name)
+    if asset is None or architecture != asset[0]:
+        return None
+    target = model_path.parent / asset[1]
+    download(asset[2], target, asset[3])
+    return target
+
+
 NODE_SHA = "2b0ff57b049cda1bbcea2240eec20467018713c1efe1f7360c2681859b90ed71"
 BINARIES = {
     "cpu": (

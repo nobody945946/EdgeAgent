@@ -33,12 +33,17 @@ const evaluate = async expression => {
   assert(!response.exceptionDetails, 'page evaluation failed');
   return response.result.value;
 };
-const wait = async expression => {
-  for(let index=0;index<100;index++) {
+const wait = async (expression,timeout=10000) => {
+  for(let index=0;index<timeout/100;index++) {
     if(await evaluate(expression)) return;
     await new Promise(r=>setTimeout(r,100));
   }
   console.error(JSON.stringify(errors));
+  console.error(await evaluate('({menu:actionsMenu.open,models:modelDialog.open,options:modelSelect.options.length,mainInert:document.querySelector("main").inert,active:document.activeElement.id,modelState:!!modelState,summary:[...Object.values(document.querySelector("#actions-menu>summary").getBoundingClientRect().toJSON())]})'));
+  if(await evaluate('!document.querySelector(".user")')){
+    const screenshot=await cdp('Page.captureScreenshot',{format:'png'});
+    await writeFile('.test-tmp/edge-agent-browser-failure.png',Buffer.from(screenshot.data,'base64'));
+  }
   console.error(await evaluate('({title:document.title,threads:document.querySelectorAll(".thread").length,dialog:document.querySelector("#folder-dialog").open,folderError:document.querySelector("#folder-error").textContent,folderRows:document.querySelectorAll(".folder-item").length,viewport:[innerWidth,innerHeight]})'));
   throw Error('Browser state timed out');
 };
@@ -78,7 +83,7 @@ const choose = async (selector,value) => {
 };
 const waitJob=async(model=null)=>{for(let index=0;index<600;index++){const state=await evaluate('modelState?.job.state');if(state==='done'&&(!model||await evaluate('modelState.active_model==='+JSON.stringify(model))))return;if(state==='failed')throw Error(await evaluate('modelState.job.error'));await new Promise(resolve=>setTimeout(resolve,1000))}throw Error('Model operation timeout')};
 try {
-  await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('Network.enable'); await cdp('Log.enable');
+  await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('Network.enable'); await cdp('Log.clear'); await cdp('Log.enable');
   await cdp('Emulation.setFocusEmulationEnabled',{enabled:true});
   await setViewport({width:1280,height:850,deviceScaleFactor:1,mobile:false});
   await cdp('Page.bringToFront');
@@ -89,7 +94,7 @@ try {
   assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'), 'desktop width fits');
   await click('#actions-menu>summary');
   await click('#models-open');
-  await wait('document.querySelector("#models-dialog").open&&document.querySelector("#model-select").options.length>0');
+  await wait('document.querySelector("#models-dialog").open&&document.querySelector("#model-select").options.length>0',60000);
   assert(await evaluate('[...document.querySelector("#model-select").options].every(option=>!option.value.includes("lora"))'),'adapters excluded from model picker');
   assert(await evaluate('!!document.querySelector("#model-active").textContent'),'active model displayed');
   await mkdir('.test-tmp',{recursive:true});
@@ -239,13 +244,92 @@ try {
   await writeFile(fixture,'fixture_value = 42\n');
   await cdp('Page.setInterceptFileChooserDialog',{enabled:true});
   await click('#attach');
+  await click('#attach-document');
   const document=await cdp('DOM.getDocument');
   const fileNode=await cdp('DOM.querySelector',{nodeId:document.root.nodeId,selector:'#file-input'});
   await cdp('DOM.setFileInputFiles',{nodeId:fileNode.nodeId,files:[fixture]});
   await wait('document.querySelectorAll(".attachment").length===1');
-  await click('.attachment');
+  await click('.attachment button');
   assert(await evaluate('pendingFiles.length===0'), 'attachment removal');
   console.log('PASS: terminal stdout, persistent state, stop, clear, attachments and removal');
+  if(process.env.EDGE_AGENT_TEST_MULTIMODAL){
+    const original=await evaluate('({...modelState.config})');
+    const mediaChecks=[];
+    const speech=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',
+      'Add-Type -AssemblyName System.Speech; $speaker=New-Object System.Speech.Synthesis.SpeechSynthesizer; $audioStream=New-Object IO.MemoryStream; $speaker.SetOutputToWaveStream($audioStream); $speaker.Speak((6*7).ToString()); $speaker.Dispose(); [Convert]::ToBase64String($audioStream.ToArray()); $audioStream.Dispose()'
+    ],{encoding:'utf8',timeout:30000});
+    assert.equal(speech.status,0,'synthetic speech created entirely in RAM');
+    const spokenAudio=speech.stdout.trim();
+    const check=(name,value)=>{assert(value,name);mediaChecks.push(name)};
+    const switchModel=async(config)=>{
+      await click('#actions-menu>summary');await click('#models-open');
+      await wait('!document.querySelector("#model-select").disabled');
+      await choose('#model-select',config.model);await choose('#model-lora',config.lora||'');
+      await choose('#model-mmproj',config.mmproj||'');
+      await fill('#model-context',String(config.context_size));await fill('#model-gpu',String(config.gpu_layers));
+      if(await evaluate('document.querySelector("#model-low-vram").checked')!==config.low_vram)await click('#model-low-vram');
+      await click('#model-switch');await wait('modelState?.job.action==="switch"');await waitJob(config.model);
+      await click('#models-close');
+    };
+    const selectMemoryFile=async(kind)=>{
+      await click('#attach');await click('#attach-'+kind);
+      // Synthetic media stays in RAM. Exercise the actual input change handler.
+      await evaluate(`(async()=>{const kind=${JSON.stringify(kind)},transfer=new DataTransfer();let file;if(kind==='image'){const canvas=document.createElement('canvas');canvas.width=32;canvas.height=32;const context=canvas.getContext('2d');context.fillStyle='red';context.fillRect(0,0,32,32);const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));file=new File([blob],'fixture.png',{type:'image/png'})}else{const bytes=Uint8Array.from(atob(${JSON.stringify(spokenAudio)}),char=>char.charCodeAt(0));file=new File([bytes],'fixture.wav',{type:'audio/wav'})}transfer.items.add(file);const field=document.querySelector('#'+kind+'-input');field.files=transfer.files;field.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+      await wait('!readingFiles&&pendingFiles.length>0');
+    };
+    try{
+      await click('#attach');
+      check('Qwen image enabled',await evaluate('!document.querySelector("#attach-image").disabled'));
+      check('Qwen audio and microphone disabled',await evaluate('document.querySelector("#attach-audio").disabled&&document.querySelector("#record").disabled'));
+      await click('#attach');
+      await switchModel({...original,model:'gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf',lora:'',mmproj:'',context_size:16384,gpu_layers:28});
+      check('E4B engine reports both modalities',await evaluate('modelState.capabilities.vision&&modelState.capabilities.audio'));
+      await click('#new-thread');if(await evaluate('agent.checked'))await click('#agent');
+      await selectMemoryFile('image');
+      check('Image preview loaded',await evaluate('document.querySelector(".attachment img").naturalWidth===32'));
+      await click('.attachment button');check('Image removed',await evaluate('pendingFiles.length===0'));
+      await selectMemoryFile('audio');check('Audio file selected',await evaluate('pendingFiles[0].mime==="audio/wav"'));
+      await click('.attachment button');
+      await click('#record');await wait('!!recording&&recording.length>0');
+      check('Recording cannot switch conversations',await evaluate('document.querySelector("#record").getAttribute("aria-pressed")==="true"'));
+      await click('#new-thread');check('Recording remains in its conversation',await evaluate('!!recording'));
+      const recordingSession=await evaluate('session');
+      await evaluate('(()=>{const original=recording.context.close.bind(recording.context);recording.context.close=async()=>{await new Promise(resolve=>window.__releaseRecording=resolve);return original()}})()');
+      await click('#record');await wait('!!window.__releaseRecording');await click('#new-thread');
+      check('Stopping recording cannot move draft to another conversation',await evaluate('session')===recordingSession);
+      await evaluate('window.__releaseRecording();delete window.__releaseRecording');
+      await wait('!recording&&!recordStarting&&!readingFiles&&pendingFiles.length===1');
+      check('Recording becomes WAV in RAM',await evaluate('pendingFiles[0].mime==="audio/wav"&&document.querySelector("#record").getAttribute("aria-pressed")==="false"'));
+      await click('.attachment button');
+      await selectMemoryFile('image');await selectMemoryFile('audio');
+      assert(process.env.EDGE_AGENT_TEST_MEDIA_PROMPT,'multimodal inference instruction must be supplied in RAM');
+      await fill('#input',process.env.EDGE_AGENT_TEST_MEDIA_PROMPT);
+      await choose('#effort','off');
+      await evaluate('(()=>{const original=handleEvent;handleEvent=(type,payload,answer)=>{if(type==="error"){const text=answer.textContent;window.__mediaFailure={characters:text.length,uniqueCharacters:new Set(text).size,unusedToken:text.includes("<unused"),color:/red|紅/i.test(text),number:/42|四十二/.test(text),effort:effort.value}}return original(type,payload,answer)}})()');
+      await click('#send');
+      for(let i=0;i<1200;i++){if(await evaluate('!busy&&completedTurns>0'))break;if(await evaluate('queuePaused')){console.error(await evaluate('window.__mediaFailure'));throw Error('E4B media inference failed: '+await evaluate('[...document.querySelectorAll(".assistant")].map(node=>node.textContent).find(text=>text.startsWith("錯誤："))'))}await new Promise(resolve=>setTimeout(resolve,250));if(i===1199)throw Error('E4B media inference timeout')}
+      check('E4B mixed image and audio inference completed',await evaluate('completedTurns>0&&!queuePaused&&document.querySelector(".message-media img").naturalWidth===32&&!!document.querySelector(".message-media audio")'));
+      check('E4B image color and spoken number recognized',await evaluate('[...document.querySelectorAll(".assistant")].some(node=>/red|紅/i.test(node.textContent)&&/42|四十二/.test(node.textContent))'));
+      await click('#new-thread');await selectMemoryFile('image');
+      await switchModel({...original,model:'Qwen3-0.6B-Q4_K_M.gguf',lora:'',mmproj:'',context_size:4096});
+      await click('#attach');
+      check('Text model media controls disabled',await evaluate('document.querySelector("#attach-image").disabled&&document.querySelector("#attach-audio").disabled&&document.querySelector("#record").disabled'));
+      check('Document option remains enabled',await evaluate('!document.querySelector("#attach-document").disabled'));
+      await click('#attach');await click('#send');
+      check('Unsupported draft stays unsent and removable',await evaluate('!busy&&pendingFiles.length===1&&!!document.querySelector(".attachment.unsupported")'));
+      await click('.attachment button');
+      await switchModel(original);
+      check('Original configuration restored',await evaluate('modelState.active_model===modelState.config.model&&modelState.capabilities.vision&&!modelState.capabilities.audio'));
+      await mkdir('.test-tmp',{recursive:true});
+      await writeFile('.test-tmp/multimodal-report.json',JSON.stringify({event:'multimodal_ui_verification',checks:mediaChecks.map(event=>({event,passed:true})),passed:mediaChecks.length,total:mediaChecks.length}));
+      console.log('PASS: multimodal checks '+mediaChecks.length+'/'+mediaChecks.length);
+    }finally{
+      if(await evaluate('!!recording'))await evaluate('stopRecording(false)');
+      if((await (await fetch('http://127.0.0.1:18087/models')).json()).active_model!==original.model)await switchModel(original);
+      await evaluate('window.__edgeAgentCheckReload=true');await cdp('Page.reload');
+      await wait('!window.__edgeAgentCheckReload&&document.readyState==="complete"&&!!modelState?.active_model');
+    }
+  }
   if(process.env.EDGE_AGENT_TEST_PROMPT) {
     await click('#input');
     await cdp('Input.insertText',{text:process.env.EDGE_AGENT_TEST_PROMPT});
@@ -324,6 +408,7 @@ try {
   const screenshot=await cdp('Page.captureScreenshot',{format:'png'});
   await writeFile('.test-tmp/edge-agent-ui.png',Buffer.from(screenshot.data,'base64'));
   await setViewport({width:390,height:844,deviceScaleFactor:1,mobile:true});
+  await new Promise(resolve=>setTimeout(resolve,300));
   const phoneScreenshot=await cdp('Page.captureScreenshot',{format:'png'});
   await writeFile('.test-tmp/edge-agent-mobile-ui.png',Buffer.from(phoneScreenshot.data,'base64'));
   await cdp('Emulation.clearDeviceMetricsOverride');

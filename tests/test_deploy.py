@@ -185,6 +185,28 @@ def test_character_install_downloads_only_public_base(tmp_path, monkeypatch):
     assert downloads == [(deploy.MODEL_URL, runtime.DEFAULT_MODEL)]
 
 
+def test_public_projector_is_pinned_and_belongs_to_exact_shipped_base(
+    tmp_path, monkeypatch
+):
+    downloads = []
+    monkeypatch.setattr(
+        deploy,
+        "download",
+        lambda url, target, digest: downloads.append((url, target, digest)),
+    )
+    path = tmp_path / runtime.DEFAULT_MODEL
+    assert deploy.ensure_projector(path, "qwen35") is None
+    assert deploy.ensure_projector(tmp_path / "custom.gguf", "gemma4") is None
+    target = deploy.ensure_projector(path, "gemma4")
+    assert target.name == "mmproj-gemma-4-E4B-it-Q8_0.gguf"
+    assert len(downloads) == 1
+    assert "b8093469224f83f5c38f691eb906c380e9e63114" in downloads[0][0]
+    assert (
+        downloads[0][2]
+        == "197f49a93027f9843772bd24a6a9e0be2a32a788de5a3def330e9c585d86edd1"
+    )
+
+
 def test_missing_engine_file_is_repaired_with_existing_install_receipt(
     tmp_path, monkeypatch
 ):

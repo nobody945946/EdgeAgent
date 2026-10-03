@@ -2,6 +2,18 @@
 
 驗證日期：2026-10-02。平台為 Windows x64、RTX 3050 Ti 4 GB 筆電；產品版本 2.0.1。以下是已完成的實測，不是對任意模型或大型專案能力的保證。
 
+## 圖片與音訊增量驗證（2026-10-03）
+
+真實 Edge／CDP 多模態驗證 16／16 項通過、8 種視窗尺寸通過，exit 0；未預期的 runtime exception、console error 與 network error 為 0。E4B 在同一輪原生接收圖片與音訊，成功辨識兩種媒體的測試特徵。媒體、指令與回覆只留在 RAM；證據只記錄事件及通過數。
+
+涵蓋圖片縮圖與移除、音訊選取與播放、麥克風錄音轉 WAV、錄音中與停止期間禁止切換對話、模型切換後停用不支援的選項、保留不相容草稿、文件選項可用及原模型配置恢復。Qwen3.5-4B 回報圖片可用、音訊不可用；E4B 回報兩者可用；Qwen3-0.6B 的圖片、音訊及麥克風選項停用。能力來自引擎載入後回報。
+
+E4B 實測 context 為 16,384、GPU 層數 28、省 VRAM 模式，使用固定 revision／SHA256 的公開 ggml-org Q8 projector；Qwen 使用公開 F16 projector。4,096 context 的早期混合媒體案例觸發 SDK 摘要後達到輸出上限，未完成。曾以另一公開 F16 projector 測試同樣的小 context，亦未完成；沒有將更換 projector 宣稱為已證實的失敗原因。直接模型 API 的獨立媒體辨識成功；其後完整 SDK／UI 成功才列為通過。
+
+最新 EdgeAgent pytest：81 passed，exit 0；Ruff check／format、兩個 JavaScript syntax 檢查及 Git diff check 均為 exit 0。真實 SDK 測試驗證媒體原始 bytes、音訊 provider 格式、RAM 歷史保留、同基底能力變更後重建 SDK，以及不支援歷史附件時拒絕送出。GGUF metadata 的 RAM cache 依檔案大小與修改時間失效。
+
+本輪修改 EdgeAgent；未重跑或修改 SilentTalk runtime。以下保留 2026-10-02 的歷史驗證範圍。
+
 ## 編程能力與模型
 
 預設 `Qwen3.5-4B-Q4_K_M.gguf` 使用 16,384 token context、關閉 thinking。測試時整機 GPU 記憶體使用量為 3,159 MiB／4,096 MiB。模型檔為 2,740,937,888 bytes，已驗證 SHA256：`00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4`。
