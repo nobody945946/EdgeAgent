@@ -119,17 +119,17 @@
   ]
  },
  "teacher-27b": {
-  "_note": "Teacher candidate for Agent trajectories: Qwen3.6-27B IQ3_XXS dense, all on GPU. Dev box only.",
+  "_note": "Teacher for Agent trajectories: Qwen3.6-27B IQ3_XXS dense, all on GPU, 64K per slot (the student works at a 32K target). Dev box only; never a laptop model.",
   "model": "../teacher/Qwen3.6-27B-UD-IQ3_XXS.gguf",
   "vision": false,
-  "context_size": 131072,
+  "context_size": 65536,
   "max_output_tokens": 8192,
   "working_context_size": 32768,
   "effort": "off",
   "low_vram": true,
   "prompt_cache_mib": 256,
-  "vram_base_mib": 14000,
-  "vram_slot_mib": 4500,
+  "vram_base_mib": 13500,
+  "vram_slot_mib": 2100,
   "search_tools": true
  }
 }
