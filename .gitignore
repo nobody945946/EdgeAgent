@@ -14,3 +14,5 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.log
+scripts/windows-ai-maintenance/*state*.json*
+scripts/windows-ai-maintenance/*memory-samples*.json
