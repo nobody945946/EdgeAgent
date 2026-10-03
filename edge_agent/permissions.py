@@ -6,7 +6,8 @@ the Agent at all, what happens for file edits, shell commands and web access
 which workspace folders it may open. The bridge enforces the rules; after web
 content enters a turn, earlier "allow this turn" approvals lapse and
 "allow" for edits and shell becomes "ask", because a page can carry
-instructions.
+instructions. Opening a URL that neither the user wrote nor a tool returned
+always asks (once): the model built it, and it could carry data out.
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@ import { dirname, resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { compactionSettings, searchHistory, historyReference } from './memory.mjs';
-import { webSearch, webFetch } from './web_tools.mjs';
+import { webSearch, webFetch, normalURL, urlsIn } from './web_tools.mjs';
 import { explicitApproval } from './shell_guard.mjs';
 
 const packageURL = new URL('../.runtime/pi/node_modules/@earendil-works/pi-coding-agent/dist/', import.meta.url);
@@ -74,6 +74,12 @@ function policy(pi) {
   // Set once web content enters the turn: a page can carry instructions, so
   // standing approvals lapse and edits/shell need a fresh decision.
   let tainted = false;
+  // URLs the user wrote or a tool returned in this session. With web
+  // "allow", only these open without asking: any other URL was put together
+  // by the model and needs its own approval, so a page or a file cannot have
+  // the Agent send data out inside a link.
+  const seenURLs = new Set();
+  const remember = text => { for (const url of urlsIn(text)) seenURLs.add(url); };
   let calls = 0;
   const repeats = new Map();
   let recall = '';
@@ -137,7 +143,9 @@ function policy(pi) {
     audio = [];
     return { message: { customType: 'edge-audio', content, display: false } };
   });
-  pi.on('before_agent_start', () => { turnApproved = false; tainted = false; calls = 0; repeats.clear(); });
+  pi.on('before_agent_start', event => {
+    turnApproved = false; tainted = false; calls = 0; repeats.clear(); remember(event.prompt);
+  });
   pi.on('before_provider_request', (event, ctx) => {
     const payload = { ...event.payload, cache_prompt: true, ...(init.agent ? { temperature: 0.2 } : {}) };
     if (Number.isInteger(init.slot_id)) payload.id_slot = init.slot_id;
@@ -217,7 +225,8 @@ function policy(pi) {
     let rule = rules[category];
     if (rule === 'deny') return { block: true, reason: `The owner's permission settings do not allow ${category} operations.` };
     if (rule === 'allow' && tainted && category !== 'web') rule = 'ask';
-    const explicit = CATEGORY[toolName] === 'shell' ? explicitApproval(input?.command) : '';
+    const explicit = CATEGORY[toolName] === 'shell' ? explicitApproval(input?.command)
+      : toolName === 'web_fetch' && !seenURLs.has(normalURL(input?.url)) ? 'new_url' : '';
     if (!explicit && (rule === 'allow' || turnApproved)) return;
     const choice = await ctx.ui.select(JSON.stringify({ tool: toolName, arguments: input, after_web: tainted, explicit }),
       explicit ? ['Allow once', 'Deny'] : ['Allow this turn', 'Allow once', 'Deny'], { timeout: 300000 });
@@ -226,6 +235,7 @@ function policy(pi) {
     if (!choice || choice === 'Deny') return { block: true, reason: 'Operation was not approved.' };
   });
   pi.on('tool_result', event => {
+    if (!event.isError) remember((event.content ?? []).map(item => item.text ?? '').join('\n'));
     if (CATEGORY[event.toolName] === 'web' && !event.isError) { tainted = true; turnApproved = false; }
     if (!event.isError && event.toolName === 'edit' && event.details?.patch) repeats.clear();
     if (!event.isError && event.toolName === 'write') {

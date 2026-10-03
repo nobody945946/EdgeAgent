@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 
-const { privateAddress, htmlToText, parseSearchResults } = await import('../edge_agent/web_tools.mjs');
+const { privateAddress, htmlToText, parseSearchResults, normalURL, urlsIn } = await import('../edge_agent/web_tools.mjs');
+assert.deepEqual(urlsIn('看 https://example.org/a?b=1。還有（https://x.example/路徑）和 http://y.example.'),
+  ['https://example.org/a?b=1', 'https://x.example/%E8%B7%AF%E5%BE%91', 'http://y.example/']);
+assert.equal(normalURL('https://Example.org'), 'https://example.org/');
+assert.equal(normalURL('not a url'), '');
 for (const ip of ['127.0.0.1', '10.1.2.3', '192.168.0.9', '172.20.0.1', '169.254.1.1', '::1', 'fd00::1', 'fe80::1', '::ffff:127.0.0.1', '0.0.0.0'])
   assert.equal(privateAddress(ip), true, ip);
 for (const ip of ['8.8.8.8', '140.112.1.1', '2001:4860:4860::8888']) assert.equal(privateAddress(ip), false, ip);
