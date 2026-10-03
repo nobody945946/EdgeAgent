@@ -99,5 +99,37 @@
   "vram_base_mib": 6000,
   "vram_slot_mib": 2400,
   "search_tools": true
+ },
+ "teacher-35b-a3b": {
+  "_note": "Teacher candidate for Agent trajectories: Qwen3.6-35B-A3B Q4_K_XL, experts on CPU (fits beside other GPU tenants). Dev box only; never a laptop model.",
+  "model": "../teacher/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+  "vision": false,
+  "context_size": 131072,
+  "max_output_tokens": 8192,
+  "working_context_size": 32768,
+  "effort": "off",
+  "low_vram": true,
+  "prompt_cache_mib": 256,
+  "vram_base_mib": 5000,
+  "vram_slot_mib": 1500,
+  "search_tools": true,
+  "extra_args": [
+   "--n-cpu-moe",
+   "40"
+  ]
+ },
+ "teacher-27b": {
+  "_note": "Teacher candidate for Agent trajectories: Qwen3.6-27B IQ3_XXS dense, all on GPU. Dev box only.",
+  "model": "../teacher/Qwen3.6-27B-UD-IQ3_XXS.gguf",
+  "vision": false,
+  "context_size": 131072,
+  "max_output_tokens": 8192,
+  "working_context_size": 32768,
+  "effort": "off",
+  "low_vram": true,
+  "prompt_cache_mib": 256,
+  "vram_base_mib": 14000,
+  "vram_slot_mib": 4500,
+  "search_tools": true
  }
 }

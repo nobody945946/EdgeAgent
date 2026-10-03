@@ -129,7 +129,8 @@ class Server:
 
     def __init__(self, config: dict, run_dir: Path, parallel: int, port: int) -> None:
         self.port = port
-        model = MODELS / config["model"]
+        # Relative to the student models folder; teachers live next to it.
+        model = (MODELS / config["model"]).resolve()
         args = build_server_args(
             str(SERVER), model, port=port, context_size=config["context_size"],
             threads=8, gpu_layers=99, low_vram=config.get("low_vram", True),
@@ -138,7 +139,7 @@ class Server:
         # Bench-only: N agents share one server; each slot keeps the full window.
         args[args.index("--parallel") + 1] = str(parallel)
         args[args.index("--ctx-size") + 1] = str(config["context_size"] * parallel)
-        args += ["--fit", "off"]
+        args += ["--fit", "off", *config.get("extra_args", [])]
         # Weights and buffers, plus one full context window per parallel slot.
         need = config["vram_base_mib"] + config["vram_slot_mib"] * parallel
         while free_vram_mib() < need:
