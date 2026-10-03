@@ -18,6 +18,13 @@ from uuid import uuid4
 from edge_agent.chat import THINKING_PROFILES, NativeChat, decode_attachments
 from edge_agent.deploy import download, ensure_projector
 from edge_agent.models import hub_catalog, list_models, model_filename, model_metadata
+from edge_agent.permissions import (
+    DEFAULT_PERMISSIONS,
+    bridge_rules,
+    profile_for,
+    validate_permissions,
+    workspace_allowed,
+)
 from edge_agent.runtime import (
     CONTROL_PORT,
     CORE_ROOT,
@@ -45,6 +52,7 @@ DEFAULT_CONFIG: dict[str, object] = {
     "working_context_size": DEFAULT_WORKING_CONTEXT_SIZE,
     "gpu_layers": -1,
     "low_vram": True,
+    "permissions": DEFAULT_PERMISSIONS,
 }
 
 
@@ -221,6 +229,7 @@ class EdgeAgent:
             raise TypeError("low_vram must be a boolean")
         return {
             **merged,
+            "permissions": validate_permissions(merged["permissions"]),
         }
 
     def update_config(self, value: dict[str, object]) -> dict[str, object]:
@@ -1063,6 +1072,9 @@ class Handler(BaseHTTPRequestHandler):
         plan = payload.get("plan", False)
         if not isinstance(plan, bool):
             raise TypeError("plan must be a boolean")
+        profile = profile_for(
+            self.core.config["permissions"], payload.get("client", "ui")
+        )
         working_dir_value = payload.get("working_dir")
         if working_dir_value is None or working_dir_value == "":
             if agent:
@@ -1072,6 +1084,8 @@ class Handler(BaseHTTPRequestHandler):
             working_dir = Path(working_dir_value).expanduser()
         else:
             raise TypeError("working_dir must be a string")
+        if agent and not workspace_allowed(profile, working_dir):
+            raise PermissionError("此資料夾不在權限設定允許的工作區內")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -1098,6 +1112,7 @@ class Handler(BaseHTTPRequestHandler):
                     working_dir=working_dir,
                     plan=plan,
                     media=media,
+                    permissions=bridge_rules(profile),
                 ):
                     self._event(event, data)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
