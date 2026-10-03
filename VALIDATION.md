@@ -2,7 +2,25 @@
 
 驗證日期：2026-10-02。平台為 Windows x64、RTX 3050 Ti 4 GB 筆電；產品版本 2.0.1。以下是已完成的實測，不是對任意模型或大型專案能力的保證。
 
-## 圖片與音訊增量驗證（2026-10-03）
+## 128K context 與輸出額度驗證（2026-10-03）
+
+Agent 預設 context 改為 131,072，輸出上限獨立設定為 8,192，thinking off。此筆電實體 RAM 為 8,266,268,672 bytes，GPU 為 RTX 3050 Ti 4 GB。Qwen3.5-4B 與 E4B 都已實際載入 131,072；不是只修改介面數字。載入流程比對原生 `/props?model=local` 的 `n_ctx` 與要求值，不相符會拒絕成功狀態。
+
+GPU 預設自動分配，使用 llama.cpp b11193 的 fit；保留指定 context、q8 KV 精度與 512 MiB 顯存餘裕。早期手動 99 層的 Qwen 載入後整機使用 3,872 MiB；其後同一配置在其他 GPU 使用量增加時載入失敗。沒有關閉使用者程式；改用既有引擎自動分配後，Qwen 與 E4B 128K 載入、切換及恢復均通過。
+
+手動 99 層的 128K Qwen 小型修碼案例在 75.09 秒完成，依序讀取來源與測試、編輯、執行 PowerShell；獨立 pytest exit 0，測試檔 SHA256 未改。正式自動 GPU 配置的同一流程在 186.67 秒完成，四個工具操作、獨立 pytest exit 0、測試 SHA256 未改，無輸出截斷；當時可用實體 RAM 約 140 MiB。這是實際 Agent 工具流程；沒有把填滿 100K 輸入的品質或大型專案能力列為已驗證。
+
+舊 bridge 將輸出上限固定為最多 4,096；Pi SDK 又扣除輸入估算與 4,096 安全空間。使用安裝的真實 SDK 擷取請求，確認舊 4K context 測試只剩 1 token 輸出；先前將不完整結果歸因於模型能力或 projector 並無充分證據。現在基底 Agent 拒絕 4K，舊配置只在 RAM 提升至 8K 並保留其他偏好；128K 才是預設工作容量。角色租借的 context／GPU 設定與文字 API 保持獨立。
+
+單次輸出上限經同一設定 owner 傳給 SDK、摘要保留額度及 UI；SDK 可再依剩餘 context 降低本次請求額度。截斷事件含 context、設定上限、實際請求上限與引擎 usage，且綁定最後一則回答，不會被隨後的摘要请求覆蓋。SDK 既有重試保留，host 沒有新增無限制續寫。
+
+本輪完整 pytest：87 passed，58.27 秒，exit 0。涵蓋 128K 啟動參數、引擎 context 不相符拒絕、角色租借邊界、舊設定 RAM 遷移、輸出額度重建 SDK、真實 SDK 的 4K／1-token 負向證據及截斷 usage。真實 Edge 多模態 17／17 項通過，8 種視窗尺寸通過，exit 0，未預期 runtime／console／network 錯誤 0；E4B 在 128K 同一輪成功辨識圖片與音訊，最後恢復 Qwen 128K 自動 GPU 配置。原生選單曾受模型輪詢重建干擾；三種模型選單已在既有 owner 改為只在目錄改變時更新選項。
+
+最後選單回歸包含 RAM 模擬目錄，確認停用 LoRA 的選擇不被輪詢覆蓋；未載入、下載或修改個人 adapter。基線 UI 重驗通過 8 種視窗及觸控操作，exit 0，未預期錯誤 0，預期不存在資料夾 HTTP 400／錯誤 log 各 1。前兩次重驗分別遇到擴充套件例外與短暫本機連線拒絕，均保留為失敗；專用 Edge 停用擴充套件，服務就緒後重驗才列為通過。Ruff check／format、兩個 JavaScript syntax 檢查及 Git diff check 通過。
+
+以下保留前一增量與歷史驗證數字。
+
+## 圖片與音訊首次增量驗證（2026-10-03）
 
 真實 Edge／CDP 多模態驗證 16／16 項通過、8 種視窗尺寸通過，exit 0；未預期的 runtime exception、console error 與 network error 為 0。E4B 在同一輪原生接收圖片與音訊，成功辨識兩種媒體的測試特徵。媒體、指令與回覆只留在 RAM；證據只記錄事件及通過數。
 
@@ -10,7 +28,7 @@
 
 E4B 實測 context 為 16,384、GPU 層數 28、省 VRAM 模式，使用固定 revision／SHA256 的公開 ggml-org Q8 projector；Qwen 使用公開 F16 projector。4,096 context 的早期混合媒體案例觸發 SDK 摘要後達到輸出上限，未完成。曾以另一公開 F16 projector 測試同樣的小 context，亦未完成；沒有將更換 projector 宣稱為已證實的失敗原因。直接模型 API 的獨立媒體辨識成功；其後完整 SDK／UI 成功才列為通過。
 
-最新 EdgeAgent pytest：81 passed，exit 0；Ruff check／format、兩個 JavaScript syntax 檢查及 Git diff check 均為 exit 0。真實 SDK 測試驗證媒體原始 bytes、音訊 provider 格式、RAM 歷史保留、同基底能力變更後重建 SDK，以及不支援歷史附件時拒絕送出。GGUF metadata 的 RAM cache 依檔案大小與修改時間失效。
+首次增量 EdgeAgent pytest：81 passed，exit 0；Ruff check／format、兩個 JavaScript syntax 檢查及 Git diff check 均為 exit 0。真實 SDK 測試驗證媒體原始 bytes、音訊 provider 格式、RAM 歷史保留、同基底能力變更後重建 SDK，以及不支援歷史附件時拒絕送出。GGUF metadata 的 RAM cache 依檔案大小與修改時間失效。
 
 本輪修改 EdgeAgent；未重跑或修改 SilentTalk runtime。以下保留 2026-10-02 的歷史驗證範圍。
 

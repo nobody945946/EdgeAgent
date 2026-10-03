@@ -178,6 +178,38 @@ def test_incomplete_finish_retains_completed_messages(reason, expected, tmp_path
     assert len(chat.session("fixture").entries) == 2
 
 
+def test_truncation_reports_actual_usage_and_keeps_it_distinct_from_context(tmp_path):
+    events = ending("length")
+    events[0]["message"]["usage"] = {"input": 2500, "output": 6000}
+    events.insert(
+        0,
+        {
+            "type": "extension_ui_request",
+            "method": "notify",
+            "message": 'edge-budget:{"max_output_tokens":6000}',
+        },
+    )
+    # A summary after the assistant must not overwrite that reply's wire cap.
+    events.insert(
+        -1,
+        {
+            "type": "extension_ui_request",
+            "method": "notify",
+            "message": 'edge-budget:{"max_output_tokens":4000}',
+        },
+    )
+    chat = RPCFixture(events)
+    chat.configure_context(32768, max_output_tokens=8192)
+    result = list(chat.stream_reply("fixture", "fixture", working_dir=tmp_path))[-1]
+    assert result[0] == "error"
+    assert result[1]["context_size"] == 32768
+    assert result[1]["max_output_tokens"] == 8192
+    assert result[1]["request_max_output_tokens"] == 6000
+    assert result[1]["usage"]["output"] == 6000
+    assert "32768" in result[1]["message"]
+    assert "8192" in result[1]["message"]
+
+
 def test_mutating_tool_diff_is_retained_when_model_runs_out_of_tokens(tmp_path):
     path = tmp_path / "code.py"
     path.write_text("value=1\n")
@@ -553,6 +585,7 @@ def test_real_sdk_media_reaches_provider_and_ram_history(
         )
         for request in state["requests"]:
             assert request["reasoning_effort"] == "none"
+            assert request["max_completion_tokens"] == 8192
             assert request["chat_template_kwargs"]["enable_thinking"] is False
             assert any(
                 isinstance(message.get("content"), list)
@@ -587,6 +620,43 @@ def test_real_sdk_media_reaches_provider_and_ram_history(
         assert events[-1][0] == "error"
         assert "不支援" in events[-1][1]["message"]
         assert len(state["requests"]) == 2
+        assert not list(tmp_path.iterdir())
+    finally:
+        chat.close()
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_output_budget_change_rebuilds_process_without_losing_history(
+    tmp_path, repeating_model
+):
+    port, state = repeating_model
+    state["answer"] = True
+    chat = NativeChat(model_port=port)
+    chat.configure_context(32768, "fixture", max_output_tokens=16384)
+    try:
+        assert (
+            list(chat.stream_reply("fixture", "fixture", working_dir=tmp_path))[-1][0]
+            == "done"
+        )
+        previous_pid = chat._process.pid
+        assert state["requests"][-1]["max_completion_tokens"] == 16384
+        chat.configure_context(32768, "fixture", max_output_tokens=8192)
+        assert (
+            list(chat.stream_reply("fixture", "fixture", working_dir=tmp_path))[-1][0]
+            == "done"
+        )
+        assert chat._process.pid != previous_pid
+        request = state["requests"][-1]
+        assert request["max_completion_tokens"] == 8192
+        assert len([m for m in request["messages"] if m["role"] == "user"]) == 2
+        chat.configure_context(4096, "fixture", max_output_tokens=8192)
+        assert (
+            list(chat.stream_reply("fixture", "fixture", working_dir=tmp_path))[-1][0]
+            == "done"
+        )
+        # The upstream SDK always subtracts 4096 safety tokens. This reproduces
+        # the old unusable window; the public service now rejects this context.
+        assert state["requests"][-1]["max_completion_tokens"] == 1
         assert not list(tmp_path.iterdir())
     finally:
         chat.close()

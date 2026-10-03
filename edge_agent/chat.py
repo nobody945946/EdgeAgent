@@ -17,7 +17,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
-from edge_agent.runtime import CORE_ROOT, GENERAL_CONTEXT_SIZE, NODE_VERSION
+from edge_agent.runtime import (
+    CORE_ROOT,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    GENERAL_CONTEXT_SIZE,
+    NODE_VERSION,
+)
 
 THINKING_PROFILES = {"off": "off", "low": "low", "medium": "medium", "high": "high"}
 APPROVAL_TIMEOUT_SECONDS = 300
@@ -151,6 +156,7 @@ class NativeChat:
         self.core_dir = core_dir.resolve()
         self.model_url = f"http://127.0.0.1:{model_port}"
         self.context_size = GENERAL_CONTEXT_SIZE
+        self.max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS
         self.model = ""
         self.capabilities = {"vision": False, "audio": False}
         self._sessions: dict[str, ChatSession] = {}
@@ -167,8 +173,12 @@ class NativeChat:
         context_size: int,
         model: str | None = None,
         capabilities: dict[str, bool] | None = None,
+        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     ) -> None:
         self.context_size = context_size
+        # One owner for the effective budget passed to Pi and displayed by UI.
+        # Reserve at least half the window for instructions, media and history.
+        self.max_output_tokens = min(max_output_tokens, context_size // 2)
         if model is not None:
             self.model = model
         if capabilities is not None:
@@ -336,6 +346,7 @@ class NativeChat:
             str(cwd),
             self.model,
             self.context_size,
+            self.max_output_tokens,
             self.capabilities.get("vision", False),
             self.capabilities.get("audio", False),
             effort,
@@ -390,6 +401,7 @@ class NativeChat:
                 "model_name": self.model,
                 "capabilities": self.capabilities,
                 "context_size": self.context_size,
+                "max_output_tokens": self.max_output_tokens,
                 "thinking_effort": effort,
                 "agent": agent,
                 "plan": plan,
@@ -424,6 +436,9 @@ class NativeChat:
             session.cancelled_at = None
             previews: dict[str, tuple[Path, str]] = {}
             last_stop = ""
+            last_usage: dict[str, object] = {}
+            request_budget: int | None = None
+            last_assistant_budget: int | None = None
             failure = ""
             stop_reason = ""
             steps = 0
@@ -490,6 +505,13 @@ class NativeChat:
                         and event.get("method") == "notify"
                     ):
                         notice = event.get("message", "")
+                        if isinstance(notice, str) and notice.startswith(
+                            "edge-budget:"
+                        ):
+                            budget = json.loads(notice.removeprefix("edge-budget:"))
+                            if type(budget.get("max_output_tokens")) is int:
+                                request_budget = budget["max_output_tokens"]
+                            continue
                         if isinstance(notice, str) and notice.startswith("edge-stop:"):
                             stop_reason = notice.removeprefix("edge-stop:")
                             yield "status", {"message": stop_reason}
@@ -519,6 +541,9 @@ class NativeChat:
                             session.messages.append(message)
                             if message.get("role") == "assistant":
                                 last_stop = str(message.get("stopReason", ""))
+                                last_assistant_budget = request_budget
+                                usage = message.get("usage")
+                                last_usage = usage if isinstance(usage, dict) else {}
                                 failure = str(message.get("errorMessage", ""))
                     elif (
                         kind == "extension_ui_request"
@@ -615,10 +640,32 @@ class NativeChat:
                 elif last_stop == "aborted":
                     yield "cancelled", {}
                 elif last_stop == "length":
+                    output = last_usage.get("output")
+                    usage = (
+                        f"；本次輸出 {output} token（含思考）"
+                        if isinstance(output, int)
+                        else ""
+                    )
+                    limit = (
+                        f"；本次請求上限 {last_assistant_budget} token"
+                        if last_assistant_budget is not None
+                        else ""
+                    )
                     yield (
                         "error",
                         {
-                            "message": "模型輸出達到上限；已完成的修改仍然保留，請繼續或縮小工作範圍。"
+                            "message": (
+                                "模型生成被截斷"
+                                f"（context {self.context_size} token，"
+                                f"單次輸出額度 {self.max_output_tokens} token{limit}{usage}）；"
+                                "已完成的修改仍然保留。可在模型模組調整單次輸出上限，"
+                                "或繼續本輪工作。"
+                            ),
+                            "reason": "generation_truncated",
+                            "context_size": self.context_size,
+                            "max_output_tokens": self.max_output_tokens,
+                            "request_max_output_tokens": last_assistant_budget,
+                            "usage": last_usage,
                         },
                     )
                 elif failure or last_stop == "error":

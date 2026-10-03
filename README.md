@@ -14,15 +14,21 @@ EdgeAgent 是可換模型的 Windows 本機編程 Agent。開啟專案後，Agen
 
 麥克風按鈕錄製音訊，再按一次停止並加入附件；第一次使用由瀏覽器詢問麥克風權限。錄音最長 2 分鐘，轉成 16 kHz 單聲道 WAV，直接送進支援音訊的模型。圖片支援 PNG、JPEG、GIF、BMP、WebP（在記憶體轉 PNG），音訊支援 WAV、MP3、FLAC。每輪最多 8 個附件、合計 20 MB；文字／PDF／DOCX 文件合計仍限 2 MB。錄音、附件與對話只留在 RAM，不建立上傳或轉錄暫存檔。
 
-E4B 圖片加音訊已在 16,384 token context 實測成功；混合媒體建議至少使用此大小。4,096 context 的同案例觸發摘要後達到輸出上限，未完成；附件大小上限不代表任何長度的媒體都能放進模型 context。
+附件大小上限不代表任何長度的媒體都能放進模型 context；長音訊、圖片與對話都會使用輸入空間。
 
-預設模型為 `Qwen3.5-4B-Q4_K_M.gguf`、16,384 token context、thinking off。RTX 3050 Ti 4 GB 的整機顯存實測為 3,159 MiB，兩個小型 Python 修碼案例通過獨立驗證。2B 模型仍可下載切換，但曾因重複無效編輯停止；大型專案能力尚未建立。完整證據見 [VALIDATION.md](VALIDATION.md)。
+預設模型為 `Qwen3.5-4B-Q4_K_M.gguf`、131,072 token（128K）context、thinking off，單次輸出上限預設 8,192 token。8 GB RAM／RTX 3050 Ti 4 GB 筆電已實際載入此容量，引擎回報 131,072；q8 KV cache、GPU 層數 99，載入後整機顯存為 3,872 MiB。一次小型修碼與驗證流程在 75.09 秒完成，獨立 pytest 通過，測試檔未修改。大型專案與填滿 100K 輸入的能力尚未建立；完整證據見 [VALIDATION.md](VALIDATION.md)。
+
+GPU 層數預設為 `-1`（自動分配）；llama.cpp 依當時可用顯存決定放在 GPU／CPU 的部分，預留 512 MiB，context 保持選定容量，q8 KV cache 精度不變。`0` 使用 CPU，正整數為手動層數。上面的 99 層實測是在顯存充足時；另一輪切換後手動 99 層載入失敗，因此正式預設使用自動分配。自動分配的同一修碼案例在 186.67 秒完成，獨立驗證通過；CPU 分配增加、RAM 緊張時可能變慢。
+
+Context 與單次輸出是兩個設定：context 放入輸入、媒體、歷史和輸出；單次輸出上限包含思考與回答。輸出額度至多為 context 的一半，Pi SDK 還會依目前輸入估算與 4,096 token 安全空間減少本次請求額度。先前將 Agent context 設成 4,096 的測試實際只剩 1 token 輸出，並非這台機器只能支援小 context。EdgeAgent 現在拒絕此配置；舊 4K 配置載入時只在 RAM 提升為 8K，保留其他設定。8K 是相容最低門檻，預設工作容量為 128K。
+
+生成截斷時介面會顯示 context、單次輸出額度、本次請求上限及引擎回報的輸出 token 數，已完成的修改和 RAM 對話保留。Pi 既有的摘要與重試仍運作；本機 host 不另加無限制續寫。
 
 ## 下載與熱切換模型
 
 1. 右上角「⋯」→「模型模組」。
 2. 在「下載其他模型」填 Hugging Face 的 `作者/模型庫`，點「列出檔案」，選 GGUF 後點「下載模型」，等待下載與 SHA256 驗證。
-3. 從「已下載的模型」選模型，設定 context、GPU 層數與省 VRAM，再點「套用並切換」。
+3. 從「已下載的模型」選模型，設定 context、單次輸出上限、GPU 層數與省 VRAM，再點「套用並切換」。
 4. 等載入完成，在原對話繼續工作。下載完成不會自動切換模型。
 
 手動模型放在 Agent 安裝目錄的 `models`，點「重新掃描」即可選擇。支援目前 llama.cpp 可載入的單檔 GGUF。Hub 清單排除分片，mmproj 會標示為配件，下載後不會列入基底模型選單；adapter 也不能當獨立基底模型。
@@ -53,7 +59,7 @@ SilentTalk 的角色配置與 Agent adapter 選擇分開，adapter 檔案則在�
 
 ## 共用推論服務
 
-SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸還後恢復原 Agent 配置。最多載入一個完整模型，租借時不能開始編程工作或切換 Agent。角色 context 預設 32,768，Agent 預設 16,384，分開設定。
+SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸還後恢復原 Agent 配置。最多載入一個完整模型，租借時不能開始編程工作或切換 Agent。角色 context 預設 32,768，Agent 預設 131,072，分開設定。
 
 單獨安裝 EdgeAgent 只準備 Agent 模型；SilentTalk 部署額外準備公開 Gemma 4 E4B，不取得個人 LoRA。角色有 LoRA 時使用兩個推論 slot，區分套用與未套用 cache；其他情況一個 slot，完整模型數仍為一。
 

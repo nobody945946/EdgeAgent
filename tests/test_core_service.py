@@ -93,7 +93,7 @@ def test_base_server_is_one_slot_without_an_extra_agent_loop() -> None:
         low_vram=True,
     )
 
-    assert _value_after(args, "--ctx-size") == "16384"
+    assert _value_after(args, "--ctx-size") == "131072"
     assert _value_after(args, "--parallel") == "1"
     assert "--tools" not in args
 
@@ -112,6 +112,24 @@ def test_multimodal_projector_uses_canonical_server_and_low_vram_policy():
     assert _value_after(args, "--mmproj") == "mmproj.gguf"
     assert "--no-mmproj-offload" in args
     assert _value_after(args, "--parallel") == "1"
+
+
+def test_automatic_device_fitting_preserves_large_context_and_cache_precision():
+    args = runtime.build_server_args(
+        "llama-server",
+        Path("base.gguf"),
+        port=runtime.GENERAL_PORT,
+        context_size=131072,
+        threads=4,
+        gpu_layers=-1,
+        low_vram=True,
+    )
+    assert _value_after(args, "--n-gpu-layers") == "auto"
+    assert _value_after(args, "--ctx-size") == "131072"
+    assert _value_after(args, "--fit-ctx") == "131072"
+    assert _value_after(args, "--fit-target") == "512"
+    assert _value_after(args, "--cache-type-k") == "q8_0"
+    assert _value_after(args, "--cache-type-v") == "q8_0"
 
 
 def test_character_server_gets_two_slots_and_lora() -> None:
@@ -146,6 +164,45 @@ def test_config_never_persists_workspace_or_chat(tmp_path: Path) -> None:
     saved = manager.config_path.read_text(encoding="utf-8")
     assert "working_dir" not in saved
     assert "messages" not in saved
+
+
+def test_output_budget_is_validated_and_leased_client_is_separate(tmp_path):
+    manager = service.EdgeAgent(tmp_path)
+    config = manager._validated_config(
+        {"context_size": 32768, "max_output_tokens": 16384}
+    )
+    assert config["max_output_tokens"] == 16384
+    for value in (True, 0, -1, 131073, "8192"):
+        with pytest.raises((ValueError, TypeError)):
+            manager._validated_config({"max_output_tokens": value})
+    manager.chat.configure_context(32768, max_output_tokens=16384)
+    manager.mode = "base"
+    assert manager.models_status()["max_output_tokens"] == 16384
+    manager.mode = "character"
+    assert manager.models_status()["max_output_tokens"] is None
+    with pytest.raises(ValueError):
+        manager.update_config({"max_output_tokens": 8192})
+
+
+def test_legacy_low_agent_context_migrates_without_resetting_other_settings(tmp_path):
+    import json
+
+    path = tmp_path / "config.json"
+    old = {
+        "model": "custom.gguf",
+        "lora": "personal.gguf",
+        "context_size": 4096,
+        "gpu_layers": 12,
+    }
+    path.write_text(json.dumps(old), encoding="utf-8")
+    manager = service.EdgeAgent(tmp_path)
+    assert manager.config["context_size"] == 8192
+    assert manager.config["model"] == old["model"]
+    assert manager.config["lora"] == old["lora"]
+    assert manager.config["gpu_layers"] == old["gpu_layers"]
+    assert json.loads(path.read_text(encoding="utf-8")) == old
+    with pytest.raises(ValueError):
+        manager._validated_config({"context_size": 4096})
 
 
 def test_directory_picker_lists_real_unicode_directories(tmp_path: Path) -> None:
@@ -252,7 +309,10 @@ def test_router_acceptance_is_not_model_readiness(tmp_path, monkeypatch):
     assert not manager.config_path.exists()
 
 
-def test_router_keeps_parent_and_waits_for_loaded_model(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reported_context", [8192, 4096])
+def test_router_keeps_parent_and_verifies_loaded_context(
+    tmp_path, monkeypatch, reported_context
+):
     from test_models import gguf
 
     manager = service.EdgeAgent(tmp_path)
@@ -264,8 +324,19 @@ def test_router_keeps_parent_and_waits_for_loaded_model(tmp_path, monkeypatch):
     states = iter([{"value": "unloaded"}, {"value": "loading"}, {"value": "loaded"}])
     monkeypatch.setattr(manager, "_model_state", lambda: next(states))
     monkeypatch.setattr(
-        manager, "_model_request", lambda *args, **kwargs: {"success": True}
+        manager,
+        "_model_request",
+        lambda path, *args, **kwargs: (
+            {"default_generation_settings": {"n_ctx": reported_context}}
+            if path.startswith("/props")
+            else {"success": True}
+        ),
     )
+    if reported_context != 8192:
+        with pytest.raises(RuntimeError, match="context"):
+            manager._start_child("base", None, None)
+        assert manager.active_model == ""
+        return
     manager._start_child("base", None, None)
     assert manager.process is parent
     assert manager.active_model == service.DEFAULT_AGENT_MODEL

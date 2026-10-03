@@ -97,6 +97,15 @@ try {
   await wait('document.querySelector("#models-dialog").open&&document.querySelector("#model-select").options.length>0',60000);
   assert(await evaluate('[...document.querySelector("#model-select").options].every(option=>!option.value.includes("lora"))'),'adapters excluded from model picker');
   assert(await evaluate('!!document.querySelector("#model-active").textContent'),'active model displayed');
+  assert(await evaluate('Number(document.querySelector("#model-output").value)===modelState.config.max_output_tokens&&document.querySelector("#model-active").textContent.includes("輸出上限 "+modelState.max_output_tokens)'),'separate configured and effective output budgets displayed');
+  // Exercise polling with a synthetic adapter catalog in RAM; no private
+  // adapter is selected, loaded, changed or downloaded.
+  await evaluate(`(()=>{const original=window.fetch;window.__restoreModelFetch=()=>{window.fetch=original;delete window.__restoreModelFetch};window.fetch=async(...args)=>{const response=await original(...args);if(args[0]!=='/models')return response;const data=await response.clone().json(),base=data.models.find(item=>item.filename===data.config.model);data.config.lora='fixture-adapter.gguf';data.models.push({filename:'fixture-adapter.gguf',architecture:base.architecture,adapter:true,bytes:1});return new Response(JSON.stringify(data),{status:response.status,headers:response.headers})}})()`);
+  try{
+    await evaluate('refreshModels(true)');
+    await choose('#model-lora','');await evaluate('refreshModels()');
+    assert.equal(await evaluate('document.querySelector("#model-lora").value'),'','no-adapter choice survives model polling');
+  }finally{await evaluate('window.__restoreModelFetch();refreshModels(true)')}
   await mkdir('.test-tmp',{recursive:true});
   const modelScreenshot=await cdp('Page.captureScreenshot',{format:'png'});
   await writeFile('.test-tmp/edge-agent-model-modules.png',Buffer.from(modelScreenshot.data,'base64'));
@@ -114,7 +123,7 @@ try {
     assert.equal(original.lora,'','empty adapter default');
     await choose('#model-select',base);
     assert(await evaluate('[...document.querySelector("#model-lora").options].every(option=>!option.value||modelState.models.some(item=>item.filename===option.value&&item.adapter&&item.architecture===modelState.models.find(model=>model.filename===document.querySelector("#model-select").value).architecture))'),'adapter architecture filtering');
-    await choose('#model-lora',adapter);await fill('#model-context','4096');
+    await choose('#model-lora',adapter);await fill('#model-context','8192');
     await click('#model-switch');await wait('modelState?.job.action==="switch"');await waitJob(base);
     assert.equal(await evaluate('modelState.config.lora'),adapter,'selected adapter loaded');
     console.log('PASS: optional adapter empty default, architecture filtering and real UI loading');
@@ -254,6 +263,7 @@ try {
   console.log('PASS: terminal stdout, persistent state, stop, clear, attachments and removal');
   if(process.env.EDGE_AGENT_TEST_MULTIMODAL){
     const original=await evaluate('({...modelState.config})');
+    let mediaFailure=null;
     const mediaChecks=[];
     const speech=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',
       'Add-Type -AssemblyName System.Speech; $speaker=New-Object System.Speech.Synthesis.SpeechSynthesizer; $audioStream=New-Object IO.MemoryStream; $speaker.SetOutputToWaveStream($audioStream); $speaker.Speak((6*7).ToString()); $speaker.Dispose(); [Convert]::ToBase64String($audioStream.ToArray()); $audioStream.Dispose()'
@@ -266,6 +276,7 @@ try {
       await wait('!document.querySelector("#model-select").disabled');
       await choose('#model-select',config.model);await choose('#model-lora',config.lora||'');
       await choose('#model-mmproj',config.mmproj||'');
+      await fill('#model-output',String(config.max_output_tokens));
       await fill('#model-context',String(config.context_size));await fill('#model-gpu',String(config.gpu_layers));
       if(await evaluate('document.querySelector("#model-low-vram").checked')!==config.low_vram)await click('#model-low-vram');
       await click('#model-switch');await wait('modelState?.job.action==="switch"');await waitJob(config.model);
@@ -282,8 +293,9 @@ try {
       check('Qwen image enabled',await evaluate('!document.querySelector("#attach-image").disabled'));
       check('Qwen audio and microphone disabled',await evaluate('document.querySelector("#attach-audio").disabled&&document.querySelector("#record").disabled'));
       await click('#attach');
-      await switchModel({...original,model:'gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf',lora:'',mmproj:'',context_size:16384,gpu_layers:28});
+      await switchModel({...original,model:'gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf',lora:'',mmproj:'',context_size:131072,gpu_layers:-1});
       check('E4B engine reports both modalities',await evaluate('modelState.capabilities.vision&&modelState.capabilities.audio'));
+      check('E4B retains 128K context',await evaluate('modelState.context_size===131072'));
       await click('#new-thread');if(await evaluate('agent.checked'))await click('#agent');
       await selectMemoryFile('image');
       check('Image preview loaded',await evaluate('document.querySelector(".attachment img").naturalWidth===32'));
@@ -311,7 +323,7 @@ try {
       check('E4B mixed image and audio inference completed',await evaluate('completedTurns>0&&!queuePaused&&document.querySelector(".message-media img").naturalWidth===32&&!!document.querySelector(".message-media audio")'));
       check('E4B image color and spoken number recognized',await evaluate('[...document.querySelectorAll(".assistant")].some(node=>/red|紅/i.test(node.textContent)&&/42|四十二/.test(node.textContent))'));
       await click('#new-thread');await selectMemoryFile('image');
-      await switchModel({...original,model:'Qwen3-0.6B-Q4_K_M.gguf',lora:'',mmproj:'',context_size:4096});
+      await switchModel({...original,model:'Qwen3-0.6B-Q4_K_M.gguf',lora:'',mmproj:'',context_size:8192});
       await click('#attach');
       check('Text model media controls disabled',await evaluate('document.querySelector("#attach-image").disabled&&document.querySelector("#attach-audio").disabled&&document.querySelector("#record").disabled'));
       check('Document option remains enabled',await evaluate('!document.querySelector("#attach-document").disabled'));
@@ -323,11 +335,20 @@ try {
       await mkdir('.test-tmp',{recursive:true});
       await writeFile('.test-tmp/multimodal-report.json',JSON.stringify({event:'multimodal_ui_verification',checks:mediaChecks.map(event=>({event,passed:true})),passed:mediaChecks.length,total:mediaChecks.length}));
       console.log('PASS: multimodal checks '+mediaChecks.length+'/'+mediaChecks.length);
-    }finally{
-      if(await evaluate('!!recording'))await evaluate('stopRecording(false)');
-      if((await (await fetch('http://127.0.0.1:18087/models')).json()).active_model!==original.model)await switchModel(original);
-      await evaluate('window.__edgeAgentCheckReload=true');await cdp('Page.reload');
-      await wait('!window.__edgeAgentCheckReload&&document.readyState==="complete"&&!!modelState?.active_model');
+    }catch(error){mediaFailure=error;throw error}finally{
+      let cleanupFailure=null;
+      try{if(await evaluate('!!recording'))await evaluate('stopRecording(false)')}catch(error){cleanupFailure=error;console.error({event:'recording_cleanup_failed'})}
+      try{
+        if((await (await fetch('http://127.0.0.1:18087/models')).json()).active_model!==original.model){
+          const keys=['model','lora','mmproj','context_size','max_output_tokens','gpu_layers','low_vram'];
+          const response=await fetch('http://127.0.0.1:18087/models/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(keys.map(key=>[key,original[key]])))});
+          assert(response.ok,'cleanup restore accepted');
+          for(let i=0;i<600;i++){const state=await (await fetch('http://127.0.0.1:18087/models')).json();if(state.job.state==='done'&&state.active_model===original.model)break;if(state.job.state==='failed')throw Error('cleanup restore failed');assert(i<599,'cleanup restore timeout');await new Promise(resolve=>setTimeout(resolve,1000))}
+        }
+        await evaluate('window.__edgeAgentCheckReload=true');await cdp('Page.reload');
+        await wait('!window.__edgeAgentCheckReload&&document.readyState==="complete"&&!!modelState?.active_model');
+      }catch(error){cleanupFailure??=error;console.error({event:'multimodal_cleanup_failed'})}
+      if(!mediaFailure&&cleanupFailure)throw cleanupFailure;
     }
   }
   if(process.env.EDGE_AGENT_TEST_PROMPT) {

@@ -44,14 +44,14 @@ modelRuntime.registerProvider('local', {
   models: [{ id: init.model, name: init.model_name, reasoning: true,
     thinkingLevelMap: { off: 'none' },
     input: init.capabilities?.vision || init.capabilities?.audio ? ['text', 'image'] : ['text'],
-    contextWindow: init.context_size, maxTokens: Math.min(4096, Math.floor(init.context_size / 4)),
+    contextWindow: init.context_size, maxTokens: init.max_output_tokens,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     compat: { supportsDeveloperRole: false, supportsReasoningEffort: true, supportsStrictMode: false },
   }],
 });
 const settings = sdk.SettingsManager.inMemory({
   enableInstallTelemetry: false, enableAnalytics: false, cacheWarming: 'off',
-  compaction: { enabled: true, reserveTokens: Math.floor(init.context_size / 4),
+  compaction: { enabled: true, reserveTokens: init.max_output_tokens,
     keepRecentTokens: Math.floor(init.context_size / 5) },
   retry: { enabled: true, maxRetries: 1, baseDelayMs: 500, maxAgentDelayMs: 2000 },
   httpIdleTimeoutMs: 120000,
@@ -78,7 +78,7 @@ function policy(pi) {
     return { message: { customType: 'edge-audio', content, display: false } };
   });
   pi.on('before_agent_start', () => { turnApproved = false; calls = 0; repeats.clear(); });
-  pi.on('before_provider_request', event => {
+  pi.on('before_provider_request', (event, ctx) => {
     const payload = { ...event.payload, ...(init.agent ? { temperature: 0.2 } : {}) };
     // Gemma's chat template consumes enable_thinking directly. Keep it aligned
     // with Pi's effort so an off turn never opens a hidden reasoning channel.
@@ -104,6 +104,11 @@ function policy(pi) {
       } else messages.push(message);
     }
     payload.messages = messages;
+    // Pi can lower the cap after reserving context safety space. Report the
+    // actual wire cap, rather than attributing every truncation to the setting.
+    ctx.ui.notify('edge-budget:' + JSON.stringify({
+      max_output_tokens: payload.max_tokens ?? payload.max_completion_tokens,
+    }), 'info');
     return payload;
   });
   function stop(ctx, reason) {

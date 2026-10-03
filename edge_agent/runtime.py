@@ -6,7 +6,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
-GENERAL_CONTEXT_SIZE = 16_384
+GENERAL_CONTEXT_SIZE = 131_072
+DEFAULT_MAX_OUTPUT_TOKENS = 8_192
+MIN_AGENT_CONTEXT_SIZE = 8_192
 CONTROL_PORT = 18_087
 GENERAL_PORT = 18_089
 DEFAULT_MODEL = "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf"
@@ -61,11 +63,15 @@ def build_server_args(
         "--threads",
         str(threads),
         "--n-gpu-layers",
-        str(gpu_layers),
+        "auto" if gpu_layers == -1 else str(gpu_layers),
         "--parallel",
         str(slots),
         "--jinja",
     ]
+    if gpu_layers == -1:
+        # Upstream owns device-memory fitting. Explicit context plus fit-ctx
+        # preserves the chosen window while weights can move to CPU.
+        args += ["--fit", "on", "--fit-ctx", str(context_size), "--fit-target", "512"]
     if lora_path is not None:
         args += ["--lora", str(lora_path)]
     if projector_path is not None:

@@ -22,8 +22,10 @@ from edge_agent.runtime import (
     CONTROL_PORT,
     CORE_ROOT,
     DEFAULT_AGENT_MODEL,
+    DEFAULT_MAX_OUTPUT_TOKENS,
     GENERAL_CONTEXT_SIZE,
     GENERAL_PORT,
+    MIN_AGENT_CONTEXT_SIZE,
     MODEL_DIR,
     build_server_args,
     find_llama_server,
@@ -38,7 +40,8 @@ DEFAULT_CONFIG: dict[str, object] = {
     "lora": "",
     "mmproj": "",
     "context_size": GENERAL_CONTEXT_SIZE,
-    "gpu_layers": 99,
+    "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
+    "gpu_layers": -1,
     "low_vram": True,
 }
 
@@ -177,6 +180,12 @@ class EdgeAgent:
             value = json.loads(self.config_path.read_text(encoding="utf-8"))
             if not isinstance(value, dict):
                 return dict(DEFAULT_CONFIG)
+            # Older releases allowed a window fully consumed by Pi's 4096-token
+            # safety reserve. Upgrade that one legacy field without resetting
+            # the selected model, adapter or other preferences.
+            context = value.get("context_size")
+            if type(context) is int and 4096 <= context < MIN_AGENT_CONTEXT_SIZE:
+                value["context_size"] = MIN_AGENT_CONTEXT_SIZE
             return self._validated_config(value)
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             return dict(DEFAULT_CONFIG)
@@ -202,8 +211,9 @@ class EdgeAgent:
             raise TypeError("mmproj must be a filename or an empty string")
         if merged["mmproj"]:
             model_filename(merged["mmproj"])
-        EdgeAgent._bounded_int(merged, "context_size", 4096, 262144)
-        EdgeAgent._bounded_int(merged, "gpu_layers", 0, 999)
+        EdgeAgent._bounded_int(merged, "context_size", MIN_AGENT_CONTEXT_SIZE, 262144)
+        EdgeAgent._bounded_int(merged, "max_output_tokens", 512, 131072)
+        EdgeAgent._bounded_int(merged, "gpu_layers", -1, 999)
         if not isinstance(merged["low_vram"], bool):
             raise TypeError("low_vram must be a boolean")
         return {
@@ -216,6 +226,7 @@ class EdgeAgent:
             "lora",
             "mmproj",
             "context_size",
+            "max_output_tokens",
             "gpu_layers",
             "low_vram",
         }:
@@ -244,6 +255,9 @@ class EdgeAgent:
             "active_model": self.active_model,
             "capabilities": dict(self.capabilities),
             "context_size": self.active_context_size,
+            "max_output_tokens": self.chat.max_output_tokens
+            if self.mode == "base"
+            else None,
             "job": job,
             "mode": self.mode,
             "loading": self.loading,
@@ -263,6 +277,7 @@ class EdgeAgent:
                     "lora",
                     "mmproj",
                     "context_size",
+                    "max_output_tokens",
                     "gpu_layers",
                     "low_vram",
                 }:
@@ -368,8 +383,10 @@ class EdgeAgent:
             limit = metadata["context_length"]
             if isinstance(limit, int) and limit > 0:
                 candidate["context_size"] = min(int(candidate["context_size"]), limit)
-            if int(candidate["context_size"]) < 4096:
-                raise ValueError("此模型的 context 少於 4096，無法支援目前工作工具")
+            if int(candidate["context_size"]) < MIN_AGENT_CONTEXT_SIZE:
+                raise ValueError(
+                    "EdgeAgent 的 context 至少需要 8192 token，以保留 SDK 安全空間"
+                )
             if candidate == self.config and self.status()["ready"]:
                 return self.status()
             previous = dict(self.config)
@@ -573,6 +590,8 @@ class EdgeAgent:
             limit = metadata["context_length"]
             if isinstance(limit, int) and limit > 0:
                 context_size = min(context_size, limit)
+            if context_size < MIN_AGENT_CONTEXT_SIZE:
+                raise ValueError("此模型的 context 少於 8192，無法支援 EdgeAgent")
             port = GENERAL_PORT
             gpu_layers = int(self.config["gpu_layers"])
             low_vram = bool(self.config["low_vram"])
@@ -680,7 +699,16 @@ class EdgeAgent:
                 raise TimeoutError("selected model did not become ready")
             time.sleep(0.1)
         self.mode, self.port = mode, GENERAL_PORT
-        modalities = self._model_request("/props?model=local").get("modalities", {})
+        properties = self._model_request("/props?model=local")
+        if mode == "base":
+            actual_context = properties.get("default_generation_settings", {}).get(
+                "n_ctx"
+            )
+            if actual_context != context_size:
+                raise RuntimeError(
+                    f"引擎實際 context {actual_context} 與要求的 {context_size} 不符"
+                )
+        modalities = properties.get("modalities", {})
         self.capabilities = {
             "vision": isinstance(modalities, dict) and modalities.get("vision") is True,
             "audio": isinstance(modalities, dict) and modalities.get("audio") is True,
@@ -691,7 +719,10 @@ class EdgeAgent:
         self.handoff_until = 0.0
         if mode == "base":
             self.chat.configure_context(
-                context_size, model_path.name, self.capabilities
+                context_size,
+                model_path.name,
+                self.capabilities,
+                int(self.config["max_output_tokens"]),
             )
 
     def _projector_path(self, filename: str) -> Path:
