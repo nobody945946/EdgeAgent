@@ -57,7 +57,11 @@ SilentTalk 的角色配置與 Agent adapter 選擇分開，adapter 檔案則在�
 
 ## 批准、佇列與保存範圍
 
-寫檔、編輯與 PowerShell 執行先由介面批准，可准許單次或本輪工作。Plan 模式只使用讀取工具。批准不是 OS 沙盒，執行程式仍有目前帳號的權限；受保護的 `.env`、`settings.json`、`personas.json`、`character_state.json` 禁止透過檔案編輯工具修改。
+在「⋯ → 權限」分別設定網頁與 Discord 的寫檔、指令、上網權限（允許／詢問／禁止）及可用資料夾。Discord 預設關閉；開啟後還需設定至少一個工作資料夾，SilentTalk 使用第一個。
+
+讀過網頁之後，本輪准許失效，允許的寫檔及指令會重新詢問。刪除及透過指令觸及受保護檔案的操作永遠只有單次批准，卡片說明原因。
+
+權限設為詢問的寫檔、編輯與 PowerShell 執行先由介面批准，可准許單次或本輪工作。Plan 模式只使用讀取工具。批准不是 OS 沙盒，執行程式仍有目前帳號的權限；受保護的 `.env`、`settings.json`、`personas.json`、`character_state.json` 禁止透過檔案編輯工具修改。
 
 相同操作連續重複而無進展，或本輪工具呼叫超過 64 次時停止，保留修改與 RAM context。工作失敗後暫停該對話的佇列；更多操作中的「繼續排隊」明確恢復。每個對話有自己的佇列。
 
@@ -65,9 +69,9 @@ SilentTalk 的角色配置與 Agent adapter 選擇分開，adapter 檔案則在�
 
 ## 共用推論服務
 
-SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸還後恢復原 Agent 配置。最多載入一個完整模型，租借時不能開始編程工作或切換 Agent。角色 context 預設 32,768，Agent 預設 131,072，分開設定。
+SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸還後恢復原 Agent 配置。最多載入一個完整模型。租借基底與 LoRA 都和 Agent 相同時，可在租借期間做 Agent 工作；不同時拒絕派工。租借或工作中禁止切換模型。角色 context 預設 32,768，Agent 預設 131,072，分開設定。
 
-單獨安裝 EdgeAgent 只準備 Agent 模型；SilentTalk 部署額外準備公開 Gemma 4 E4B，不取得個人 LoRA。角色有 LoRA 時使用兩個推論 slot，區分套用與未套用 cache；其他情況一個 slot，完整模型數仍為一。
+單獨安裝 EdgeAgent 只準備 Agent 模型；SilentTalk 部署額外準備公開 Gemma 4 E4B，不取得個人 LoRA。角色有 LoRA 時使用兩個推論 slot，區分套用與未套用 cache；其他情況角色使用一個 slot。相同基底與 LoRA 時另加 Agent 專用 slot，避免互相清除 cache。每個 slot 保留兩個用戶端要求的較大 context，不自動縮小使用者設定；記憶體不足時載入會失敗並回報。
 
 | 操作 | 指令 |
 |---|---|
@@ -107,3 +111,5 @@ SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸�
 ```
 
 `tests/browser_check.mjs` 使用真實 Edge／CDP 驗證 UI，不保存使用者對話。修改應在既有 owner 重寫、同步呼叫端與測試，刪除被取代的路徑；不讓 UI 補償引擎缺陷，也不增加第二套部署或模型專用流程。
+
+`python -m tests.windows_check --inference-port 18090` 可使用暫存設定啟動真正服務、驗證清理，避開已被其他程式占用的推論埠。測試指示只透過環境變數傳入記憶體：`EDGE_AGENT_WEB_PROMPT` 要求搜尋及讀網頁，`EDGE_AGENT_SEARCH_PROMPT` 要求 grep/find；`EDGE_AGENT_ROLE_PROMPT` 配合 `EDGE_AGENT_READ_PROMPT` 測量 8K／16K／32K 共用 slot 的並行交談與讀檔。runner 確認工具及完成事件，只輸出事件和數字。`--browser` 另需預先啟動 CDP 9223 的專用 Edge，profile 名稱為 `integration-edge-profile`；結束只關閉該 profile 的 PID。

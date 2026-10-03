@@ -131,9 +131,13 @@ def test_runtime_rejects_external_server_in_deployment_marker(tmp_path, monkeypa
 def test_service_tools_find_portable_git_without_system_git(tmp_path, monkeypatch):
     directory = tmp_path / ".runtime/git/cmd"
     directory.mkdir(parents=True)
+    (tmp_path / ".runtime/tools").mkdir()
     monkeypatch.setenv("PATH", "system-only")
     runtime.activate_deployment_tools(tmp_path)
     assert str(directory) in runtime.os.environ["PATH"].split(runtime.os.pathsep)
+    assert str(tmp_path / ".runtime/tools") in runtime.os.environ["PATH"].split(
+        runtime.os.pathsep
+    )
     runtime.activate_deployment_tools(tmp_path)
     assert (
         runtime.os.environ["PATH"].split(runtime.os.pathsep).count(str(directory)) == 1
@@ -183,6 +187,31 @@ def test_character_install_downloads_only_public_base(tmp_path, monkeypatch):
     )
     deploy.install_character_assets(tmp_path)
     assert downloads == [(deploy.MODEL_URL, runtime.DEFAULT_MODEL)]
+
+
+def test_search_deployment_repairs_missing_and_corrupt_tools(tmp_path, monkeypatch):
+    probes = []
+
+    def download(url, target, digest):
+        assert digest == deploy.SEARCH_TOOLS["rg" if "ripgrep" in url else "fd"][1]
+        tool = "rg" if "ripgrep" in url else "fd"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(target, "w") as bundle:
+            bundle.writestr("release/" + tool + ".exe", tool.encode())
+
+    monkeypatch.setattr(deploy, "download", download)
+    monkeypatch.setattr(
+        deploy.subprocess, "run", lambda args, **kwargs: probes.append(args)
+    )
+    deploy.install_search_tools(tmp_path)
+    destination = tmp_path / ".runtime/tools"
+    assert (destination / "rg.exe").read_bytes() == b"rg"
+    (destination / "rg.exe").write_bytes(b"corrupt")
+    (destination / "fd.exe").unlink()
+    deploy.install_search_tools(tmp_path)
+    assert (destination / "rg.exe").read_bytes() == b"rg"
+    assert (destination / "fd.exe").read_bytes() == b"fd"
+    assert len(probes) == 4
 
 
 def test_public_projector_is_pinned_and_belongs_to_exact_shipped_base(
@@ -240,6 +269,7 @@ def test_missing_engine_file_is_repaired_with_existing_install_receipt(
 def test_matching_sdk_receipt_does_not_hide_broken_dependency(
     tmp_path, monkeypatch, repair_succeeds
 ):
+    monkeypatch.setattr(deploy, "install_search_tools", lambda root: None)
     node = tmp_path / f".runtime/node/node-v{runtime.NODE_VERSION}-win-x64/node.exe"
     node.parent.mkdir(parents=True)
     node.write_bytes(b"fixture")

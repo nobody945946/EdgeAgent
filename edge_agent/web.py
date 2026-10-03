@@ -97,7 +97,8 @@ select{min-height:32px;min-width:0;border:0;border-radius:7px;background:#252525
 .compact-height .folder-head,.compact-height #folder-address-form,.compact-height .folder-actions{padding:6px 10px}
 .compact-height .folder-path,.compact-height #folder-error{max-height:32px}
 @media(prefers-reduced-motion:no-preference){#sidebar{transition:transform .15s ease,visibility .15s}}
-#models-dialog{width:min(700px,calc(100vw - 24px));max-height:calc(var(--app-height) - 24px);padding:0;color:#ececec;background:#222;border:1px solid #444;border-radius:14px;overflow:auto}
+#models-dialog,#permissions-dialog{width:min(700px,calc(100vw - 24px));max-height:calc(var(--app-height) - 24px);padding:0;color:#ececec;background:#222;border:1px solid #444;border-radius:14px;overflow:auto}
+#permissions-dialog textarea{background:#181818;border:1px solid #555;border-radius:8px;min-height:85px}
 #models-dialog::backdrop{background:#0009}
 .model-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;position:sticky;top:0;background:#222;z-index:1}
 .model-body{padding:0 18px 18px;display:grid;gap:12px}.model-body label{display:grid;gap:6px}.model-body input,.model-body select{width:100%;min-width:0;padding:10px;background:#181818;color:#eee;border:1px solid #555;border-radius:8px;font:inherit}
@@ -106,7 +107,7 @@ select{min-height:32px;min-width:0;border:0;border-radius:7px;background:#252525
 </style>
 </head>
 <body><aside id="sidebar" aria-label="專案與對話"><div class="sidebar-heading"><h2>EdgeAgent</h2><button id="nav-close" aria-label="關閉側欄">×</button></div><button id="new-thread" class="secondary">＋ 新對話</button><button id="open-project" class="secondary">開啟專案</button><div class="nav-title">專案與對話</div><div id="threads"></div><div id="privacy">本機工作 · 對話只在記憶體<br>關閉頁面後不保留對話</div></aside><button id="nav-backdrop" aria-label="關閉側欄" hidden></button><main>
-<header><button id="nav-toggle" aria-label="開啟側欄" aria-controls="sidebar" aria-expanded="false">☰</button><div class="heading"><h1>EdgeAgent</h1><div class="sub">本機編程 Agent · 對話只留在記憶體</div></div><div class="actions"><details id="actions-menu"><summary aria-label="更多操作">⋯</summary><div class="action-menu"><button id="models-open" class="secondary">模型模組</button><button id="save" class="secondary">儲存設定</button><button id="reset" class="secondary">新對話</button><button id="shutdown" class="danger">關閉EdgeAgent</button></div></details></div></header>
+<header><button id="nav-toggle" aria-label="開啟側欄" aria-controls="sidebar" aria-expanded="false">☰</button><div class="heading"><h1>EdgeAgent</h1><div class="sub">本機編程 Agent · 對話只留在記憶體</div></div><div class="actions"><details id="actions-menu"><summary aria-label="更多操作">⋯</summary><div class="action-menu"><button id="models-open" class="secondary">模型模組</button><button id="permissions-open" class="secondary">權限</button><button id="save" class="secondary">儲存設定</button><button id="reset" class="secondary">新對話</button><button id="shutdown" class="danger">關閉EdgeAgent</button></div></details></div></header>
 <section class="controls">
   <label class="control"><span>Thinking effort</span><select id="effort" aria-label="Thinking effort"><option value="off">關閉</option><option value="low">低</option><option value="medium" selected>中</option><option value="high">高</option></select></label>
   <div class="agent-controls"><label class="toggle"><input id="agent" type="checkbox" checked>啟用 Agent</label></div>
@@ -143,7 +144,20 @@ select{min-height:32px;min-width:0;border:0;border-radius:7px;background:#252525
 <p>支援現有 llama.cpp 可載入的單檔 GGUF。下載會驗證 SHA256；LoRA 和多模態配件不會列為回覆模型。工具呼叫格式不代表模型具有足夠的 Agent 能力。</p>
 <progress id="model-progress" hidden></progress><div id="model-result" role="status" aria-live="polite"></div>
 </div></dialog>
+<dialog id="permissions-dialog" aria-label="權限">
+<div class="model-head"><strong>權限</strong><button id="permissions-close" type="button">關閉</button></div>
+<form id="permissions-form" class="model-body">
+<p>分別設定網頁與 Discord 的操作權限。讀過網頁之後，寫檔與指令會重新詢問；刪除或觸及受保護檔案的指令永遠需要單次批准。</p>
+<div id="permissions-profiles"></div>
+<button id="permissions-save" type="submit">儲存權限</button><p id="permissions-result" role="status"></p>
+</form></dialog>
 <script>
+const permissionDialog=document.querySelector('#permissions-dialog');
+let permissionLoading=false;
+function renderPermissions(profiles){const container=document.querySelector('#permissions-profiles');container.replaceChildren();for(const [client,title] of [['ui','網頁'],['discord','Discord']]){const section=document.createElement('fieldset');section.style.minWidth='0';const legend=document.createElement('legend');legend.textContent=title;section.append(legend);const enabled=document.createElement('label');enabled.className='model-check';const check=document.createElement('input');check.type='checkbox';check.id='permission-'+client+'-enabled';check.checked=profiles[client].enabled;enabled.append(check,document.createTextNode('啟用 '+title+' Agent'));section.append(enabled);for(const [category,label] of [['edit','寫檔'],['shell','執行指令'],['web','上網']]){const row=document.createElement('label');row.textContent=label;const select=document.createElement('select');select.id='permission-'+client+'-'+category;for(const [value,text] of [['allow','允許'],['ask','詢問'],['deny','禁止']])select.append(new Option(text,value));select.value=profiles[client][category];row.append(select);section.append(row)}const folders=document.createElement('label');folders.textContent='可用資料夾（每行一個；Discord 至少需要一個）';const area=document.createElement('textarea');area.id='permission-'+client+'-workspaces';area.value=profiles[client].workspaces.join('\n');folders.append(area);section.append(folders);container.append(section)}}
+document.querySelector('#permissions-open').onclick=async()=>{permissionDialog.showModal();permissionLoading=true;document.querySelector('#permissions-save').disabled=true;const result=document.querySelector('#permissions-result');result.textContent='正在讀取權限…';try{const response=await fetch('/config');if(!response.ok)throw Error('讀取權限失敗');renderPermissions((await response.json()).permissions);result.textContent=''}catch(error){result.textContent=error.message}finally{permissionLoading=false;document.querySelector('#permissions-save').disabled=!document.querySelector('#permission-ui-edit')}};
+document.querySelector('#permissions-close').onclick=()=>permissionDialog.close();
+document.querySelector('#permissions-form').onsubmit=async event=>{event.preventDefault();if(permissionLoading)return;const button=document.querySelector('#permissions-save'),result=document.querySelector('#permissions-result');button.disabled=true;try{const permissions={};for(const client of ['ui','discord']){const profile={enabled:document.querySelector('#permission-'+client+'-enabled').checked,workspaces:document.querySelector('#permission-'+client+'-workspaces').value.split(/\r?\n/).map(path=>path.trim()).filter(Boolean)};for(const category of ['edit','shell','web'])profile[category]=document.querySelector('#permission-'+client+'-'+category).value;permissions[client]=profile}await modelPost('/config',{permissions});result.textContent='權限已儲存，下次工作生效。'}catch(error){result.textContent=error.message}finally{button.disabled=false}};
 // Model controls use the same core and keep conversation/workspace state in RAM.
 const modelDialog=document.querySelector('#models-dialog'),modelSelect=document.querySelector('#model-select'),modelResult=document.querySelector('#model-result');
 let modelState=null,modelTimer=null,modelChanging=false,remoteRepository='',remoteRequest=0,modelRefreshRequest=0;
@@ -270,7 +284,17 @@ function openWorkspace(path){if(busy||recording||recordStarting||readingFiles||t
 document.querySelector('#folder-use').addEventListener('click',()=>openWorkspace(folderPath.dataset.path));
 async function approve(payload){
   const details=payload.preview||JSON.stringify(payload.arguments,null,2);
-  const accepted=await new Promise(resolve=>{const card=document.createElement('section');card.className='approval-card';const title=document.createElement('strong');title.textContent='需要批准 · '+payload.tool;const pre=document.createElement('pre');pre.textContent=details;card.append(title,pre);for(const [label,value,scope] of [['允許本輪工作',true,'turn'],['允許這次操作',true,'once'],['拒絕',false,'once']]){const button=document.createElement('button');button.textContent=label;if(!value)button.className='secondary';button.onclick=()=>{card.replaceChildren(title);title.textContent=value?'已批准 · '+payload.tool:'已拒絕 · '+payload.tool;resolve({approved:value,scope})};card.append(button)}chat.append(card);card.scrollIntoView({block:'nearest'});document.querySelector('#stop').addEventListener('click',()=>resolve({approved:false,scope:'once'}),{once:true})});
+  const accepted=await new Promise(resolve=>{
+    const card=document.createElement('section');card.className='approval-card';
+    const title=document.createElement('strong');title.textContent='需要批准 · '+payload.tool;
+    const pre=document.createElement('pre');pre.textContent=details;card.append(title,pre);
+    for(const reason of [payload.explicit==='protected'?'碰到受保護檔案，需要單次批准。':'',payload.explicit==='destructive'?'這個指令會刪除或清除資料，需要單次批准。':'',payload.after_web?'讀過網頁之後的操作，需要重新決定。':''])if(reason){const note=document.createElement('p');note.textContent=reason;card.append(note)}
+    const choices=payload.explicit?[['允許一次',true,'once'],['拒絕',false,'once']]:[['允許本輪工作',true,'turn'],['允許一次',true,'once'],['拒絕',false,'once']];
+    const stopped=()=>finish({approved:false,scope:'once'});
+    function finish(choice){document.querySelector('#stop').removeEventListener('click',stopped);card.replaceChildren(title);title.textContent=choice.approved?'已批准 · '+payload.tool:'已拒絕 · '+payload.tool;resolve(choice)}
+    for(const [label,value,scope] of choices){const button=document.createElement('button');button.textContent=label;if(!value)button.className='secondary';button.onclick=()=>finish({approved:value,scope});card.append(button)}
+    chat.append(card);card.scrollIntoView({block:'nearest'});document.querySelector('#stop').addEventListener('click',stopped,{once:true});
+  });
   const response=await fetch('/chat/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:session,call_id:payload.call_id,...accepted})});
   if(!response.ok)throw new Error(await response.text());
 }

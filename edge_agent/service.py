@@ -178,6 +178,8 @@ class EdgeAgent:
         self.chat = NativeChat(model_port=GENERAL_PORT, core_dir=self.core_dir)
         self.terminal = NativeTerminal()
         self.active_model = ""
+        self.agent_slot: int | None = None
+        self.chat_in_progress = False
         self.active_context_size = 0
         self.capabilities = {"vision": False, "audio": False}
         self.model_job_lock = threading.Lock()
@@ -269,10 +271,10 @@ class EdgeAgent:
             "capabilities": dict(self.capabilities),
             "context_size": self.active_context_size,
             "max_output_tokens": self.chat.max_output_tokens
-            if self.mode == "base"
+            if self.mode == "base" or self.agent_slot is not None
             else None,
             "working_context_size": self.chat.working_context_size
-            if self.mode == "base"
+            if self.mode == "base" or self.agent_slot is not None
             else None,
             "job": job,
             "mode": self.mode,
@@ -375,6 +377,8 @@ class EdgeAgent:
         if not self.lock.acquire(blocking=False):
             raise PermissionError("工作正在進行；完成或停止後再切換模型")
         try:
+            if self.chat_in_progress:
+                raise PermissionError("工作正在進行；完成或停止後再切換模型")
             if self.mode == "character":
                 raise PermissionError("SilentTalk 正在使用模型；結束角色連線後再切換")
             selection = {**self.config, **payload}
@@ -518,6 +522,8 @@ class EdgeAgent:
             "url": f"http://127.0.0.1:{CONTROL_PORT}/",
             "model_url": f"http://127.0.0.1:{self.port}",
             "owner_pid": self.owner_pid,
+            "agent_slot": self.agent_slot,
+            "agent_busy": self.chat_in_progress,
             "error": self.error,
             "model": self.active_model,
             "context_size": self.active_context_size,
@@ -545,6 +551,8 @@ class EdgeAgent:
         character: dict[str, object] | None = None,
     ) -> dict[str, object]:
         with self.lock:
+            if self.chat_in_progress:
+                raise PermissionError("工作正在進行；完成或停止後再切換模型")
             if (
                 mode == "character"
                 and self.mode == "character"
@@ -634,6 +642,15 @@ class EdgeAgent:
         else:
             raise ValueError(f"unknown EdgeAgent mode: {mode}")
 
+        shared = (
+            mode == "character"
+            and model_path.name == self.config["model"]
+            and (lora_path.name if lora_path else "") == self.config["lora"]
+        )
+        role_slots = 2 if mode == "character" and lora_path else 1
+        agent_slot = role_slots if shared else (0 if mode == "base" else None)
+        if shared:
+            context_size = max(context_size, int(self.config["context_size"]))
         # The upstream router owns model processes, loading and hot replacement.
         # Keep one public inference endpoint for the Agent and leased clients.
         args = build_server_args(
@@ -646,7 +663,7 @@ class EdgeAgent:
             low_vram=low_vram,
             lora_path=lora_path,
             projector_path=projector_path,
-            slots=2 if mode == "character" and lora_path else 1,
+            slots=role_slots + (1 if shared else 0),
             prompt_cache_mib=256 if mode == "base" else None,
         )
         preset = self.core_dir / ".runtime/models.ini"
@@ -718,7 +735,7 @@ class EdgeAgent:
             time.sleep(0.1)
         self.mode, self.port = mode, GENERAL_PORT
         properties = self._model_request("/props?model=local")
-        if mode == "base":
+        if mode == "base" or shared:
             actual_context = properties.get("default_generation_settings", {}).get(
                 "n_ctx"
             )
@@ -732,10 +749,11 @@ class EdgeAgent:
             "audio": isinstance(modalities, dict) and modalities.get("audio") is True,
         }
         self.active_model, self.active_context_size = model_path.name, context_size
+        self.agent_slot = agent_slot
         self.owner_pid = owner_pid if mode == "character" else None
         self.owner_dead_since = None
         self.handoff_until = 0.0
-        if mode == "base":
+        if mode == "base" or shared:
             self.chat.configure_context(
                 context_size,
                 model_path.name,
@@ -743,6 +761,8 @@ class EdgeAgent:
                 int(self.config["max_output_tokens"]),
                 int(self.config["working_context_size"]),
             )
+            self.chat.slot_id = agent_slot
+            self.chat.lora_enabled = lora_path is not None
 
     def _projector_path(self, filename: str) -> Path:
         path = self._model_path(filename)
@@ -810,6 +830,7 @@ class EdgeAgent:
         self.process = None
         self.active_model = ""
         self.active_context_size = 0
+        self.agent_slot = None
         if process is None or process.poll() is not None:
             return
         try:
@@ -1094,8 +1115,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             with self.core.lock:
                 status = self.core.status()
-                if status["mode"] != "base" or status["ready"] is not True:
+                if status["ready"] is not True or self.core.agent_slot is None:
                     raise RuntimeError("EdgeAgent is currently leased by SilentTalk")
+                if self.core.chat_in_progress:
+                    raise PermissionError("Agent 工作正在進行；完成或停止後再派工")
                 for item in media:
                     capability = (
                         "audio"
@@ -1104,6 +1127,8 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     if not self.core.capabilities[capability]:
                         raise ValueError("目前模型不支援此附件，請更換模型")
+                self.core.chat_in_progress = True
+            try:
                 for event, data in self.core.chat.stream_reply(
                     session_id,
                     text.strip(),
@@ -1115,6 +1140,9 @@ class Handler(BaseHTTPRequestHandler):
                     permissions=bridge_rules(profile),
                 ):
                     self._event(event, data)
+            finally:
+                with self.core.lock:
+                    self.core.chat_in_progress = False
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.core.chat.cancel(session_id)
         except Exception as exc:  # noqa: BLE001 - stream errors must reach the browser

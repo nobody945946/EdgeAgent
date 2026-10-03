@@ -4,7 +4,8 @@ import {mkdir,writeFile,readFile} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import {resolve} from 'node:path';
 const targets = await (await fetch('http://127.0.0.1:9223/json/list')).json();
-const target = targets.find(t => t.type === 'page' && t.url.startsWith('http://127.0.0.1:18087'));
+const target = targets.find(t => t.type === 'page' && t.url.startsWith('http://127.0.0.1:18087'))
+  ?? targets.find(t => t.type === 'page' && t.url === 'about:blank');
 const folderFixture=resolve('.test-tmp/folder-picker-fixture');
 const missingDirectory=resolve(folderFixture,'missing');
 const originalTests=process.env.EDGE_AGENT_TEST_WORKSPACE&&process.env.EDGE_AGENT_EXPECT_SHELL
@@ -84,6 +85,7 @@ const choose = async (selector,value) => {
 const waitJob=async(model=null)=>{for(let index=0;index<600;index++){const state=await evaluate('modelState?.job.state');if(state==='done'&&(!model||await evaluate('modelState.active_model==='+JSON.stringify(model))))return;if(state==='failed')throw Error(await evaluate('modelState.job.error'));await new Promise(resolve=>setTimeout(resolve,1000))}throw Error('Model operation timeout')};
 try {
   await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('Network.enable'); await cdp('Log.clear'); await cdp('Log.enable');
+  if(target.url==='about:blank')await cdp('Page.navigate',{url:'http://127.0.0.1:18087/'});
   await cdp('Emulation.setFocusEmulationEnabled',{enabled:true});
   await setViewport({width:1280,height:850,deviceScaleFactor:1,mobile:false});
   await cdp('Page.bringToFront');
@@ -187,6 +189,40 @@ try {
     await evaluate('window.__edgeAgentCheckReload=true');await cdp('Page.reload');await wait('!window.__edgeAgentCheckReload&&document.readyState==="complete"&&document.querySelectorAll(".thread").length===1');
   }
   console.log('PASS: model dialog, active model, adapter filtering, compact layout');
+  const originalPermissions=await evaluate("fetch('/config').then(r=>r.json()).then(c=>c.permissions)");
+  await click('#actions-menu>summary');await click('#permissions-open');
+  await wait('!!document.querySelector("#permission-discord-workspaces")&&!document.querySelector("#permissions-save").disabled');
+  try{
+    await click('#permission-discord-enabled');
+    await choose('#permission-discord-edit','deny');
+    await choose('#permission-ui-shell','allow');
+    await fill('#permission-discord-workspaces',folderFixture);
+    await click('#permissions-save');
+    await wait('document.querySelector("#permissions-result").textContent.includes("已儲存")');
+    const saved=await evaluate("fetch('/config').then(r=>r.json()).then(c=>c.permissions)");
+    assert.equal(saved.discord.enabled,!originalPermissions.discord.enabled);
+    assert.equal(saved.discord.edit,'deny');assert.equal(saved.ui.shell,'allow');
+    assert.deepEqual(saved.discord.workspaces,[folderFixture]);
+    for(const [width,height] of [[1280,850],[1280,600],[768,1024],[390,844],[360,640],[320,568],[480,360],[844,390]]){
+      await setViewport({width,height,deviceScaleFactor:1,mobile:false});
+      assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'permissions panel fits viewport');
+      await click('#permissions-save');
+      assert(await evaluate('document.querySelector("#permissions-save").getBoundingClientRect().bottom<=innerHeight+1'),'permission save reachable');
+    }
+  }finally{
+    await evaluate(`modelPost('/config',{permissions:${JSON.stringify(originalPermissions)}})`);
+    await click('#permissions-close');await setViewport({width:1280,height:850,deviceScaleFactor:1,mobile:false});
+  }
+  await evaluate("window.__approvalFetch=window.fetch;window.fetch=(url,...args)=>url==='/chat/approve'?Promise.resolve(new Response('{\"accepted\":true}',{status:200})):window.__approvalFetch(url,...args)");
+  try{
+    for(const explicit of ['protected','destructive']){
+      await evaluate(`window.__approvalPromise=approve({tool:'powershell',call_id:'fixture',arguments:{},explicit:${JSON.stringify(explicit)},after_web:true});true`);
+      assert.equal(await evaluate('document.querySelectorAll(".approval-card:last-child button").length'),2);
+      assert(await evaluate('document.querySelector(".approval-card:last-child").textContent.includes("讀過網頁之後的操作")'));
+      await click('.approval-card:last-child button:last-child');await evaluate('window.__approvalPromise');
+    }
+  }finally{await evaluate('window.fetch=window.__approvalFetch;delete window.__approvalFetch;document.querySelectorAll(".approval-card").forEach(node=>node.remove())')}
+  console.log('PASS: permission profile persistence, eight viewports, explicit single approvals and web reminder');
   await click('#new-thread');
   await wait('document.querySelectorAll(".thread").length===2');
   await click('.thread');

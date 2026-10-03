@@ -24,7 +24,7 @@ class EdgeAgentError(RuntimeError):
 
 
 def activate_deployment_tools(root: Path = CORE_ROOT) -> None:
-    paths = [root / ".runtime/git/cmd"]
+    paths = [root / ".runtime/tools", root / ".runtime/git/cmd"]
     local = os.environ.get("LOCALAPPDATA")
     if local:
         paths.append(Path(local) / "EdgeAgent/GitHubCLI/2.102.0/bin")
@@ -50,8 +50,8 @@ def build_server_args(
     prompt_cache_mib: int | None = None,
 ) -> list[str]:
     """Build the one canonical llama-server command for every core mode."""
-    if slots not in (1, 2):
-        raise ValueError("slots must be 1 or 2")
+    if slots not in (1, 2, 3):
+        raise ValueError("slots must be 1, 2 or 3")
     args = [
         executable,
         "--model",

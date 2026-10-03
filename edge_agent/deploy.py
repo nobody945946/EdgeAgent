@@ -65,6 +65,22 @@ def ensure_projector(model_path: Path, architecture: str) -> Path | None:
 
 
 NODE_SHA = "2b0ff57b049cda1bbcea2240eec20467018713c1efe1f7360c2681859b90ed71"
+SEARCH_TOOLS = {
+    "rg": (
+        (
+            "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/"
+            "ripgrep-15.2.0-x86_64-pc-windows-msvc.zip"
+        ),
+        "71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5",
+    ),
+    "fd": (
+        (
+            "https://github.com/sharkdp/fd/releases/download/v10.5.0/"
+            "fd-v10.5.0-x86_64-pc-windows-msvc.zip"
+        ),
+        "a227701b8551c35a9931d9f6da75503cf86d88e182d71fb849a70864c5d57cd7",
+    ),
+}
 BINARIES = {
     "cpu": (
         (
@@ -230,8 +246,41 @@ def install_character_assets(root: Path) -> None:
     download(MODEL_URL, root / "models" / DEFAULT_MODEL, MODEL_SHA)
 
 
+def install_search_tools(root: Path) -> None:
+    """Pi runs offline; deploy verified tools instead of relying on system PATH."""
+    destination = root / ".runtime/tools"
+    destination.mkdir(parents=True, exist_ok=True)
+    for tool, (url, digest) in SEARCH_TOOLS.items():
+        archive = root / ".runtime/downloads" / url.rsplit("/", 1)[-1]
+        download(url, archive, digest)
+        with zipfile.ZipFile(archive) as bundle:
+            members = [
+                item
+                for item in bundle.infolist()
+                if Path(item.filename).name == tool + ".exe"
+            ]
+            if len(members) != 1:
+                raise RuntimeError(f"verified release must contain one {tool}.exe")
+            content = bundle.read(members[0])
+        target = destination / (tool + ".exe")
+        if (
+            not target.is_file()
+            or sha256(target) != hashlib.sha256(content).hexdigest()
+        ):
+            temporary = target.with_suffix(".exe.part")
+            temporary.write_bytes(content)
+            temporary.replace(target)
+        subprocess.run(
+            [str(target), "--version"],
+            check=True,
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+
 def install_agent_runtime(root: Path) -> None:
     """Install pinned upstream Pi and portable Node using npm's lockfile."""
+    install_search_tools(root)
     node_root = root / ".runtime/node"
     name = f"node-v{NODE_VERSION}-win-x64"
     archive = node_root / (name + ".zip")

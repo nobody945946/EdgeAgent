@@ -974,6 +974,35 @@ def _permission_run(chat, tmp_path, rules, approve=None):
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+@pytest.mark.parametrize(
+    "tool,arguments",
+    [
+        ("grep", {"pattern": "fixture_marker", "path": "."}),
+        ("find", {"pattern": "*.py", "path": "."}),
+    ],
+)
+def test_real_sdk_search_tools_on_windows(tmp_path, repeating_model, tool, arguments):
+    port, state = repeating_model
+    (tmp_path / "probe.py").write_text("fixture_marker = 1\n")
+    state["sequence"] = [(tool, arguments)]
+    chat = NativeChat(model_port=port)
+    try:
+        events = _permission_run(
+            chat, tmp_path, {"edit": "deny", "shell": "deny", "web": "deny"}
+        )
+        assert events[-1][0] == "done"
+        result = next(
+            data["result"]
+            for name, data in events
+            if name == "tool" and data["phase"] == "finished" and data["tool"] == tool
+        )
+        assert "probe.py" in json.dumps(result)
+        assert not any(name == "approval" for name, _ in events)
+    finally:
+        chat.close()
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
 def test_real_sdk_denied_edits_never_reach_disk_or_ask(tmp_path, repeating_model):
     port, state = repeating_model
     state["sequence"] = [("write", {"path": "new.txt", "content": "x"})]

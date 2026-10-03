@@ -98,6 +98,73 @@ def test_base_server_is_one_slot_without_an_extra_agent_loop() -> None:
     assert "--tools" not in args
 
 
+@pytest.mark.parametrize(
+    "same_base,same_lora,expected_slots",
+    [
+        (True, True, 2),
+        (False, True, 1),
+        (True, False, 2),
+    ],
+)
+def test_character_shared_slot_requires_same_base_and_adapter(
+    tmp_path,
+    monkeypatch,
+    same_base,
+    same_lora,
+    expected_slots,
+):
+    manager = service.EdgeAgent(tmp_path)
+    manager.config = {**manager.config, "model": "base.gguf", "context_size": 16384}
+    manager.process = SimpleNamespace(poll=lambda: None)
+    monkeypatch.setattr(service, "find_llama_server", lambda: "llama-server")
+    monkeypatch.setattr(manager, "_model_path", lambda name: tmp_path / name)
+    monkeypatch.setattr(
+        service, "model_metadata", lambda path: {"architecture": "fixture"}
+    )
+    monkeypatch.setattr(
+        manager, "_adapter_path", lambda base, name: tmp_path / name if name else None
+    )
+    monkeypatch.setattr(manager, "_model_state", lambda: {"value": "loaded"})
+    monkeypatch.setattr(
+        manager,
+        "_model_request",
+        lambda *args, **kwargs: {
+            "default_generation_settings": {"n_ctx": 16384},
+            "modalities": {},
+        },
+    )
+    manager._start_child(
+        "character",
+        123,
+        {
+            "model": "base.gguf" if same_base else "other.gguf",
+            "lora": "" if same_lora else "adapter.gguf",
+            "port": 18088,
+            "context_size": 8192,
+            "gpu_layers": 99,
+            "low_vram": True,
+        },
+    )
+    preset = (tmp_path / ".runtime/models.ini").read_text()
+    assert f"parallel = {expected_slots}" in preset
+    assert (manager.agent_slot is not None) == (same_base and same_lora)
+    if manager.agent_slot is not None:
+        assert manager.chat.slot_id == 1
+        assert manager.chat.context_size == 16384
+        assert "ctx-size = 32768" in preset
+
+
+def test_busy_stream_cannot_switch_models_but_does_not_hold_service_lock(tmp_path):
+    manager = service.EdgeAgent(tmp_path)
+    manager.chat_in_progress = True
+    with pytest.raises(PermissionError, match="工作正在進行"):
+        manager.switch("character", 123, {})
+    with pytest.raises(PermissionError, match="工作正在進行"):
+        manager.select_model({})
+    assert manager.lock.acquire(blocking=False)
+    manager.lock.release()
+
+
 def test_multimodal_projector_uses_canonical_server_and_low_vram_policy():
     args = runtime.build_server_args(
         "llama-server",

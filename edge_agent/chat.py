@@ -161,6 +161,8 @@ class NativeChat:
         self.max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS
         self.working_context_size = DEFAULT_WORKING_CONTEXT_SIZE
         self.model = ""
+        self.slot_id: int | None = 0
+        self.lora_enabled = False
         self.capabilities = {"vision": False, "audio": False}
         self._sessions: dict[str, ChatSession] = {}
         self._sessions_lock = threading.RLock()
@@ -250,6 +252,8 @@ class NativeChat:
         request = session.approvals.pop(call_id, None)
         if request is None or session is not self._active or session.cancelled.is_set():
             return False
+        if json.loads(str(request.get("title", "{}"))).get("explicit"):
+            scope = "once"
         choice = (
             "Allow this turn"
             if approved and scope == "turn"
@@ -359,6 +363,8 @@ class NativeChat:
             id(session),
             str(cwd),
             self.model,
+            self.slot_id,
+            self.lora_enabled,
             self.context_size,
             self.max_output_tokens,
             self.working_context_size,
@@ -387,7 +393,14 @@ class NativeChat:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            env={**os.environ, "PI_OFFLINE": "1", "PI_TELEMETRY": "0"},
+            env={
+                **os.environ,
+                "PI_OFFLINE": "1",
+                "PI_TELEMETRY": "0",
+                "PATH": str(self.core_dir / ".runtime/tools")
+                + os.pathsep
+                + os.environ.get("PATH", ""),
+            },
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         self._process, self._active, self._active_key = process, session, key
@@ -415,6 +428,8 @@ class NativeChat:
                 "model_url": self.model_url,
                 "model": "local",
                 "model_name": self.model,
+                "slot_id": self.slot_id,
+                "lora_enabled": self.lora_enabled,
                 "capabilities": self.capabilities,
                 "context_size": self.context_size,
                 "max_output_tokens": self.max_output_tokens,
