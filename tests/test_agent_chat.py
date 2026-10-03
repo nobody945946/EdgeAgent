@@ -1045,3 +1045,22 @@ def test_real_sdk_web_content_turns_allow_back_into_ask(
     assert approvals[0]["after_web"] is True
     assert not (tmp_path / "new.txt").exists()
     assert "Untrusted web content" in json.dumps(state["requests"][1])
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_deletes_need_their_own_approval_even_when_shell_is_allowed(
+    tmp_path, repeating_model
+):
+    port, state = repeating_model
+    state["sequence"] = [("powershell", {"command": "Remove-Item data.db"})]
+    (tmp_path / "data.db").write_text("the user's database")
+    chat = NativeChat(model_port=port)
+    try:
+        events = _permission_run(
+            chat, tmp_path, {"edit": "allow", "shell": "allow", "web": "deny"}
+        )
+    finally:
+        chat.close()
+    approvals = [data for name, data in events if name == "approval"]
+    assert [a["explicit"] for a in approvals] == ["destructive"]
+    assert (tmp_path / "data.db").read_text() == "the user's database"

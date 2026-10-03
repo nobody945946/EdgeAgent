@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { compactionSettings, searchHistory, historyReference } from './memory.mjs';
 import { webSearch, webFetch } from './web_tools.mjs';
+import { explicitApproval } from './shell_guard.mjs';
 
 const packageURL = new URL('../.runtime/pi/node_modules/@earendil-works/pi-coding-agent/dist/', import.meta.url);
 const sdk = await import(new URL('index.js', packageURL));
@@ -214,10 +215,12 @@ function policy(pi) {
     let rule = rules[category];
     if (rule === 'deny') return { block: true, reason: `The owner's permission settings do not allow ${category} operations.` };
     if (rule === 'allow' && tainted && category !== 'web') rule = 'ask';
-    if (rule === 'allow' || turnApproved) return;
-    const choice = await ctx.ui.select(JSON.stringify({ tool: toolName, arguments: input, after_web: tainted }),
-      ['Allow this turn', 'Allow once', 'Deny'], { timeout: 300000 });
-    if (choice === 'Allow this turn') turnApproved = true;
+    const explicit = CATEGORY[toolName] === 'shell' ? explicitApproval(input?.command) : '';
+    if (!explicit && (rule === 'allow' || turnApproved)) return;
+    const choice = await ctx.ui.select(JSON.stringify({ tool: toolName, arguments: input, after_web: tainted, explicit }),
+      explicit ? ['Allow once', 'Deny'] : ['Allow this turn', 'Allow once', 'Deny'], { timeout: 300000 });
+    // An explicit approval covers this one command only.
+    if (choice === 'Allow this turn' && !explicit) turnApproved = true;
     if (!choice || choice === 'Deny') return { block: true, reason: 'Operation was not approved.' };
   });
   pi.on('tool_result', event => {
