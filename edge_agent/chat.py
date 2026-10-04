@@ -371,6 +371,7 @@ class NativeChat:
         agent: bool,
         read_only: bool,
         permissions: dict[str, str],
+        mcp_servers: dict[str, dict[str, object]],
     ) -> None:
         key = (
             id(session),
@@ -387,6 +388,7 @@ class NativeChat:
             agent,
             read_only,
             tuple(sorted(permissions.items())),
+            json.dumps(mcp_servers, sort_keys=True),
         )
         if self._active_key == key and self._process and self._process.poll() is None:
             return
@@ -451,6 +453,7 @@ class NativeChat:
                 "agent": agent,
                 "read_only": read_only,
                 "permissions": permissions,
+                "mcp_servers": mcp_servers,
                 "entries": session.entries,
                 "pending_messages": session.messages,
             }
@@ -469,6 +472,7 @@ class NativeChat:
         interview: bool = False,
         media: list[dict[str, str]] | None = None,
         permissions: dict[str, str] | None = None,
+        mcp_servers: dict[str, dict[str, object]] | None = None,
     ) -> Iterator[tuple[str, dict[str, object]]]:
         """`interview` (求知儀式 in the UI): the grill-me interview
         (edge_agent/skills/grill-me) until the user confirms a spec, with
@@ -530,7 +534,7 @@ class NativeChat:
                             "此對話包含目前模型不支援的附件；請換回支援的模型或開啟新對話。"
                         )
                 rules = permissions or bridge_rules(DEFAULT_PERMISSIONS["ui"])
-                self._start(session, cwd, thinking_effort, agent, interview, rules)
+                self._start(session, cwd, thinking_effort, agent, interview, rules, mcp_servers or {})
                 prompt_id = uuid4().hex
                 opens_interview = interview and not session.interviewing
                 self._send(

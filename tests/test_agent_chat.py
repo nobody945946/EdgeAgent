@@ -97,7 +97,7 @@ class RPCFixture(NativeChat):
         self.records = []
         self.fixture_events = events
 
-    def _start(self, session, cwd, effort, agent, read_only, permissions):
+    def _start(self, session, cwd, effort, agent, read_only, permissions, mcp_servers):
         self.started_permissions = permissions
         self._active = session
         self._process = SimpleNamespace(poll=lambda: None)

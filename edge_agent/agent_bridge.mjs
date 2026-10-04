@@ -1,6 +1,7 @@
 // Pi owns agent execution, tools, compaction and recovery. This host only
 // supplies the local model, RAM storage and the application's approval policy.
 import { realpathSync, existsSync } from 'node:fs';
+import { devNull } from 'node:os';
 import { dirname, resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
@@ -68,6 +69,14 @@ const rules = init.permissions ?? { edit: 'ask', shell: 'ask', web: 'allow' };
 const CATEGORY = { edit: 'edit', write: 'edit', powershell: 'shell', bash: 'shell',
   web_search: 'web', web_fetch: 'web' };
 const webTools = rules.web === 'deny' ? [] : ['web_search', 'web_fetch'];
+// MCP servers the owner enabled for this client (edge_agent/mcp.py). Their
+// tools are deferred: the model sees tool_search until it looks them up.
+const mcpServers = init.agent ? (init.mcp_servers ?? {}) : {};
+const mcpPrefixes = Object.keys(mcpServers).map(name => [`mcp__${name.replace(/[^A-Za-z0-9_]/g, '_')}__`, name]);
+const mcpServerOf = toolName => {
+  const found = mcpPrefixes.find(([prefix]) => toolName.startsWith(prefix));
+  return found ? mcpServers[found[1]] : null;
+};
 
 function policy(pi) {
   let turnApproved = false;
@@ -216,6 +225,7 @@ function policy(pi) {
         return { block: true, reason: 'This user-owned configuration is protected.' };
       }
     }
+    if (toolName.startsWith('mcp__')) return mcpGate(toolName, input, ctx);
     const category = CATEGORY[toolName];
     if (!category) return;
     if (category !== 'web' && (init.read_only || !init.agent)) return { block: true, reason: 'This mode allows inspection only.' };
@@ -234,9 +244,32 @@ function policy(pi) {
     if (choice === 'Allow this turn' && !explicit) turnApproved = true;
     if (!choice || choice === 'Deny') return { block: true, reason: 'Operation was not approved.' };
   });
+  // MCP calls: the server's own hints (readOnlyHint, destructiveHint,
+  // openWorldHint; missing ones mean "may change things, may reach out")
+  // decide, within the owner's per-server permission.
+  const hintsOf = toolName => pi.getAllTools().find(tool => tool.name === toolName)?.annotations ?? {};
+  async function mcpGate(toolName, input, ctx) {
+    const server = mcpServerOf(toolName);
+    if (!server) return { block: true, reason: 'This MCP server is not enabled here.' };
+    const hints = hintsOf(toolName);
+    const readOnly = hints.readOnlyHint === true;
+    if (!readOnly && init.read_only) return { block: true, reason: 'This mode allows inspection only.' };
+    // Each call that moves hardware, or cannot be taken back, is its own decision.
+    const explicit = readOnly ? '' : server.hardware ? 'hardware' : hints.destructiveHint !== false ? 'mcp_destructive' : '';
+    const free = server.permission === 'allow' && readOnly && !(tainted && hints.openWorldHint !== false);
+    if (!explicit && (free || turnApproved)) return;
+    const choice = await ctx.ui.select(JSON.stringify({ tool: toolName, arguments: input, after_web: tainted, explicit }),
+      explicit ? ['Allow once', 'Deny'] : ['Allow this turn', 'Allow once', 'Deny'], { timeout: 300000 });
+    if (choice === 'Allow this turn' && !explicit) turnApproved = true;
+    if (!choice || choice === 'Deny') return { block: true, reason: 'Operation was not approved.' };
+  }
   pi.on('tool_result', event => {
     if (!event.isError) remember((event.content ?? []).map(item => item.text ?? '').join('\n'));
     if (CATEGORY[event.toolName] === 'web' && !event.isError) { tainted = true; turnApproved = false; }
+    // Text from a server that reaches the outside world can carry instructions too.
+    if (event.toolName.startsWith('mcp__') && !event.isError && hintsOf(event.toolName).openWorldHint !== false) {
+      tainted = true; turnApproved = false;
+    }
     if (!event.isError && event.toolName === 'edit' && event.details?.patch) repeats.clear();
     if (!event.isError && event.toolName === 'write') {
       const ownSignature = JSON.stringify(['write', event.input]);
@@ -265,18 +298,40 @@ const shell = createPowerShellToolDefinition(root, { operations: {
     return result;
   },
 }});
+// Servers come from EdgeAgent's settings only (never mcp.json files), no
+// codemode (deferred tools through tool_search), nothing logged to disk,
+// nothing saved back: /mcp changes do not exist here.
+const mcpExtensions = mcpPrefixes.length ? [sdk.createToolSearchExtension(), sdk.createMcpExtension({
+  loadConfig: () => ({
+    servers: Object.entries(mcpServers).map(([name, server]) => ({ name, source: 'edgeagent', scope: 'extension',
+      config: { command: server.command, args: server.args ?? [], env: server.env ?? {},
+        description: server.description || undefined, exposure: 'deferred', timeout: 60 } })),
+    autoEnableCodemode: false, errors: [] }),
+  logPath: devNull, updateConfig() {}, openUrl() {},
+})] : [];
+// The tools the model may use. Without MCP: exactly these (an allowlist).
+// With MCP the allowlist would also hide every server tool (their names are
+// known only once the servers connect), so the same set is the default and
+// every other built-in tool is excluded instead.
+const ownTools = [...(init.agent ? (init.read_only ? ['read', 'grep', 'find', 'ls', 'search_history']
+  : ['read', 'grep', 'find', 'ls', 'edit', 'write', 'powershell', 'search_history']) : ['search_history']), ...webTools];
+const BUILTIN_TOOLS = ['read', 'bash', 'powershell', 'edit', 'write', 'grep', 'find', 'ls'];
+if (mcpPrefixes.length) settings.applyOverrides({ defaultTools: [...ownTools, 'tool_search'] });
+const toolChoice = mcpPrefixes.length
+  ? { excludeTools: BUILTIN_TOOLS.filter(name => !ownTools.includes(name)) }
+  : { tools: ownTools };
 const factory = async ({ cwd, sessionManager, sessionStartEvent }) => {
   const services = await sdk.createAgentSessionServices({
     cwd, agentDir, modelRuntime, settingsManager: settings,
     resourceLoaderOptions: { noExtensions: true, noSkills: true,
-      noPromptTemplates: true, noThemes: true, extensionFactories: [policy],
+      noPromptTemplates: true, noThemes: true, extensionFactories: [policy, ...mcpExtensions],
       appendSystemPrompt: ['Answer in the user\'s language. Preserve user-owned configuration. After edits run relevant checks, repair failures, and report actual results. Conversation and prompts must remain in memory.'],
     },
   });
   return { ...await sdk.createAgentSessionFromServices({ services, sessionManager,
     sessionStartEvent, model: modelRuntime.getModel('local', init.model),
     thinkingLevel: init.thinking_effort,
-    tools: [...(init.agent ? (init.read_only ? ['read', 'grep', 'find', 'ls', 'search_history'] : ['read', 'grep', 'find', 'ls', 'edit', 'write', 'powershell', 'search_history']) : ['search_history']), ...webTools],
+    ...toolChoice,
     customTools: [shell],
   }), services, diagnostics: services.diagnostics };
 };

@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from edge_agent.chat import THINKING_PROFILES, NativeChat, decode_attachments
 from edge_agent.deploy import download, ensure_projector
+from edge_agent.mcp import servers_for, validate_mcp_servers
 from edge_agent.models import hub_catalog, list_models, model_filename, model_metadata
 from edge_agent.permissions import (
     DEFAULT_PERMISSIONS,
@@ -53,6 +54,8 @@ DEFAULT_CONFIG: dict[str, object] = {
     "gpu_layers": -1,
     "low_vram": True,
     "permissions": DEFAULT_PERMISSIONS,
+    # MCP servers the owner added (edge_agent/mcp.py); none by default.
+    "mcp_servers": {},
 }
 
 
@@ -232,6 +235,7 @@ class EdgeAgent:
         return {
             **merged,
             "permissions": validate_permissions(merged["permissions"]),
+            "mcp_servers": validate_mcp_servers(merged["mcp_servers"]),
         }
 
     def update_config(self, value: dict[str, object]) -> dict[str, object]:
@@ -1093,9 +1097,9 @@ class Handler(BaseHTTPRequestHandler):
         interview = payload.get("interview", False)
         if not isinstance(interview, bool):
             raise TypeError("interview must be a boolean")
-        profile = profile_for(
-            self.core.config["permissions"], payload.get("client", "ui")
-        )
+        client = payload.get("client", "ui")
+        profile = profile_for(self.core.config["permissions"], client)
+        mcp_servers = servers_for(client, self.core.config["mcp_servers"])
         working_dir_value = payload.get("working_dir")
         if working_dir_value is None or working_dir_value == "":
             if agent:
@@ -1138,6 +1142,7 @@ class Handler(BaseHTTPRequestHandler):
                     interview=interview,
                     media=media,
                     permissions=bridge_rules(profile),
+                    mcp_servers=mcp_servers,
                 ):
                     self._event(event, data)
             finally:
