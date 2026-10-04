@@ -10,14 +10,22 @@ train_lora.py's format: {"messages", "tools", "train": "all"}.
 Eval tasks (bench/tasks) never become training rows: only runs over
 .runtime/agentdata/tasks are accepted.
 
+One output holds one product version: every row's system prompt and tool
+definitions must be the same (runs recorded under different product code
+would teach two). Otherwise nothing is written (exit 3). The output gets a
+sidecar <out>.version, the stamp SilentTalk's train_lora.py requires.
+
     python bench/dataset.py .runtime/bench/<run> [...] --out .runtime/agentdata/agent-rows.jsonl
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,7 +88,20 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
     return kept, why
 
 
-def main() -> None:
+# Pi adds the workspace's own AGENTS.md to the system prompt (the product does
+# the same for the user's folders): per-project content, not a product version.
+PROJECT_CONTEXT = re.compile(r"<project_context>.*?</project_context>\n*", re.DOTALL)
+
+
+def product_version(row: dict) -> str:
+    """The product as the model saw it: system prompt (without the
+    workspace's own AGENTS.md) and tool definitions."""
+    system = [PROJECT_CONTEXT.sub("", str(m["content"])) for m in row["messages"] if m.get("role") == "system"]
+    blob = json.dumps([system, row["tools"]], ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("runs", nargs="+", type=Path)
     parser.add_argument("--out", type=Path, required=True)
@@ -90,12 +111,23 @@ def main() -> None:
         kept, why = rows(run_dir)
         print(f"{run_dir.name}: {len(kept)} rows; skipped {why}")
         total += kept
+    versions = Counter(product_version(row) for row in total)
+    if len(versions) > 1:
+        by_run = Counter((row["source"]["run"], product_version(row)) for row in total)
+        print(f"REFUSED: rows from {len(versions)} product versions would mix: {dict(by_run)}")
+        return 3
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", encoding="utf-8") as handle:
         for row in total:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-    print(f"{len(total)} rows -> {args.out}")
+    with_project = sum(bool(PROJECT_CONTEXT.search(str(row["messages"][0]["content"]))) for row in total)
+    stamp = {"producer": "edgeagent-dataset", "version": next(iter(versions), ""),
+             "runs": [run.name for run in args.runs],
+             "rows_with_project_agents_md": with_project}
+    args.out.with_name(args.out.name + ".version").write_text(json.dumps(stamp), encoding="utf-8")
+    print(f"{len(total)} rows -> {args.out} (product version {stamp['version']})")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

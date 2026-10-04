@@ -27,6 +27,17 @@ from edge_agent.runtime import (
 )
 
 THINKING_PROFILES = {"off": "off", "low": "low", "medium": "medium", "high": "high"}
+# 求知儀式: the grill-me interview (edge_agent/skills/grill-me, MIT).
+INTERVIEW_SKILL = Path(__file__).with_name("skills") / "grill-me" / "SKILL.md"
+
+
+def interview_opening(text: str) -> str:
+    """The first message of an interview: the skill's instructions, then the
+    user's idea. Sent as text rather than Pi's /skill: command, whose block
+    names the skill file's path: small models then try to read that file,
+    outside the workspace, until the repeat guard stops the turn."""
+    body = INTERVIEW_SKILL.read_text(encoding="utf-8").split("---", 2)[2].strip()
+    return f'<skill name="grill-me">\n{body}\n</skill>\n\n{text}'
 APPROVAL_TIMEOUT_SECONDS = 300
 
 
@@ -525,7 +536,7 @@ class NativeChat:
                 self._send(
                     {
                         "type": "prompt",
-                        "message": "/skill:grill-me " + user_text
+                        "message": interview_opening(user_text)
                         if opens_interview
                         else user_text,
                         "id": prompt_id,
