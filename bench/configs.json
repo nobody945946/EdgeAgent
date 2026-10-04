@@ -131,5 +131,24 @@
   "vram_base_mib": 13500,
   "vram_slot_mib": 2100,
   "search_tools": true
+ },
+ "gemma-e4b-noweb": {
+  "_note": "gemma-e4b-search without the web tools (permissions web: deny): does the longer tool list cost E4B its coding?",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 131072,
+  "max_output_tokens": 8192,
+  "working_context_size": 32768,
+  "effort": "off",
+  "low_vram": true,
+  "prompt_cache_mib": 256,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2400,
+  "search_tools": true,
+  "permissions": {
+   "edit": "ask",
+   "shell": "ask",
+   "web": "deny"
+  }
  }
 }

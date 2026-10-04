@@ -75,7 +75,7 @@ def main() -> None:
     try:
         for kind, payload in chat.stream_reply(
             SESSION, spec["prompt"], thinking_effort=spec["effort"], agent=True,
-            working_dir=Path("/work"),
+            working_dir=Path("/work"), permissions=spec.get("permissions"),
         ):
             if kind == "approval":
                 approvals += 1

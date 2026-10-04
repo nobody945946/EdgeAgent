@@ -301,6 +301,8 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
                                       "working_context_size", "effort")},
             "vision": config.get("vision", False), "prompt": task["prompt"],
             "search_tools": config.get("search_tools", False),
+            # The product's permission rules (bridge_rules); None = the UI default.
+            "permissions": config.get("permissions"),
             "timeout_s": timeout}
     name = f"eab-{config_name}-{job}".replace("_", "-")[:120]
     command = sandbox(name, [(workspace, "/work", "rw"), (sock_dir, "/sock", "ro"),
