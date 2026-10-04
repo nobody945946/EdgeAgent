@@ -227,6 +227,10 @@ def one_round(request: dict, messages: list[dict], workspace: Workspace,
         reply = complete(request, messages, timeout=left)
         tool_calls = reply.get("tool_calls") or []
         message = {"role": "assistant", "content": reply.get("content") or ""}
+        if reply.get("reasoning_content"):
+            # Pi sends the model's thinking back on its own messages
+            # (pi-ai openai-completions: the llama.cpp reasoning_content field).
+            message["reasoning_content"] = reply["reasoning_content"]
         if tool_calls:
             message["tool_calls"] = tool_calls
         messages.append(message)
