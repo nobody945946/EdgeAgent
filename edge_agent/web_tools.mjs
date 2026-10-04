@@ -135,3 +135,87 @@ export async function webFetch(value, maxChars = 12000, signal) {
   const clipped = text.length > limit ? text.slice(0, limit) + `\n[Truncated: ${text.length - limit} more characters]` : text;
   return `${UNTRUSTED}\nURL: ${page.url}\n${title ? 'Title: ' + title + '\n' : ''}\n${clipped}`;
 }
+
+// Research for a small model: the code searches, reads the top pages and keeps
+// only the passages that bear on the question, numbered with their source, so
+// the model writes from a few short excerpts it can cite instead of whole pages
+// that drown its context.
+export function terms(text) {
+  const lower = String(text).toLowerCase();
+  const out = (lower.match(/[a-z0-9][a-z0-9._+#-]*/g) ?? []).filter(w => w.length > 1);
+  for (const run of lower.match(/[㐀-鿿豈-﫿]+/g) ?? []) {
+    if (run.length === 1) out.push(run);
+    for (let i = 0; i + 1 < run.length; i++) out.push(run.slice(i, i + 2));  // CJK bigrams
+  }
+  return out;
+}
+
+export function passages(text, size = 450) {
+  const out = [];
+  let current = '';
+  for (const paragraph of String(text).split(/\n+/).map(p => p.trim()).filter(Boolean)) {
+    const parts = paragraph.length > size ? paragraph.match(new RegExp(`[\\s\\S]{1,${size}}(?=[。．.!?！？\\s]|$)|[\\s\\S]{1,${size}}`, 'g')) : [paragraph];
+    for (const part of parts) {
+      if (current && current.length + part.length + 1 > size) { out.push(current); current = ''; }
+      current = current ? `${current}\n${part}` : part;
+    }
+  }
+  if (current) out.push(current);
+  return out;
+}
+
+export function rankPassages(query, pool, keep = 6) {
+  const q = [...new Set(terms(query))];
+  const docs = pool.map(item => terms(item.text));
+  const avg = docs.reduce((sum, d) => sum + d.length, 0) / Math.max(1, docs.length);
+  const df = new Map(q.map(t => [t, docs.filter(d => d.includes(t)).length]));
+  const scored = pool.map((item, i) => {
+    const counts = new Map();
+    for (const t of docs[i]) counts.set(t, (counts.get(t) ?? 0) + 1);
+    let score = 0;
+    for (const t of q) {
+      const f = counts.get(t) ?? 0;
+      if (!f) continue;
+      const idf = Math.log(1 + (pool.length - df.get(t) + 0.5) / (df.get(t) + 0.5));
+      score += idf * (f * 2.5) / (f + 1.5 * (0.25 + 0.75 * docs[i].length / Math.max(1, avg)));
+    }
+    return { ...item, score };
+  });
+  return scored.filter(s => s.score > 0).sort((a, b) => b.score - a.score).slice(0, keep);
+}
+
+export async function webResearch(question, queries = [], signal, { perQuery = 3, maxPages = 5, keep = 6 } = {}) {
+  const searches = (queries.length ? queries : [question]).slice(0, 3);
+  const urls = [];
+  const failures = [];
+  for (const query of searches) {
+    const url = new URL(SEARCH_URL);
+    url.searchParams.set('q', query);
+    try {
+      const page = await get(url.toString(), signal);
+      for (const result of parseSearchResults(page.body, perQuery)) if (!urls.includes(result.url)) urls.push(result.url);
+    } catch (error) {
+      failures.push(`搜尋「${query}」失敗：${error.message}`);
+    }
+  }
+  const pages = await Promise.all(urls.slice(0, maxPages).map(async url => {
+    try {
+      const page = await get(url, signal);
+      if (!(/html|xml|text\//i.test(page.type) || /^\s*<(!doctype|html)/i.test(page.body))) throw new Error(`不是文字網頁（${page.type}）`);
+      const { title, text } = /html|xml/i.test(page.type) || /^\s*</.test(page.body) ? htmlToText(page.body) : { title: '', text: page.body };
+      return { url: page.url, title, text };
+    } catch (error) {
+      failures.push(`${url}：${error.message}`);
+      return null;
+    }
+  }));
+  const pool = pages.filter(Boolean).flatMap(page => passages(page.text).map(text => ({ url: page.url, title: page.title, text })));
+  const best = rankPassages(`${question} ${searches.join(' ')}`, pool, keep);
+  const read = pages.filter(Boolean).length;
+  const lines = [UNTRUSTED, `問題：${question}`, `搜尋：${searches.join('；')}；讀了 ${read} 個網頁，以下是和問題最相關的 ${best.length} 段原文：`];
+  best.forEach((item, i) => lines.push(`\n[${i + 1}] ${item.title || '（無標題）'}\n${item.url}\n${item.text}`));
+  if (!best.length) lines.push('\n沒有找到和問題相關的段落。');
+  if (failures.length) lines.push(`\n讀不到的：${failures.slice(0, 5).join('；')}`);
+  lines.push('\n回答時，每個事實後面標上它的段落編號，例如 [2]；段落裡沒有寫的，就說查不到，不要自己補。');
+  return lines.join('\n');
+}

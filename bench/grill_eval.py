@@ -105,13 +105,14 @@ OUTSIDE = "File access must stay inside the opened workspace."  # the bridge's o
 
 def web(name: str, args: dict) -> str:
     """The product's own web tools (edge_agent/web_tools.mjs): public pages only."""
-    call = ("webSearch(a.query, a.max_results ?? 5)" if name == "web_search"
-            else "webFetch(a.url, a.max_chars ?? 12000)")
+    call = {"web_search": "webSearch(a.query, a.max_results ?? 5)",
+            "web_fetch": "webFetch(a.url, a.max_chars ?? 12000)",
+            "web_research": "webResearch(a.question, a.queries ?? [])"}[name]
     script = (f"const m = await import({json.dumps((ROOT / 'edge_agent/web_tools.mjs').as_uri())});"
               f"const a = JSON.parse(process.argv[1]);"
               f"try {{ process.stdout.write(await m.{call}); }} catch (e) {{ process.stdout.write('Error: ' + e.message); }}")
     result = subprocess.run(["node", "--input-type=module", "-e", script, json.dumps(args)],
-                            capture_output=True, text=True, timeout=60, check=False)
+                            capture_output=True, text=True, timeout=120, check=False)
     return result.stdout or f"Error: {result.stderr.strip()[:200]}"
 
 
@@ -175,7 +176,7 @@ class Workspace:
             if self._rel(args.get("path")) is None:
                 return OUTSIDE
             return getattr(self, name)(args)
-        if name in ("web_search", "web_fetch"):
+        if name in ("web_search", "web_fetch", "web_research"):
             return web(name, args)
         if name == "search_history":
             return "No matching text in this RAM session."

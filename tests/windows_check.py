@@ -108,11 +108,12 @@ def native_probe(core: EdgeAgent, workspace: Path, key: str) -> dict[str, object
                 errors += 1
             if event in {"error", "done", "cancelled"}:
                 terminal = event
+        # Any one of these sets of tools counts (web: the research tool, or search and read).
         expected = {
-            "EDGE_AGENT_WEB_PROMPT": {"web_search", "web_fetch"},
-            "EDGE_AGENT_SEARCH_PROMPT": {"grep", "find"},
-            "EDGE_AGENT_READ_PROMPT": {"read"},
-            "EDGE_AGENT_INTERVIEW_PROMPT": set(),
+            "EDGE_AGENT_WEB_PROMPT": ({"web_research"}, {"web_search", "web_fetch"}),
+            "EDGE_AGENT_SEARCH_PROMPT": ({"grep", "find"},),
+            "EDGE_AGENT_READ_PROMPT": ({"read"},),
+            "EDGE_AGENT_INTERVIEW_PROMPT": (set(),),
         }[key]
         if interview:
             from bench.grill_auto import round_counts
@@ -142,7 +143,7 @@ def native_probe(core: EdgeAgent, workspace: Path, key: str) -> dict[str, object
         if (
             terminal != "done"
             or errors
-            or not expected.issubset({item["tool"] for item in tools})
+            or not any(option.issubset({item["tool"] for item in tools}) for option in expected)
             or any(item["http_error"] for item in tools)
         ):
             raise AssertionError(f"{key}: task or required tools failed")

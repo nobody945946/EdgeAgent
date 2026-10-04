@@ -43,3 +43,32 @@ assert.ok((await local.webSearch('文件')).includes('https://example.org/doc?a=
 await assert.rejects(local.webFetch('file:///etc/passwd'), /Only http and https/);
 server.close();
 console.log('web tools ok');
+
+// Research: CJK bigrams, passages, ranking, and the whole path on loopback.
+assert.deepEqual(local.terms('民航法 Drone 250g'), ['drone', '250g', '民航', '航法']);
+const chunks = local.passages('第一段很短。\n' + '長'.repeat(1000), 450);
+assert.ok(chunks.every(c => c.length <= 451) && chunks.length >= 3);
+const ranked = local.rankPassages('無人機 註冊 重量', [
+  { url: 'a', text: '今天天氣很好，適合出去走走。' },
+  { url: 'b', text: '遙控無人機最大起飛重量 250 公克以上者，應辦理註冊。' },
+  { url: 'c', text: '無人機的電池要注意保養。' }], 2);
+assert.equal(ranked[0].url, 'b');
+assert.ok(!ranked.some(r => r.url === 'a'));
+const researchServer = createServer((req, res) => {
+  if (req.url.startsWith('/html/')) {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(`<div class="result"><a class="result__a" href="${base2}/law">法規</a></div><div class="result"><a class="result__a" href="${base2}/blog">部落格</a></div>`);
+  }
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+  if (req.url === '/law') return res.end('<title>遙控無人機管理規則</title><p>前言很長很長。</p><p>最大起飛重量 250 公克以上之遙控無人機，所有人應辦理註冊。</p>');
+  res.end('<title>旅遊</title><p>我去了海邊，吃了很多海鮮。</p>');
+});
+await new Promise(resolve => researchServer.listen(0, '127.0.0.1', resolve));
+var base2 = `http://127.0.0.1:${researchServer.address().port}`;
+process.env.EDGE_AGENT_SEARCH_URL = base2 + '/html/';
+const research = await import('../edge_agent/web_tools.mjs?research');
+const report = await research.webResearch('多重的無人機要註冊？', ['無人機 註冊 重量']);
+assert.ok(report.startsWith(research.UNTRUSTED));
+assert.ok(/\[1\] 遙控無人機管理規則\nhttp:\/\/127\.0\.0\.1:\d+\/law\n[\s\S]*250 公克以上/.test(report), report);
+assert.ok(report.includes('讀了 2 個網頁') && report.includes('標上它的段落編號'));
+researchServer.close();
