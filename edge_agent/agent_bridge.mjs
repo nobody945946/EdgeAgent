@@ -218,7 +218,7 @@ function policy(pi) {
     }
     const category = CATEGORY[toolName];
     if (!category) return;
-    if (category !== 'web' && (init.plan || !init.agent)) return { block: true, reason: 'This mode allows inspection only.' };
+    if (category !== 'web' && (init.read_only || !init.agent)) return { block: true, reason: 'This mode allows inspection only.' };
     if (toolName === 'edit' && input.edits?.every(edit => edit.oldText === edit.newText)) {
       return { block: true, reason: 'The replacement is identical to the original text. Make an actual correction or run validation.' };
     }
@@ -280,7 +280,7 @@ const factory = async ({ cwd, sessionManager, sessionStartEvent }) => {
   return { ...await sdk.createAgentSessionFromServices({ services, sessionManager,
     sessionStartEvent, model: modelRuntime.getModel('local', init.model),
     thinkingLevel: init.thinking_effort,
-    tools: [...(init.agent ? (init.plan ? ['read', 'grep', 'find', 'ls', 'search_history'] : ['read', 'grep', 'find', 'ls', 'edit', 'write', 'powershell', 'search_history']) : ['search_history']), ...webTools],
+    tools: [...(init.agent ? (init.read_only ? ['read', 'grep', 'find', 'ls', 'search_history'] : ['read', 'grep', 'find', 'ls', 'edit', 'write', 'powershell', 'search_history']) : ['search_history']), ...webTools],
     customTools: [shell],
   }), services, diagnostics: services.diagnostics };
 };

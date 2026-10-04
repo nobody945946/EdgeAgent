@@ -1090,12 +1090,9 @@ class Handler(BaseHTTPRequestHandler):
         agent = payload.get("agent", self.core.config["agent"])
         if not isinstance(agent, bool):
             raise TypeError("agent must be a boolean")
-        plan = payload.get("plan", False)
-        if not isinstance(plan, bool):
-            raise TypeError("plan must be a boolean")
-        spec = payload.get("spec", False)
-        if not isinstance(spec, bool):
-            raise TypeError("spec must be a boolean")
+        interview = payload.get("interview", False)
+        if not isinstance(interview, bool):
+            raise TypeError("interview must be a boolean")
         profile = profile_for(
             self.core.config["permissions"], payload.get("client", "ui")
         )
@@ -1138,8 +1135,7 @@ class Handler(BaseHTTPRequestHandler):
                     thinking_effort=thinking_effort,
                     agent=agent,
                     working_dir=working_dir,
-                    plan=plan,
-                    spec=spec,
+                    interview=interview,
                     media=media,
                     permissions=bridge_rules(profile),
                 ):

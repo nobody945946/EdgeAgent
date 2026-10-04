@@ -97,7 +97,7 @@ class RPCFixture(NativeChat):
         self.records = []
         self.fixture_events = events
 
-    def _start(self, session, cwd, effort, agent, plan, permissions):
+    def _start(self, session, cwd, effort, agent, read_only, permissions):
         self.started_permissions = permissions
         self._active = session
         self._process = SimpleNamespace(poll=lambda: None)
@@ -1133,10 +1133,10 @@ def test_real_sdk_only_urls_the_model_built_itself_need_approval(
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
-def test_real_sdk_spec_mode_opens_grill_me_once_and_cannot_change_files(
+def test_real_sdk_interview_opens_grill_me_once_and_cannot_change_files(
     tmp_path, repeating_model
 ):
-    """定規格: the first message opens the bundled grill-me skill, the answers
+    """求知儀式: the first message opens the bundled grill-me skill, the answers
     that follow go as they are, the tools are read-only, and the skill never
     enters the system prompt (it would change every request's cached prefix)."""
     port, state = repeating_model
@@ -1144,10 +1144,10 @@ def test_real_sdk_spec_mode_opens_grill_me_once_and_cannot_change_files(
     chat = NativeChat(model_port=port)
     try:
         for text, mode in [
-            ("我想做一個記帳 app", {"spec": True}),
-            ("1 用網頁", {"spec": True}),
+            ("我想做一個記帳 app", {"interview": True}),
+            ("1 用網頁", {"interview": True}),
             ("照規格做", {}),
-            ("再來一個新點子", {"spec": True}),
+            ("再來一個新點子", {"interview": True}),
         ]:
             events = list(chat.stream_reply(
                 "spec", text, agent=True, working_dir=tmp_path, **mode

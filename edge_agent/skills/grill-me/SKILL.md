@@ -1,6 +1,6 @@
 ---
 name: grill-me
-description: A relentless interview that sharpens a plan or design into a spec the user confirms. Used only in the 定規格 mode, never on its own.
+description: A relentless interview that sharpens a plan or design into a spec the user confirms. Used only in the 求知儀式 mode, never on its own.
 disable-model-invocation: true
 license: MIT (see LICENSE). Adapted from mattpocock/skills (grill-me, grilling, to-spec) at commit d81f3a1.
 ---

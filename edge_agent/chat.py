@@ -149,8 +149,8 @@ class ChatSession:
     cancelled_at: float | None = None
     changes: dict[str, tuple[str, str]] = field(default_factory=dict)
     approvals: dict[str, dict[str, object]] = field(default_factory=dict)
-    # In a 定規格 stretch: the grill-me skill is already in the history.
-    grilling: bool = False
+    # In a 求知儀式 stretch: the grill-me skill is already in the history.
+    interviewing: bool = False
 
 
 class NativeChat:
@@ -358,7 +358,7 @@ class NativeChat:
         cwd: Path,
         effort: str,
         agent: bool,
-        plan: bool,
+        read_only: bool,
         permissions: dict[str, str],
     ) -> None:
         key = (
@@ -374,7 +374,7 @@ class NativeChat:
             self.capabilities.get("audio", False),
             effort,
             agent,
-            plan,
+            read_only,
             tuple(sorted(permissions.items())),
         )
         if self._active_key == key and self._process and self._process.poll() is None:
@@ -438,7 +438,7 @@ class NativeChat:
                 "working_context_size": self.working_context_size,
                 "thinking_effort": effort,
                 "agent": agent,
-                "plan": plan,
+                "read_only": read_only,
                 "permissions": permissions,
                 "entries": session.entries,
                 "pending_messages": session.messages,
@@ -455,14 +455,14 @@ class NativeChat:
         thinking_effort: str = "off",
         agent: bool = False,
         working_dir: Path | None = None,
-        plan: bool = False,
-        spec: bool = False,
+        interview: bool = False,
         media: list[dict[str, str]] | None = None,
         permissions: dict[str, str] | None = None,
     ) -> Iterator[tuple[str, dict[str, object]]]:
-        """`spec` (定規格): the grill-me interview (edge_agent/skills/grill-me)
-        until the user confirms a spec. Read-only like `plan`; the first
-        message of a stretch opens the skill, later answers go as they are."""
+        """`interview` (求知儀式 in the UI): the grill-me interview
+        (edge_agent/skills/grill-me) until the user confirms a spec, with
+        read-only tools so nothing is built before that. The first message of
+        a stretch opens the skill; the answers that follow go as they are."""
         if thinking_effort not in THINKING_PROFILES:
             raise ValueError("invalid thinking_effort")
         if user_text.strip().split(maxsplit=1)[:1] == ["/edge-snapshot"]:
@@ -519,20 +519,20 @@ class NativeChat:
                             "此對話包含目前模型不支援的附件；請換回支援的模型或開啟新對話。"
                         )
                 rules = permissions or bridge_rules(DEFAULT_PERMISSIONS["ui"])
-                self._start(session, cwd, thinking_effort, agent, plan or spec, rules)
+                self._start(session, cwd, thinking_effort, agent, interview, rules)
                 prompt_id = uuid4().hex
-                opens_spec = spec and not session.grilling
+                opens_interview = interview and not session.interviewing
                 self._send(
                     {
                         "type": "prompt",
                         "message": "/skill:grill-me " + user_text
-                        if opens_spec
+                        if opens_interview
                         else user_text,
                         "id": prompt_id,
                         "images": media or [],
                     }
                 )
-                session.grilling = spec
+                session.interviewing = interview
                 while True:
                     try:
                         event = self._receive(timeout=1)

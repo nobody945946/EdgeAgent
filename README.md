@@ -61,7 +61,7 @@ SilentTalk 的角色配置與 Agent adapter 選擇分開，adapter 檔案則在�
 
 讀過網頁之後，本輪准許失效，允許的寫檔及指令會重新詢問。刪除及透過指令觸及受保護檔案的操作永遠只有單次批准，卡片說明原因。
 
-權限設為詢問的寫檔、編輯與 PowerShell 執行先由介面批准，可准許單次或本輪工作。Plan 模式只使用讀取工具。「定規格」模式在需要嚴謹的工作前先拷問需求：第一句會開啟內附的 grill-me skill（`edge_agent/skills/grill-me`，改寫自 [mattpocock/skills](https://github.com/mattpocock/skills) 的 grill-me／grilling／to-spec，MIT），Agent 依設計樹一輪一輪提問並附建議答案，事實自己查、決定交給使用者；使用者確認共識後寫出規格。這個模式和 Plan 一樣只能讀，不會動檔案；規格定案後切回「工作」叫它照規格做。Pi 不載入使用者或專案資料夾裡的 skill，只載入內附的這一個，也不放進 system prompt。實測 Gemma 4 E4B 照格式提問與建議；Qwen3.5-4B 會漏掉建議答案、偶爾替使用者做決定，嚴謹工作建議用 E4B。批准不是 OS 沙盒，執行程式仍有目前帳號的權限；受保護的 `.env`、`settings.json`、`personas.json`、`character_state.json` 禁止透過檔案編輯工具修改。
+權限設為詢問的寫檔、編輯與 PowerShell 執行先由介面批准，可准許單次或本輪工作。介面有兩種模式：「工作」直接動手；「求知儀式」在需要嚴謹的工作前先拷問需求：第一句會開啟內附的 grill-me skill（`edge_agent/skills/grill-me`，改寫自 [mattpocock/skills](https://github.com/mattpocock/skills) 的 grill-me／grilling／to-spec，MIT），Agent 依設計樹一輪一輪提問並附建議答案，事實自己查、決定交給使用者；使用者確認共識後寫出規格。儀式中只能讀，不會動檔案；規格定案後切回「工作」叫它照規格做。Pi 不載入使用者或專案資料夾裡的 skill，只載入內附的這一個，也不放進 system prompt。實測 Gemma 4 E4B 照格式提問與建議；Qwen3.5-4B 會漏掉建議答案、偶爾替使用者做決定，嚴謹工作建議用 E4B。批准不是 OS 沙盒，執行程式仍有目前帳號的權限；受保護的 `.env`、`settings.json`、`personas.json`、`character_state.json` 禁止透過檔案編輯工具修改。
 
 相同操作連續重複而無進展，或本輪工具呼叫超過 64 次時停止，保留修改與 RAM context。工作失敗後暫停該對話的佇列；更多操作中的「繼續排隊」明確恢復。每個對話有自己的佇列。
 
