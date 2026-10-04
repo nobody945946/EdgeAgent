@@ -55,8 +55,25 @@ THINKING = ("off", "medium")
 READ_ONLY = "Error: the user asked for analysis only; files in this folder are read-only for this task."
 
 
-def items() -> list[dict]:
-    return [json.loads(line) for line in ITEMS.read_text(encoding="utf-8").splitlines() if line.strip()]
+ITEM_FILES = {"main": ITEMS, "holdout": ITEMS.with_name("items-holdout.jsonl")}
+
+
+def items(which: str = "main") -> list[dict]:
+    path = ITEM_FILES[which]
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def all_items() -> list[dict]:
+    return items("main") + items("holdout")
+
+
+def with_skill(prompt: str, skill: Path | None) -> str:
+    """A candidate skill opens the message the way the product opens 求知儀式
+    (chat.interview_opening): the skill text, then the user's words."""
+    if skill is None:
+        return prompt
+    body = skill.read_text(encoding="utf-8").split("---", 2)[2].strip()
+    return f'<skill name="discussion">\n{body}\n</skill>\n\n{prompt}'
 
 
 class AnalysisWorkspace(Workspace):
@@ -90,11 +107,11 @@ class AnalysisWorkspace(Workspace):
         return ((done.stdout + done.stderr).strip() or f"(exit {done.returncode}, no output)")[:4000]
 
 
-def status(run: Path, name: str) -> int:
+def status(run: Path, name: str, item_set: str = "main") -> int:
     """0 when every item has an answer without error (queues loop until then)."""
-    pending = [i["id"] for i in items() if not (run / name / f"{i['id']}.json").is_file()
+    pending = [i["id"] for i in items(item_set) if not (run / name / f"{i['id']}.json").is_file()
                or "error" in json.loads((run / name / f"{i['id']}.json").read_text(encoding="utf-8"))]
-    print(f"{name}: {len(items()) - len(pending)}/{len(items())} done")
+    print(f"{name}: {len(items(item_set)) - len(pending)}/{len(items(item_set))} done")
     return 1 if pending else 0
 
 
@@ -121,9 +138,9 @@ def wait_for_vram(model: Path, wait_min: float) -> None:
         time.sleep(30)
 
 
-def answer(request: dict, item: dict) -> list[dict]:
+def answer(request: dict, item: dict, skill: Path | None = None) -> list[dict]:
     text = json.dumps(request["messages"], ensure_ascii=False)
-    text = text.replace(PLACEHOLDER, json.dumps(item["prompt"], ensure_ascii=False)[1:-1])
+    text = text.replace(PLACEHOLDER, json.dumps(with_skill(item["prompt"], skill), ensure_ascii=False)[1:-1])
     text = text.replace(CWD_PLACEHOLDER, item["workspace"].replace("\\", "\\\\"))
     messages = json.loads(text)
     workspace = AnalysisWorkspace(item["workspace"], item.get("files"))
@@ -137,7 +154,7 @@ def answer(request: dict, item: dict) -> list[dict]:
 
 
 def ask(run: Path, model: Path, name: str, thinking: str, ctx: int, ngl: int, only: str = "*",
-        vram_wait_min: float = 180) -> None:
+        vram_wait_min: float = 180, item_set: str = "main", skill: Path | None = None) -> None:
     """Unattended: every item ends (time budget per round); a dead server is
     restarted and the item retried once; an item that still fails is saved
     with its error and retried on the next ask."""
@@ -145,7 +162,7 @@ def ask(run: Path, model: Path, name: str, thinking: str, ctx: int, ngl: int, on
     out = run / name
     out.mkdir(parents=True, exist_ok=True)
     todo = []
-    for item in items():
+    for item in items(item_set):
         path = out / f"{item['id']}.json"
         if fnmatch.fnmatch(item["id"], only) and (
                 not path.is_file() or "error" in json.loads(path.read_text(encoding="utf-8"))):
@@ -156,10 +173,11 @@ def ask(run: Path, model: Path, name: str, thinking: str, ctx: int, ngl: int, on
     server = start_server(model, ctx, ngl)
     try:
         for item in todo:
-            state = {"item": item["id"], "model": name, "thinking": thinking}
+            state = {"item": item["id"], "model": name, "thinking": thinking,
+                     "skill": skill.name if skill else ""}
             for attempt in (1, 2):
                 try:
-                    state["rounds"] = answer(request, item)
+                    state["rounds"] = answer(request, item, skill)
                     state.pop("error", None)
                     break
                 except (OSError, ValueError, KeyError) as exc:  # URLError and timeouts are OSError
@@ -212,7 +230,7 @@ def quote_candidates(answer: str, item: dict) -> tuple[int, list[dict]]:
 def quote_input(run: Path, judged_file: str, out: str) -> None:
     """For the quote judge: each quote not found in the data, in context,
     under the transcript's blind key."""
-    by_id = {item["id"]: item for item in items()}
+    by_id = {item["id"]: item for item in all_items()}
     keys = {v: k for k, v in json.loads((run / "keys.json").read_text(encoding="utf-8")).items()}
     found = {}
     for key in json.loads((run / judged_file).read_text(encoding="utf-8")):
@@ -238,7 +256,7 @@ REFERENCE_FIELDS = {
 
 
 def judge_input(run: Path, configs: list[str], out: str) -> None:
-    by_id = {item["id"]: item for item in items()}
+    by_id = {item["id"]: item for item in all_items()}
     found = transcripts(run, configs)
     keys = blind_keys(run, list(found))
     blind = {}
@@ -268,7 +286,7 @@ def _rate(values: list[bool]) -> str:
 def report(run: Path, judged_file: str) -> None:
     """Per config: how often an answer would mislead the user (the headline),
     then what kind of mistakes."""
-    by_id = {item["id"]: item for item in items()}
+    by_id = {item["id"]: item for item in all_items()}
     keys = {v: k for k, v in json.loads((run / "keys.json").read_text(encoding="utf-8")).items()}
     judged = json.loads((run / judged_file).read_text(encoding="utf-8"))
     quote_path = run / "quote-judge.json"
@@ -339,9 +357,12 @@ def main() -> None:
     p.add_argument("--ngl", type=int, default=99)
     p.add_argument("--items", default="*", help="item id glob (pilots)")
     p.add_argument("--vram-wait", type=float, default=180, help="minutes, then exit 3")
+    p.add_argument("--set", default="main", choices=("main", "holdout"))
+    p.add_argument("--skill", type=Path, help="a candidate skill text opening the message")
     p = sub.add_parser("status")
     p.add_argument("run", type=Path)
     p.add_argument("--name", required=True)
+    p.add_argument("--set", default="main", choices=("main", "holdout"))
     p = sub.add_parser("judge-input")
     p.add_argument("run", type=Path)
     p.add_argument("--configs", nargs="+", required=True)
@@ -359,9 +380,10 @@ def main() -> None:
     if args.cmd == "capture":
         capture(args.run)
     elif args.cmd == "ask":
-        ask(args.run, args.model, args.name, args.thinking, args.ctx, args.ngl, args.items, args.vram_wait)
+        ask(args.run, args.model, args.name, args.thinking, args.ctx, args.ngl, args.items, args.vram_wait,
+            args.set, args.skill)
     elif args.cmd == "status":
-        sys.exit(status(args.run, args.name))
+        sys.exit(status(args.run, args.name, args.set))
     elif args.cmd == "judge-input":
         judge_input(args.run, args.configs, args.out)
     elif args.cmd == "quote-input":
