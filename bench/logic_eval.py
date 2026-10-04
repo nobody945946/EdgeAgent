@@ -90,6 +90,14 @@ class AnalysisWorkspace(Workspace):
         return ((done.stdout + done.stderr).strip() or f"(exit {done.returncode}, no output)")[:4000]
 
 
+def status(run: Path, name: str) -> int:
+    """0 when every item has an answer without error (queues loop until then)."""
+    pending = [i["id"] for i in items() if not (run / name / f"{i['id']}.json").is_file()
+               or "error" in json.loads((run / name / f"{i['id']}.json").read_text(encoding="utf-8"))]
+    print(f"{name}: {len(items()) - len(pending)}/{len(items())} done")
+    return 1 if pending else 0
+
+
 def capture(run: Path) -> None:
     for thinking in THINKING:
         grill_eval.capture(run, interview=False, thinking=thinking, name=f"pi-request-{thinking}.json")
@@ -303,6 +311,9 @@ def main() -> None:
     p.add_argument("--ngl", type=int, default=99)
     p.add_argument("--items", default="*", help="item id glob (pilots)")
     p.add_argument("--vram-wait", type=float, default=180, help="minutes, then exit 3")
+    p = sub.add_parser("status")
+    p.add_argument("run", type=Path)
+    p.add_argument("--name", required=True)
     p = sub.add_parser("judge-input")
     p.add_argument("run", type=Path)
     p.add_argument("--configs", nargs="+", required=True)
@@ -317,6 +328,8 @@ def main() -> None:
         capture(args.run)
     elif args.cmd == "ask":
         ask(args.run, args.model, args.name, args.thinking, args.ctx, args.ngl, args.items, args.vram_wait)
+    elif args.cmd == "status":
+        sys.exit(status(args.run, args.name))
     elif args.cmd == "judge-input":
         judge_input(args.run, args.configs, args.out)
     else:
