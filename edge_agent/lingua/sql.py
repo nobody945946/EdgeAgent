@@ -21,6 +21,7 @@ not translatable, never as invalid SQL.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import sqlglot
@@ -537,7 +538,8 @@ def translate(sql: str, dialect: str = "") -> Translation:
     try:
         statements = sqlglot.parse(sql, read=READ[dialect])
     except sqlglot.errors.SqlglotError as exc:
-        raise Untranslatable(f"這段 SQL 解析不了，無法翻譯（不代表資料庫一定會拒絕）：{str(exc)[:200]}") from exc
+        reason = re.sub(r"\x1b\[[0-9;]*m", "", str(exc))[:200]  # sqlglot underlines with terminal codes
+        raise Untranslatable(f"這段 SQL 解析不了，無法翻譯（不代表資料庫一定會拒絕）：{reason}") from exc
     writer = Writer(dialect)
     for statement in statements:
         if statement is not None:

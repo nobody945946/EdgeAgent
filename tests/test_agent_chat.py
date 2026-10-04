@@ -1054,6 +1054,7 @@ def test_real_sdk_allowed_edits_run_without_asking(tmp_path, repeating_model):
     assert (tmp_path / "new.txt").read_text() == "x"
     tools = [t["function"]["name"] for t in state["requests"][0].get("tools", [])]
     assert "write" in tools and "web_fetch" not in tools and "web_research" not in tools
+    assert "translate_machine" in tools
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")

@@ -7,6 +7,7 @@ import json
 import os
 import queue
 import subprocess
+import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -470,6 +471,8 @@ class NativeChat:
                 "read_only": read_only,
                 "permissions": permissions,
                 "mcp_servers": mcp_servers,
+                # translate_machine runs edge_agent.lingua with this same Python
+                "python": sys.executable,
                 "entries": session.entries,
                 "pending_messages": session.messages,
             }

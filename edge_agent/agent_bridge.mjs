@@ -5,6 +5,7 @@ import { devNull } from 'node:os';
 import { dirname, resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
+import { spawn } from 'node:child_process';
 import { compactionSettings, searchHistory, historyReference } from './memory.mjs';
 import { webSearch, webFetch, webResearch, normalURL, urlsIn } from './web_tools.mjs';
 import { explicitApproval } from './shell_guard.mjs';
@@ -146,6 +147,38 @@ function policy(pi) {
         max_chars: Type.Optional(Type.Integer({ minimum: 500, maximum: 40000 })) }),
       async execute(_id, params, signal) {
         return { content: [{ type: 'text', text: await webFetch(params.url, params.max_chars ?? 12000, signal) }], details: {} };
+      },
+    });
+  }
+  if (init.agent && init.python) {
+    const kinds = ['regex', 'powershell', 'excel', 'sql', 'python', 'mavlink', 'machine_code'];
+    pi.registerTool({ name: 'translate_machine', label: 'Translate machine language',
+      description: 'Explain machine language in exact plain Traditional Chinese, worked out by a parser (not a guess): '
+        + 'regex, powershell (a command), excel (a formula), sql, python (code), mavlink (packet bytes as hex), '
+        + 'machine_code (bytes as hex). Show the result to the user as it is; do not reword it or add to it.',
+      promptSnippet: 'Explain a regex, PowerShell command, Excel formula, SQL, Python code, MAVLink packet or machine code exactly',
+      parameters: Type.Object({
+        kind: Type.Union(kinds.map(kind => Type.Literal(kind))),
+        text: Type.String({ minLength: 1, maxLength: 20000 }),
+        flavor: Type.Optional(Type.Union(['python', 'dotnet', 'js'].map(f => Type.Literal(f)),
+          { description: 'regex rules (default dotnet, what PowerShell uses)' })),
+        dialect: Type.Optional(Type.String({ maxLength: 20, description: 'sql: sqlite, postgres or tsql; mavlink: ardupilotmega or common' })),
+        arch: Type.Optional(Type.Union(['x86-64', 'x86-32', 'thumb', 'arm', 'arm64'].map(a => Type.Literal(a)))),
+      }),
+      async execute(_id, params, signal) {
+        const args = ['-m', 'edge_agent.lingua', params.kind];
+        for (const key of ['flavor', 'dialect', 'arch']) if (params[key]) args.push(`--${key}`, params[key]);
+        const text = await new Promise((done, fail) => {
+          const child = spawn(init.python, args, { cwd: root, env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+            signal, timeout: 60_000 });
+          let out = '';
+          child.stdout.on('data', chunk => { out += chunk; });
+          child.stderr.on('data', () => {});
+          child.on('error', fail);
+          child.on('close', () => done(out.trim() || '無法翻譯：沒有輸出'));
+          child.stdin.end(params.text);
+        });
+        return { content: [{ type: 'text', text }], details: {} };
       },
     });
   }
@@ -338,7 +371,8 @@ const mcpExtensions = mcpPrefixes.length ? [sdk.createToolSearchExtension(), sdk
 // known only once the servers connect), so the same set is the default and
 // every other built-in tool is excluded instead.
 const ownTools = [...(init.agent ? (init.read_only ? ['read', 'grep', 'find', 'ls', 'search_history']
-  : ['read', 'grep', 'find', 'ls', 'edit', 'write', 'powershell', 'search_history']) : ['search_history']), ...webTools];
+  : ['read', 'grep', 'find', 'ls', 'edit', 'write', 'powershell', 'search_history']) : ['search_history']),
+  ...(init.agent && init.python ? ['translate_machine'] : []), ...webTools];
 const BUILTIN_TOOLS = ['read', 'bash', 'powershell', 'edit', 'write', 'grep', 'find', 'ls'];
 if (mcpPrefixes.length) settings.applyOverrides({ defaultTools: [...ownTools, 'tool_search'] });
 const toolChoice = mcpPrefixes.length
