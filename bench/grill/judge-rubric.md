@@ -4,6 +4,7 @@ Eval only. You judge blind: transcripts are under random keys; you do not know w
 
 Each item has:
 - `idea`: what the user typed to start;
+- `expected_language`: the language the interviewer should talk in;
 - `already_stated`: what that idea already says;
 - `hidden_intent`: the user's real wishes, decisions `{id, topic, answer}` that the interviewer could not see;
 - `workspace_files`: the folder the user opened (path → content; a content in parentheses describes a binary or private file; empty means no files). The interviewer could look at these with read-only tools;
@@ -32,7 +33,7 @@ Count a question that covers several hidden decisions once, with all of them in 
 - `self_decided`: how many decisions the interviewer settled on its own without asking or offering ("我會順便加上…", silently assuming a choice in a later round);
 - `stopped_rounds`: rounds where the interviewer produced nothing or no questions and no spec;
 - `spec`: `none` if no spec was written; `faithful` if it was and contains only what the user decided or accepted; `invented` if it asserts things the user never said or accepted;
-- `language_ok`: true if every round is in Traditional Chinese;
+- `language_ok`: true if every round is in the item's `expected_language` (Traditional Chinese, never Simplified, or English);
 - `note`: one sentence on the interview's quality.
 
 ## Output

@@ -250,7 +250,8 @@ def with_skill(request: dict, skill: Path) -> dict:
     return json.loads(text[:start] + json.dumps(body, ensure_ascii=False)[1:-1] + text[end:])
 
 
-def ask(run: Path, model: Path, name: str, ctx: int, ngl: int, skill: Path | None) -> None:
+def ask(run: Path, model: Path, name: str, ctx: int, ngl: int, skill: Path | None,
+        lang: str = "zh") -> None:
     request = json.loads((run / "pi-request.json").read_text(encoding="utf-8"))
     if skill is not None:
         request = with_skill(request, skill)
@@ -263,10 +264,11 @@ def ask(run: Path, model: Path, name: str, ctx: int, ngl: int, skill: Path | Non
             state = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
             if state is None:
                 text = json.dumps(request["messages"], ensure_ascii=False)
-                text = text.replace(PLACEHOLDER, scenario["idea"])
+                text = text.replace(PLACEHOLDER, scenario["idea_en" if lang == "en" else "idea"])
                 text = text.replace(CWD_PLACEHOLDER, scenario["workspace"].replace("\\", "\\\\"))
                 messages = json.loads(text)
-                state = {"scenario": scenario["id"], "model": name, "messages": messages, "rounds": []}
+                state = {"scenario": scenario["id"], "model": name, "lang": lang,
+                         "messages": messages, "rounds": []}
             else:
                 done = len(state["rounds"])
                 answers_file = run / f"answers-r{done}.json"
@@ -327,7 +329,8 @@ def sim_input(run: Path, configs: list[str], round_no: int) -> None:
     by_id = {s["id"]: s for s in scenarios()}
     found = {k: v for k, v in transcripts(run, configs).items() if len(v["rounds"]) == round_no}
     keys = blind_keys(run, list(found))
-    items = {keys[name]: {"idea": by_id[state["scenario"]]["idea"],
+    items = {keys[name]: {"idea": by_id[state["scenario"]]["idea_en" if state.get("lang") == "en" else "idea"],
+                          "reply_language": "English" if state.get("lang") == "en" else "Traditional Chinese",
                           "hidden_intent": by_id[state["scenario"]]["decisions"],
                           "rounds": shown_rounds(state)} for name, state in found.items()}
     (run / f"sim-input-r{round_no}.json").write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -352,7 +355,9 @@ def judge_input(run: Path, configs: list[str], out: str) -> None:
     items = {}
     for name, state in found.items():
         scenario = by_id[state["scenario"]]
-        items[keys[name]] = {"idea": scenario["idea"], "already_stated": scenario["stated"],
+        items[keys[name]] = {"idea": scenario["idea_en" if state.get("lang") == "en" else "idea"],
+                             "expected_language": "English" if state.get("lang") == "en" else "Traditional Chinese",
+                             "already_stated": scenario["stated"],
                              "hidden_intent": scenario["decisions"],
                              "workspace_files": scenario.get("files") or {},
                              "rounds": shown_rounds(state)}
@@ -436,6 +441,28 @@ def report(run: Path, judged_file: str) -> None:
               f"{sum(item.get('self_decided', 0) for item in items) / len(items):3.1f} | "
               f"{sum(item.get('stopped_rounds', 0) for item in items):2} | "
               f"{sum(bool(item.get('language_ok')) for item in items) / len(items):4.0%} | {labels}")
+        # 95% intervals over transcripts (bootstrap): differences smaller than
+        # these are within the noise of this many interviews.
+        import random as _random
+
+        rng = _random.Random(5)
+
+        def share_covered(item: dict) -> float:
+            hit = {h for q in item["questions"] for h in q.get("hits", [])}
+            return len(hit & decisions[item["scenario"]]) / len(decisions[item["scenario"]])
+
+        def waste(group: list[dict]) -> float:
+            qs = [q for item in group for q in item["questions"]]
+            return sum(q["label"] in WASTE for q in qs) / max(1, len(qs))
+
+        boots_cov, boots_waste = [], []
+        for _ in range(2000):
+            sample = [rng.choice(items) for _ in items]
+            boots_cov.append(sum(map(share_covered, sample)) / len(sample))
+            boots_waste.append(waste(sample))
+        boots_cov.sort()
+        boots_waste.sort()
+        print(f"{'':9}   95%: 命中 {boots_cov[50]:.0%}–{boots_cov[1949]:.0%}, 廢話率 {boots_waste[50]:.0%}–{boots_waste[1949]:.0%}")
 
 
 def main() -> None:
@@ -450,6 +477,7 @@ def main() -> None:
     p.add_argument("--ctx", type=int, default=16384)
     p.add_argument("--ngl", type=int, default=99)
     p.add_argument("--skill", type=Path, help="a candidate skill text instead of the product's")
+    p.add_argument("--lang", choices=("zh", "en"), default="zh", help="en: the user opens in English")
     p = sub.add_parser("report")
     p.add_argument("run", type=Path)
     p.add_argument("--judged", default="judge.json")
@@ -467,7 +495,7 @@ def main() -> None:
     if args.cmd == "capture":
         capture(args.out)
     elif args.cmd == "ask":
-        ask(args.run, args.model, args.name, args.ctx, args.ngl, args.skill)
+        ask(args.run, args.model, args.name, args.ctx, args.ngl, args.skill, args.lang)
     elif args.cmd == "sim-input":
         sim_input(args.run, args.configs, args.round)
     elif args.cmd == "sim-apply":
