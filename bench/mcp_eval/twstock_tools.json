@@ -1,0 +1,486 @@
+[
+ {
+  "name": "get_stock_daily_trading",
+  "description": "查詢上市股票單日成交資訊（開高低收、漲跌、成交量值與筆數、本益比）：預設最新交易日，\n也可指定過去日期；可查單一個股，或整個市場的快照用於篩選。\n單一股票一整個月的日K請用 get_stock_history。\n\nArgs:\n    date: 查詢日期，格式 YYYYMMDD，例如 \"20260610\"（選填，留空＝最新交易日）\n    stock_no: 股票代號（選填），指定則只回傳該股票\n    name: 股票名稱關鍵字（選填）\n    limit: 回傳筆數上限（預設 50）\n    offset: 跳過前 N 筆（預設 0，搭配 limit 分頁）\n\nReturns:\n    每支股票的代號、名稱、成交股數、成交金額、開高低收、漲跌、本益比",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "default": "",
+     "title": "Date",
+     "type": "string"
+    },
+    "stock_no": {
+     "default": "",
+     "title": "Stock No",
+     "type": "string"
+    },
+    "name": {
+     "default": "",
+     "title": "Name",
+     "type": "string"
+    },
+    "limit": {
+     "default": 50,
+     "title": "Limit",
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "title": "Offset",
+     "type": "integer"
+    }
+   },
+   "type": "object"
+  },
+  "outputSchema": {
+   "properties": {
+    "result": {
+     "title": "Result",
+     "type": "string"
+    }
+   },
+   "required": [
+    "result"
+   ],
+   "title": "_WrappedResult",
+   "type": "object",
+   "x-fastmcp-wrap-result": true
+  },
+  "_meta": {
+   "_fastmcp": {
+    "tags": []
+   }
+  }
+ },
+ {
+  "name": "get_twse_institutional_investors_summary",
+  "description": "查詢台灣上市市場三大法人（外資、投信、自營商）買賣超日報。\n回傳指定日期所有上市股票的三大法人買賣超彙總，並依買賣超絕對值排序。\n\nArgs:\n    date: 查詢日期，格式 YYYYMMDD，例如 \"20260505\"（需為交易日）\n    limit: 回傳筆數上限（預設 50）\n    offset: 跳過前 N 筆（預設 0，搭配 limit 分頁）\n\nReturns:\n    上市股票三大法人買賣超日報，含外資、投信、自營商各別及合計買賣超股數",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "title": "Date",
+     "type": "string"
+    },
+    "limit": {
+     "default": 50,
+     "title": "Limit",
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "title": "Offset",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "date"
+   ],
+   "type": "object"
+  },
+  "outputSchema": {
+   "properties": {
+    "result": {
+     "title": "Result",
+     "type": "string"
+    }
+   },
+   "required": [
+    "result"
+   ],
+   "title": "_WrappedResult",
+   "type": "object",
+   "x-fastmcp-wrap-result": true
+  },
+  "_meta": {
+   "_fastmcp": {
+    "tags": []
+   }
+  }
+ },
+ {
+  "name": "get_twse_institutional_investors_by_stock",
+  "description": "查詢指定上市股票的三大法人（外資、投信、自營商）買賣超明細。\n回傳外資（含外資自營商）、投信、自營商（含自行買賣與避險）的完整買進、賣出、買賣超股數。\n\nArgs:\n    stock_no: 股票代號，例如 \"2330\"（台積電）、\"0050\"（元大台灣50）\n    date: 查詢日期，格式 YYYYMMDD，例如 \"20260505\"（需為交易日）\n\nReturns:\n    該股票三大法人完整買賣超明細，含外資、外資自營商、投信、自營商各細項",
+  "inputSchema": {
+   "properties": {
+    "stock_no": {
+     "title": "Stock No",
+     "type": "string"
+    },
+    "date": {
+     "title": "Date",
+     "type": "string"
+    }
+   },
+   "required": [
+    "stock_no",
+    "date"
+   ],
+   "type": "object"
+  },
+  "outputSchema": {
+   "properties": {
+    "result": {
+     "title": "Result",
+     "type": "string"
+    }
+   },
+   "required": [
+    "result"
+   ],
+   "title": "_WrappedResult",
+   "type": "object",
+   "x-fastmcp-wrap-result": true
+  },
+  "_meta": {
+   "_fastmcp": {
+    "tags": []
+   }
+  }
+ },
+ {
+  "name": "get_stock_history",
+  "description": "查詢台灣上市股票歷史日K資料。\n一次回傳指定月份的每日 OHLCV 資料，從 2010 年至今皆可查。\n\nArgs:\n    stock_no: 股票代號，例如 \"2330\"（台積電）、\"0050\"（元大台灣50）\n    date: 欲查詢的月份，格式 YYYYMMDD（日期隨意，例如 \"20250101\" 查 2025 年 1 月整月）\n\nReturns:\n    該月份每日交易資料，含日期(西元)、開盤價、最高價、最低價、收盤價、成交量、成交金額",
+  "inputSchema": {
+   "properties": {
+    "stock_no": {
+     "title": "Stock No",
+     "type": "string"
+    },
+    "date": {
+     "title": "Date",
+     "type": "string"
+    }
+   },
+   "required": [
+    "stock_no",
+    "date"
+   ],
+   "type": "object"
+  },
+  "outputSchema": {
+   "properties": {
+    "result": {
+     "title": "Result",
+     "type": "string"
+    }
+   },
+   "required": [
+    "result"
+   ],
+   "title": "_WrappedResult",
+   "type": "object",
+   "x-fastmcp-wrap-result": true
+  },
+  "_meta": {
+   "_fastmcp": {
+    "tags": []
+   }
+  }
+ },
+ {
+  "name": "get_taiex_index_history",
+  "description": "查詢發行量加權股價指數（大盤）每日開高低收：預設本月，也可查任意過去月份。\n與個股的 get_stock_history 對應，但查的是大盤指數本身，適合大盤走勢/K線分析。\n\nArgs:\n    date: 欲查詢的月份，格式 YYYYMMDD（日期隨意，例如 \"20260601\" 查 2026 年 6 月整月；留空＝本月）\n\nReturns:\n    該月份每個交易日的加權指數開盤、最高、最低、收盤指數",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "default": "",
+     "title": "Date",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "outputSchema": {
+   "properties": {
+    "result": {
+     "title": "Result",
+     "type": "string"
+    }
+   },
+   "required": [
+    "result"
+   ],
+   "title": "_WrappedResult",
+   "type": "object",
+   "x-fastmcp-wrap-result": true
+  },
+  "_meta": {
+   "_fastmcp": {
+    "tags": []
+   }
+  }
+ },
+ {
+  "name": "get_exchange_rates",
+  "description": "查詢中央銀行公布的每日匯率：新台幣及主要貿易對手通貨對美元匯率（1993 年起）。\n為當日 16:00 銀行間即期交易匯率，適合觀察新台幣升貶與外資動向。\n央行約每月更新一次檔案，最近幾週的資料可能尚未納入。\n\nArgs:\n    start_date: 起始日期 YYYYMMDD（選填）。未指定時回傳資料中最近 10 個交易日\n    end_date: 結束日期 YYYYMMDD（選填，預設到最新）。區間最多回傳 120 個交易日\n    currency: 幣別關鍵字（選填），例如 \"新台幣\"、\"NTD\"、\"JPY\"、\"人民幣\"；可用逗號分隔多個\n\nReturns:\n    每日各幣別匯率（標示方向，例如 NTD/USD＝1 美元兌多少新台幣、USD/EUR＝1 歐元兌多少美元）",
+  "inputSchema": {
+   "properties": {
+    "start_date": {
+     "default": "",
+     "title": "Start Date",
+     "type": "string"
+    },
+    "end_date": {
+     "default": "",
+     "title": "End Date",
+     "type": "string"
+    },
+    "currency": {
+     "default": "",
+     "title": "Currency",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "outputSchema": {
+   "properties": {
+    "result": {
+     "title": "Result",
+     "type": "string"
+    }
+   },
+   "required": [
+    "result"
+   ],
+   "title": "_WrappedResult",
+   "type": "object",
+   "x-fastmcp-wrap-result": true
+  },
+  "_meta": {
+   "_fastmcp": {
+    "tags": []
+   }
+  }
+ },
+ {
+  "name": "get_company_dividend",
+  "description": "查詢公司股利分派（公開資訊觀測站）：預設近兩年，也可回溯多年評估配息穩定性。\n上市、上櫃、興櫃、公開發行公司皆可，季配息公司會列出每一季的股利。\n\nArgs:\n    code: 股票代號，例如 \"2330\"\n    start_year: 起始年度，西元（\"2021\"）或民國（\"110\"）皆可；留空＝去年起\n    end_year: 結束年度（選填，預設今年；有指定 start_year 時預設同 start_year）。區間最多 10 年\n    year_type: \"dividend\"＝依股利所屬年度（預設，例如 2024 年盈餘所配的股利）；\n        \"board\"＝依董事會決議年度\n\nReturns:\n    每次股利分派的決議進度、所屬年（季）度、董事會決議日、股東會日期、當期淨利、\n    現金股利（盈餘/法定公積/資本公積，元/股）、股票股利（元/股）",
+  "inputSchema": {
+   "properties": {
+    "code": {
+     "title": "Code",
+     "type": "string"
+    },
+    "start_year": {
+     "default": "",
+     "title": "Start Year",
+     "type": "string"
+    },
+    "end_year": {
+     "default": "",
+     "title": "End Year",
+     "type": "string"
+    },
+    "year_type": {
+     "default": "dividend",
+     "title": "Year Type",
+     "type": "string"
+    }
+   },
+   "required": [
+    "code"
+   ],
+   "type": "object"
+  },
+  "outputSchema": {
+   "properties": {
+    "result": {
+     "title": "Result",
+     "type": "string"
+    }
+   },
+   "required": [
+    "result"
+   ],
+   "title": "_WrappedResult",
+   "type": "object",
+   "x-fastmcp-wrap-result": true
+  },
+  "_meta": {
+   "_fastmcp": {
+    "tags": []
+   }
+  }
+ },
+ {
+  "name": "get_company_income_statement",
+  "description": "查詢公司綜合損益表（公開資訊觀測站）：預設最新一季，也可指定任意歷史季度。\n上市、上櫃、興櫃、公開發行公司皆可，自動採用該公司產業（一般業、金融、保險…）的報表格式。\n附去年同季與年初至今累計的比較欄位。\n\nArgs:\n    code: 股票代號，例如 \"2330\"\n    year: 年度，西元（\"2025\"）或民國（\"114\"）皆可；留空＝最新一季\n    season: 季別 1～4；留空（0）＝最新一季。指定 year 時必填\n\nReturns:\n    每個會計項目在「當季、去年同季、今年累計、去年累計」的金額與占營收百分比，\n    含營收、毛利、營業利益、稅後淨利、EPS 等",
+  "inputSchema": {
+   "properties": {
+    "code": {
+     "title": "Code",
+     "type": "string"
+    },
+    "year": {
+     "default": "",
+     "title": "Year",
+     "type": "string"
+    },
+    "season": {
+     "default": 0,
+     "title": "Season",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "code"
+   ],
+   "type": "object"
+  },
+  "outputSchema": {
+   "properties": {
+    "result": {
+     "title": "Result",
+     "type": "string"
+    }
+   },
+   "required": [
+    "result"
+   ],
+   "title": "_WrappedResult",
+   "type": "object",
+   "x-fastmcp-wrap-result": true
+  },
+  "_meta": {
+   "_fastmcp": {
+    "tags": []
+   }
+  }
+ },
+ {
+  "name": "get_company_balance_sheet",
+  "description": "查詢公司資產負債表（公開資訊觀測站）：預設最新一季，也可指定任意歷史季度。\n上市、上櫃、興櫃、公開發行公司皆可，自動採用該公司產業的報表格式。\n附前一年底與去年同期的比較欄位。\n\nArgs:\n    code: 股票代號，例如 \"2330\"\n    year: 年度，西元（\"2025\"）或民國（\"114\"）皆可；留空＝最新一季\n    season: 季別 1～4；留空（0）＝最新一季。指定 year 時必填\n\nReturns:\n    每個會計項目（流動資產、負債、權益等）在各比較日期的金額與占總資產百分比",
+  "inputSchema": {
+   "properties": {
+    "code": {
+     "title": "Code",
+     "type": "string"
+    },
+    "year": {
+     "default": "",
+     "title": "Year",
+     "type": "string"
+    },
+    "season": {
+     "default": 0,
+     "title": "Season",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "code"
+   ],
+   "type": "object"
+  },
+  "outputSchema": {
+   "properties": {
+    "result": {
+     "title": "Result",
+     "type": "string"
+    }
+   },
+   "required": [
+    "result"
+   ],
+   "title": "_WrappedResult",
+   "type": "object",
+   "x-fastmcp-wrap-result": true
+  },
+  "_meta": {
+   "_fastmcp": {
+    "tags": []
+   }
+  }
+ },
+ {
+  "name": "get_company_cash_flow_statement",
+  "description": "查詢公司現金流量表（公開資訊觀測站）：預設最新一季，也可指定任意歷史季度。\n金額為年初至該季末的累計數，並附去年同期累計比較。\n\nArgs:\n    code: 股票代號，例如 \"2330\"\n    year: 年度，西元（\"2025\"）或民國（\"114\"）皆可；留空＝最新一季\n    season: 季別 1～4（第 4 季即全年）；留空（0）＝最新一季。指定 year 時必填\n\nReturns:\n    營業、投資、籌資活動現金流量各項目，含折舊攤銷、資本支出（取得不動產廠房及設備）、\n    發放現金股利、期末現金餘額等",
+  "inputSchema": {
+   "properties": {
+    "code": {
+     "title": "Code",
+     "type": "string"
+    },
+    "year": {
+     "default": "",
+     "title": "Year",
+     "type": "string"
+    },
+    "season": {
+     "default": 0,
+     "title": "Season",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "code"
+   ],
+   "type": "object"
+  },
+  "outputSchema": {
+   "properties": {
+    "result": {
+     "title": "Result",
+     "type": "string"
+    }
+   },
+   "required": [
+    "result"
+   ],
+   "title": "_WrappedResult",
+   "type": "object",
+   "x-fastmcp-wrap-result": true
+  },
+  "_meta": {
+   "_fastmcp": {
+    "tags": []
+   }
+  }
+ },
+ {
+  "name": "get_company_monthly_revenue",
+  "description": "查詢公司月營收（公開資訊觀測站）：預設最新公告月份，也可查任意過去月份區間。\n上市、上櫃、興櫃、公開發行公司皆可。每月含當月營收、月增率、去年同期、年增率、\n今年累計與累計年增率，以及公司對大幅變動的說明。\n\nArgs:\n    code: 股票代號，例如 \"2330\"\n    start_month: 起始月份，西元 YYYYMM，例如 \"202601\"；留空＝最新公告月份（附上前一個月對照）\n    end_month: 結束月份，西元 YYYYMM（選填，預設同 start_month）。區間最多 12 個月\n\nReturns:\n    每個月份的營收數據（單位：新台幣仟元）。尚未公告的月份會標示「尚未公告」",
+  "inputSchema": {
+   "properties": {
+    "code": {
+     "title": "Code",
+     "type": "string"
+    },
+    "start_month": {
+     "default": "",
+     "title": "Start Month",
+     "type": "string"
+    },
+    "end_month": {
+     "default": "",
+     "title": "End Month",
+     "type": "string"
+    }
+   },
+   "required": [
+    "code"
+   ],
+   "type": "object"
+  },
+  "outputSchema": {
+   "properties": {
+    "result": {
+     "title": "Result",
+     "type": "string"
+    }
+   },
+   "required": [
+    "result"
+   ],
+   "title": "_WrappedResult",
+   "type": "object",
+   "x-fastmcp-wrap-result": true
+  },
+  "_meta": {
+   "_fastmcp": {
+    "tags": []
+   }
+  }
+ }
+]
