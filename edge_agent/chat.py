@@ -18,6 +18,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from edge_agent.permissions import DEFAULT_PERMISSIONS, bridge_rules
+from edge_agent.records import save_session
 from edge_agent.runtime import (
     CORE_ROOT,
     DEFAULT_MAX_OUTPUT_TOKENS,
@@ -473,6 +474,7 @@ class NativeChat:
         media: list[dict[str, str]] | None = None,
         permissions: dict[str, str] | None = None,
         mcp_servers: dict[str, dict[str, object]] | None = None,
+        record_folder: str | None = None,
     ) -> Iterator[tuple[str, dict[str, object]]]:
         """`interview` (求知儀式 in the UI): the grill-me interview
         (edge_agent/skills/grill-me) until the user confirms a spec, with
@@ -693,6 +695,8 @@ class NativeChat:
                         settled = True
                         break
                 self._checkpoint()
+                # Kept on the user's records drive when that is on (records.py).
+                save_session(record_folder, session_id, session.entries)
                 if session.cancelled.is_set():
                     yield "cancelled", {}
                 elif stop_reason:

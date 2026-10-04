@@ -56,6 +56,9 @@ DEFAULT_CONFIG: dict[str, object] = {
     "permissions": DEFAULT_PERMISSIONS,
     # MCP servers the owner added (edge_agent/mcp.py); none by default.
     "mcp_servers": {},
+    # Sessions kept on the user's encrypted records drive (records.py).
+    "record_sessions": False,
+    "record_folder": "",
 }
 
 
@@ -236,6 +239,8 @@ class EdgeAgent:
             **merged,
             "permissions": validate_permissions(merged["permissions"]),
             "mcp_servers": validate_mcp_servers(merged["mcp_servers"]),
+            "record_sessions": EdgeAgent._flag(merged, "record_sessions"),
+            "record_folder": EdgeAgent._folder(merged, "record_folder"),
         }
 
     def update_config(self, value: dict[str, object]) -> dict[str, object]:
@@ -819,6 +824,19 @@ class EdgeAgent:
         return value
 
     @staticmethod
+    def _flag(payload: dict[str, object], key: str) -> bool:
+        if not isinstance(payload.get(key), bool):
+            raise TypeError(f"{key} must be a boolean")
+        return bool(payload[key])
+
+    @staticmethod
+    def _folder(payload: dict[str, object], key: str) -> str:
+        value = payload.get(key)
+        if not isinstance(value, str) or len(value) > 260:
+            raise TypeError(f"{key} must be a folder path")
+        return value.strip()
+
+    @staticmethod
     def _bounded_int(
         payload: dict[str, object], key: str, minimum: int, maximum: int
     ) -> int:
@@ -1143,6 +1161,9 @@ class Handler(BaseHTTPRequestHandler):
                     media=media,
                     permissions=bridge_rules(profile),
                     mcp_servers=mcp_servers,
+                    record_folder=self.core.config["record_folder"]
+                    if self.core.config["record_sessions"]
+                    else None,
                 ):
                     self._event(event, data)
             finally:
