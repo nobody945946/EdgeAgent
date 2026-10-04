@@ -1170,7 +1170,7 @@ def test_real_sdk_interview_opens_grill_me_once_and_cannot_change_files(
     assert SKILL_MARK in opened and "我想做一個記帳 app" in opened
     assert "1 用網頁" in last_user(requests[1])
     assert SKILL_MARK not in last_user(requests[1])
-    assert json.dumps(requests[1]["messages"]).count(SKILL_MARK) == 1
+    assert json.dumps(requests[1]["messages"], ensure_ascii=False).count(SKILL_MARK) == 1
     assert SKILL_MARK in last_user(requests[3])
     for request in (requests[0], requests[1], requests[3]):
         assert {"read", "grep"} <= tools(request)
