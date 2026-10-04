@@ -1157,7 +1157,7 @@ def test_real_sdk_interview_opens_grill_me_once_and_cannot_change_files(
         chat.close()
     requests = state["requests"]
     assert len(requests) == 4
-    SKILL_MARK = "Interview the user relentlessly"  # once in the skill
+    SKILL_MARK = "你現在要先訪談使用者"  # once in the skill
 
     def last_user(request):
         user = [m for m in request["messages"] if m["role"] == "user"][-1]

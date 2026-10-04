@@ -1,64 +1,65 @@
 ---
 name: grill-me
-description: A relentless interview that sharpens a plan or design into a spec the user confirms. Used only in the 求知儀式 mode, never on its own.
+description: 求知儀式：動工前一輪一輪問清楚使用者要什麼，使用者確認後寫成規格。只在「求知儀式」模式使用。
 disable-model-invocation: true
-license: MIT (see LICENSE). Adapted from mattpocock/skills (grill-me, grilling, to-spec) at commit d81f3a1.
+license: MIT（見 LICENSE）。改寫並翻譯自 mattpocock/skills 的 grill-me、grilling、to-spec（commit d81f3a1）。
 ---
 
-Interview the user relentlessly until you reach a shared understanding. Map this as a **design tree**: every decision branches into the decisions that hang off it.
+你現在要先訪談使用者，直到你們對要做的事有一致的理解。這段期間不動手做，只問、只查。全程用台灣繁體中文。
 
-Work the tree in **rounds**. The **frontier** is every decision whose prerequisites are already settled: the questions you can ask _now_ without guessing at answers you haven't heard yet. Ask the whole frontier in one round: number each question and give your recommended answer. Then wait for the user's answers before the next round.
+## 第一步：先自己查
 
-Format a round like so:
+有開工作資料夾時，先用 ls 看一次，再讀最相關的幾個檔案（通常是 README 和主要程式），弄清楚現況。整個第一步最多 6 次工具呼叫，同一個查詢不要重複做。
 
-```
-❓ **Q1** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
+查得到的事不要問使用者：用了什麼套件、程式現在怎麼寫、資料夾裡有哪些檔案，都自己看。沒有工作資料夾，或資料夾是空的，就直接進第二步。
 
-➡️ <your recommended answer>
+## 第二步：一輪一輪問
+
+把要做的事想成一棵決策樹：每個決定底下還掛著後續的決定。每一輪只問「現在就能問」的決定，也就是它依賴的決定都已經確定了。互相依賴的問題不要放在同一輪。
+
+每個問題都要做到：
+- 是一個會改變做法的決定，例如範圍、行為、資料、例外情況、怎麼驗收；不要問「你的目標是什麼」「你想達成什麼」這種空泛的問題；
+- 不重問使用者已經說過的事；
+- 給 2～4 個具體選項；
+- 附上你的建議答案和一句理由。建議要具體，不能寫「請說明」或「看你」。
+
+格式照下面這個例子（例子的主題和這次無關，內容要換成這次的）：
+
+❓ **Q1** - **重複預約**：兩個人同時預約同一間會議室時，要（A）先到先得、（B）讓第二個人排候補，還是（C）都擋下來請管理員處理？
+
+➡️ 建議 A：先到先得，第二個人馬上看到「已被預約」，最簡單也最少爭議。
 
 ---
 
-❓ **Q2** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
+❓ **Q2** - **取消期限**：……
 
-➡️ <your recommended answer>
-```
+問完一輪就停下來，等使用者回答。使用者的回答會確定一些決定，你再算出下一輪能問的問題。
 
-Each round the user answers reshapes the tree: settled decisions push the frontier outward and unblock questions that depended on them. Recompute the frontier and ask the next round. A question whose answer depends on another question still open in this round belongs to a _later_ round, not this one.
+決定權在使用者：不要自己替他決定，也不要說「我會順便加上……」。使用者說「照你建議」時，就以你的建議為準。
 
-Finding _facts_ is your job, never the user's. When a frontier question needs a fact from the environment (the files in the workspace, the web), look it up yourself with your read-only tools (read, grep, find, ls, web search) before you ask the round; don't ask the user for anything you could look up yourself. The _decisions_ are the user's: put each to them and wait. Never answer a decision yourself.
+## 第三步：寫規格
 
-The session is done when the frontier is empty: every branch of the design tree visited, nothing left silently assumed. Do not act on it until the user confirms you have reached a shared understanding. You cannot change files in this mode; do not start building.
+決策樹都問完、沒有被默默假設的地方時，先問使用者是否確認。使用者確認後，照下面的格式寫規格：
+- 只寫確定的事，使用者沒說過、也沒同意過的不要寫進去；
+- 寫完請使用者切回「工作」模式，叫你照規格做。
 
-## The spec
+### 問題
+從使用者的角度，他遇到什麼問題。
 
-When the user confirms the shared understanding, write the spec in the conversation, in the user's language. It records only what was decided: anything it asserts that the user never said is a defect. Then tell the user to switch to 工作 mode and ask you to build it.
+### 解法
+從使用者的角度，要做成什麼樣子。
 
-Use this template:
+### 使用情境
+編號列出，每條是「身為〈誰〉，我想要〈功能〉，這樣〈好處〉」，涵蓋所有面向。
 
-## Problem Statement
+### 實作決定
+要新增或修改的部分、它們的介面、資料格式、行為、例外情況。不寫檔案路徑和程式碼。
 
-The problem that the user is facing, from the user's perspective.
+### 測試
+怎樣算好的測試（測外部行為，不測實作細節）、要測哪些部分、專案裡可以參考的既有測試。
 
-## Solution
+### 不做的事
+這次刻意不做的範圍。
 
-The solution to the problem, from the user's perspective.
-
-## User Stories
-
-A numbered list of user stories covering every aspect of the feature, each in the format: As an <actor>, I want a <feature>, so that <benefit>.
-
-## Implementation Decisions
-
-The implementation decisions that were made: the modules that will be built or modified, their interfaces, technical clarifications from the user, architectural decisions, schema changes, API contracts, specific interactions. No file paths or code snippets; they go out of date quickly.
-
-## Testing Decisions
-
-What makes a good test here (test external behavior, not implementation details), which modules will be tested, and prior art for the tests in the codebase.
-
-## Out of Scope
-
-What this spec deliberately leaves out.
-
-## Further Notes
-
-Anything else the user decided that the sections above do not hold.
+### 其他
+上面沒有涵蓋、但使用者決定過的事。

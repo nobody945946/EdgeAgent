@@ -405,6 +405,8 @@ WASTE = ("already_answered", "filler", "should_look_up", "premature")
 
 
 def report(run: Path, judged_file: str) -> None:
+    """Per config, over its transcripts: how many of the user's real
+    decisions the questions reached, and how many questions were waste."""
     keys = {v: k for k, v in json.loads((run / "keys.json").read_text(encoding="utf-8")).items()}
     judged = json.loads((run / judged_file).read_text(encoding="utf-8"))
     by_model: dict[str, list[dict]] = {}
@@ -413,19 +415,27 @@ def report(run: Path, judged_file: str) -> None:
         model, scenario = keys[key].split("/")
         model = re.sub(r"-s\d+$", "", model)
         by_model.setdefault(model, []).append(verdict | {"scenario": scenario})
+    print("config | 逐字稿 | 題/稿 | 命中真正決定 | 第1輪命中 | 廢話率 | 有用率 | 好建議 | 替使用者決定/稿 | 停住輪 | 全繁中")
     for model, items in sorted(by_model.items()):
         questions = [q for item in items for q in item["questions"]]
         labels: dict[str, int] = {}
         for q in questions:
             labels[q["label"]] = labels.get(q["label"], 0) + 1
-        coverage = [len({h for q in item["questions"] for h in q.get("hits", [])} & decisions[item["scenario"]])
-                    / len(decisions[item["scenario"]]) for item in items]
+
+        def coverage(rounds: int, items: list[dict] = items) -> float:
+            shares = [len({h for q in item["questions"] if q.get("round", 1) <= rounds for h in q.get("hits", [])}
+                          & decisions[item["scenario"]]) / len(decisions[item["scenario"]]) for item in items]
+            return sum(shares) / len(shares)
+
+        n = max(1, len(questions))
         recs = [q for q in questions if q.get("recommendation") in ("good", "weak", "missing")]
-        print(f"{model}: scenarios {len(items)}, questions {len(questions)}, "
-              f"key coverage {sum(coverage) / len(coverage):.0%}, "
-              f"waste {sum(labels.get(w, 0) for w in WASTE) / max(1, len(questions)):.0%}, "
-              f"good recommendations {sum(q['recommendation'] == 'good' for q in recs) / max(1, len(recs)):.0%}, "
-              f"self-decided {sum(item.get('self_decided', 0) for item in items)}, labels {labels}")
+        print(f"{model:9} | {len(items):2} | {len(questions) / len(items):4.1f} | {coverage(99):4.0%} | "
+              f"{coverage(1):4.0%} | {sum(labels.get(w, 0) for w in WASTE) / n:4.0%} | "
+              f"{(labels.get('key', 0) + labels.get('useful', 0)) / n:4.0%} | "
+              f"{sum(q['recommendation'] == 'good' for q in recs) / max(1, len(recs)):4.0%} | "
+              f"{sum(item.get('self_decided', 0) for item in items) / len(items):3.1f} | "
+              f"{sum(item.get('stopped_rounds', 0) for item in items):2} | "
+              f"{sum(bool(item.get('language_ok')) for item in items) / len(items):4.0%} | {labels}")
 
 
 def main() -> None:
