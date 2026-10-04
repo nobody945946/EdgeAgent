@@ -96,7 +96,7 @@ function Install-EdgeAgent {
     $receipt = Join-Path $Root '.runtime\python-dependencies.sha256'
     $dependenciesReady = (Test-Path -LiteralPath $receipt) -and (Get-Content -LiteralPath $receipt -Raw).Trim() -eq $projectHash
     $importsReady = $false
-    try { & $venv -c 'import pypdf,edge_agent' *> $null; $importsReady = $LASTEXITCODE -eq 0 } catch { }
+    try { & $venv -c 'import pypdf,sqlglot,edge_agent' *> $null; $importsReady = $LASTEXITCODE -eq 0 } catch { }
     if (-not $dependenciesReady -or -not $importsReady) {
         Invoke-Checked $venv @('-m', 'pip', 'install', '--disable-pip-version-check', '-e', $Root)
         Set-Content -LiteralPath $receipt -Value $projectHash -Encoding ASCII

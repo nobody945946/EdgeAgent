@@ -197,3 +197,91 @@ def run_calc(cells: dict[str, object], formulas: list[str]) -> list[str] | None:
         with open(Path(folder) / "out" / "f.csv", encoding="utf-8", newline="") as handle:
             rows = list(csv.reader(handle))
     return [(row[25] if len(row) > 25 else "") for row in rows[:len(formulas)]]
+
+
+# ---------------------------------------------------------------- databases
+
+PG_IMAGE = "postgres:16"
+MSSQL_IMAGE = "mcr.microsoft.com/mssql/server:2022-latest"
+MSSQL_PASSWORD = "Lingua!Check2026"  # a throwaway server with no network, removed after the checks
+
+
+class Databases:
+    """SQLite in process, PostgreSQL and SQL Server in containers with no
+    network, for checking the SQL translator. Use as a context manager; the
+    containers are removed on exit. A missing image leaves that one out."""
+
+    def __init__(self) -> None:
+        self.names: dict[str, str] = {}
+
+    def __enter__(self) -> Databases:  # noqa: PYI034
+        import time
+        import uuid
+
+        docker = shutil.which("docker")
+        if docker is None:
+            return self
+        tag = uuid.uuid4().hex[:8]
+        for dialect, image, env in (
+                ("postgres", PG_IMAGE, ["-e", "POSTGRES_PASSWORD=x"]),
+                ("tsql", MSSQL_IMAGE, ["-e", "ACCEPT_EULA=Y", "-e", f"MSSQL_SA_PASSWORD={MSSQL_PASSWORD}"])):
+            if subprocess.run([docker, "image", "inspect", image], capture_output=True, check=False).returncode:
+                continue
+            name = f"lingua-{dialect}-{tag}"
+            subprocess.run([docker, "run", "-d", "--rm", "--name", name, "--network", "none", *env, image],
+                           capture_output=True, check=True)
+            self.names[dialect] = name
+        deadline = time.monotonic() + 180
+        try:
+            for dialect in list(self.names):
+                while True:
+                    try:
+                        self.run(dialect, "SELECT 1")
+                        break
+                    except (RuntimeError, subprocess.SubprocessError):
+                        if time.monotonic() > deadline:
+                            raise
+                        time.sleep(2)
+        except BaseException:
+            self.__exit__()  # never leave a server running
+            raise
+        return self
+
+    def __exit__(self, *_: object) -> None:  # also called on a failed start
+        for name in self.names.values():
+            subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
+
+    def available(self) -> list[str]:
+        return ["sqlite", *self.names]
+
+    def run(self, dialect: str, sql: str) -> list[list[str]]:
+        """Run statements and undo them (each call starts from an empty
+        database); the rows they return, values as text ('' for NULL)."""
+        if dialect == "sqlite":
+            import sqlite3
+
+            connection = sqlite3.connect(":memory:")
+            try:
+                rows: list = []
+                for statement in [s for s in sql.split(";") if s.strip()]:
+                    try:
+                        rows = connection.execute(statement).fetchall()
+                    except sqlite3.Error as exc:
+                        raise RuntimeError(str(exc)) from exc
+                return [["" if v is None else str(v) for v in row] for row in rows]
+            finally:
+                connection.close()
+        name = self.names[dialect]
+        if dialect == "postgres":
+            command = ["docker", "exec", name, "psql", "-U", "postgres", "-q", "-At", "-F", "|",
+                       "-P", "null=NULL", "-v", "ON_ERROR_STOP=1", "-c", f"BEGIN; {sql}; ROLLBACK"]
+        else:
+            command = ["docker", "exec", name, "/opt/mssql-tools18/bin/sqlcmd", "-S", "127.0.0.1", "-U", "sa",
+                       "-P", MSSQL_PASSWORD, "-C", "-l", "5", "-b", "-h", "-1", "-W", "-s", "|", "-Q",
+                       f"SET NOCOUNT ON; BEGIN TRANSACTION; {sql}; ROLLBACK"]
+        done = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", timeout=120, check=False)
+        if done.returncode != 0:
+            raise RuntimeError((done.stderr or done.stdout).strip()[:300])
+        lines = done.stdout.splitlines() if dialect == "postgres" else [
+            line for line in done.stdout.splitlines() if line.strip()]
+        return [["" if v == "NULL" else v for v in line.split("|")] for line in lines]
