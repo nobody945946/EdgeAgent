@@ -20,6 +20,7 @@ def test_servers_are_validated_and_filled_with_safe_defaults() -> None:
     assert servers["fin"] | {} == {
         "command": "node", "args": ["x.mjs"], "env": {}, "description": "",
         "enabled": True, "permission": "ask", "hardware": False, "clients": ["ui"], "tools": [],
+        "confirm": "each",
     }
     for bad, message in [
         ({"a b": {"command": "x"}}, "letters"),
@@ -173,3 +174,23 @@ def test_only_the_listed_tools_can_be_found_or_called(tmp_path, repeating_model)
     assert "quote" in json.dumps(found) and "place_order" not in json.dumps(found)
     assert not any(n == "approval" for n, _ in events)
     assert _ran(log) == ["quote"]
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_a_turn_confirm_server_lets_one_approval_cover_the_turn(tmp_path, repeating_model):  # noqa: F811
+    """For servers that mark every action destructive (a browser's clicks),
+    the owner can let "allow this turn" cover them; hardware never."""
+    port, state = repeating_model
+    server, log = _server(tmp_path, permission="allow", hardware=False, confirm="turn")
+    state["sequence"] = [
+        ("tool_search", {"query": "place stock order"}),
+        ("mcp__fin__place_order", {"symbol": "2330", "shares": 1}),
+        ("mcp__fin__place_order", {"symbol": "2317", "shares": 1}),
+    ]
+    chat = NativeChat(model_port=port)
+    try:
+        events = _run(chat, tmp_path, {"fin": server}, approve=lambda data: True)
+    finally:
+        chat.close()
+    assert [(d["tool"], d["explicit"]) for n, d in events if n == "approval"] == [("mcp__fin__place_order", "")]
+    assert _ran(log) == ["place_order", "place_order"]

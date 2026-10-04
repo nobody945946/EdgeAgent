@@ -75,7 +75,7 @@ const mcpServers = init.agent ? (init.mcp_servers ?? {}) : {};
 const mcpPrefixes = Object.keys(mcpServers).map(name => [`mcp__${name.replace(/[^A-Za-z0-9_]/g, '_')}__`, name]);
 const mcpServerOf = toolName => {
   const found = mcpPrefixes.find(([prefix]) => toolName.startsWith(prefix));
-  return found ? mcpServers[found[1]] : null;
+  return found ? { name: found[1], ...mcpServers[found[1]] } : null;
 };
 
 function policy(pi) {
@@ -248,6 +248,11 @@ function policy(pi) {
   // openWorldHint; missing ones mean "may change things, may reach out")
   // decide, within the owner's per-server permission.
   const hintsOf = toolName => pi.getAllTools().find(tool => tool.name === toolName)?.annotations ?? {};
+  // Servers with confirm "turn" the owner allowed for this turn. Unlike the
+  // standing approval of edits and shell, this one survives the server's
+  // own results: the owner chose it for a browser whose every page is web.
+  const serverTurn = new Set();
+  pi.on('before_agent_start', () => serverTurn.clear());
   async function mcpGate(toolName, input, ctx) {
     const server = mcpServerOf(toolName);
     if (!server) return { block: true, reason: 'This MCP server is not enabled here.' };
@@ -255,12 +260,17 @@ function policy(pi) {
     const readOnly = hints.readOnlyHint === true;
     if (!readOnly && init.read_only) return { block: true, reason: 'This mode allows inspection only.' };
     // Each call that moves hardware, or cannot be taken back, is its own decision.
-    const explicit = readOnly ? '' : server.hardware ? 'hardware' : hints.destructiveHint !== false ? 'mcp_destructive' : '';
+    const explicit = readOnly ? '' : server.hardware ? 'hardware'
+      : hints.destructiveHint !== false && server.confirm !== 'turn' ? 'mcp_destructive' : '';
     const free = server.permission === 'allow' && readOnly && !(tainted && hints.openWorldHint !== false);
-    if (!explicit && (free || turnApproved)) return;
+    const byTurn = server.confirm === 'turn' && serverTurn.has(server.name);
+    if (!explicit && (free || byTurn || turnApproved)) return;
     const choice = await ctx.ui.select(JSON.stringify({ tool: toolName, arguments: input, after_web: tainted, explicit }),
       explicit ? ['Allow once', 'Deny'] : ['Allow this turn', 'Allow once', 'Deny'], { timeout: 300000 });
-    if (choice === 'Allow this turn' && !explicit) turnApproved = true;
+    if (choice === 'Allow this turn' && !explicit) {
+      if (server.confirm === 'turn') serverTurn.add(server.name);
+      else turnApproved = true;
+    }
     if (!choice || choice === 'Deny') return { block: true, reason: 'Operation was not approved.' };
   }
   pi.on('tool_result', event => {
