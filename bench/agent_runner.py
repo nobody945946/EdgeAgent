@@ -55,6 +55,10 @@ def main() -> None:
     assert relay.stdout is not None
     relay.stdout.readline()
     chat = NativeChat(model_port=18089, core_dir=Path("/opt/edgeagent"))
+    # The product pins its one Agent session to a slot (it shares the server
+    # with the character); the bench runs several jobs on one server, so the
+    # server picks a free slot for each, as it did before the pinning.
+    chat.slot_id = None
     chat.configure_context(
         spec["context_size"],
         model=spec["model"],
