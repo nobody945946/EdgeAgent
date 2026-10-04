@@ -40,6 +40,7 @@ from mine_repo import REPOS  # noqa: E402
 BENCH = ROOT / "bench"
 STATE = ROOT / ".runtime/bench"
 IMAGE = "edgeagent-bench:1"
+VRAM_EXIT = 3  # gave up waiting for free VRAM
 SERVER = Path(os.environ.get(
     "BENCH_LLAMA_SERVER",
     "/home/clawd/SilentTalk/.runtime/tools/llama.cpp-b11193-src/build-cuda/bin/llama-server",
@@ -128,7 +129,8 @@ def free_vram_mib() -> int:
 class Server:
     """llama-server for one configuration plus the host end of the relay."""
 
-    def __init__(self, config: dict, run_dir: Path, parallel: int, port: int) -> None:
+    def __init__(self, config: dict, run_dir: Path, parallel: int, port: int,
+                 vram_wait_min: float = 0) -> None:
         self.port = port
         # Relative to the student models folder; teachers live next to it.
         model = (MODELS / config["model"]).resolve()
@@ -143,7 +145,12 @@ class Server:
         args += ["--fit", "off", *config.get("extra_args", [])]
         # Weights and buffers, plus one full context window per parallel slot.
         need = config["vram_base_mib"] + config["vram_slot_mib"] * parallel
+        give_up = time.monotonic() + vram_wait_min * 60 if vram_wait_min else None
         while free_vram_mib() < need:
+            if give_up is not None and time.monotonic() > give_up:
+                # Another tenant kept the GPU: give the queue back instead of
+                # blocking it all night; the run resumes when started again.
+                raise SystemExit(VRAM_EXIT)
             print(f"waiting for {need} MiB free VRAM (now {free_vram_mib()})", flush=True)
             time.sleep(30)
         self.log = open(run_dir / "server.log", "ab")
@@ -385,6 +392,8 @@ def main() -> None:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--parallel", type=int, default=4)
     parser.add_argument("--port", type=int, default=18189)
+    parser.add_argument("--vram-wait", type=float, default=0,
+                        help=f"minutes to wait for free VRAM, then exit {VRAM_EXIT} (0: forever)")
     parser.add_argument("--keep", action="store_true", help="keep workspaces")
     parser.add_argument("--tag", help="run directory name (default: the config name)")
     parser.add_argument("--record", action="store_true",
@@ -433,7 +442,7 @@ def main() -> None:
         shutil.copytree(args.product.resolve(), product,
                         ignore=shutil.ignore_patterns("__pycache__"))
     bridge = bridge_variant(config, run_dir, product)
-    server = Server(config, run_dir, args.parallel, args.port)
+    server = Server(config, run_dir, args.parallel, args.port, args.vram_wait)
     # A stopped run must not leave llama-server holding VRAM. The main thread
     # sits in the worker pool, so exiting there would wait for every job.
     def stop(*_: object) -> None:

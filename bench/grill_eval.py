@@ -52,8 +52,10 @@ def scenarios() -> list[dict]:
 # ---------------------------------------------------------------- capture
 
 
-def capture(out: Path) -> None:
-    """Pi's first request in interview mode, from the real bridge."""
+def capture(out: Path, *, interview: bool = True, thinking: str = "off",
+            name: str = "pi-request.json") -> None:
+    """Pi's first request (interview or work mode, at a thinking level),
+    from the real bridge."""
     sys.path.insert(0, str(ROOT))
     from edge_agent.chat import NativeChat
 
@@ -79,8 +81,8 @@ def capture(out: Path) -> None:
     chat = NativeChat(model_port=server.server_port)
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            for _ in chat.stream_reply("capture", PLACEHOLDER, agent=True,
-                                       working_dir=Path(tmp), interview=True):
+            for _ in chat.stream_reply("capture", PLACEHOLDER, agent=True, working_dir=Path(tmp),
+                                       interview=interview, thinking_effort=thinking):
                 pass
             text = json.dumps(seen[0], ensure_ascii=False)
             text = text.replace(str(Path(tmp).resolve()), CWD_PLACEHOLDER)
@@ -89,7 +91,7 @@ def capture(out: Path) -> None:
         chat.close()
         server.shutdown()
     out.mkdir(parents=True, exist_ok=True)
-    (out / "pi-request.json").write_text(text, encoding="utf-8")
+    (out / name).write_text(text, encoding="utf-8")
     request = json.loads(text)
     print("tools:", [t["function"]["name"] for t in request.get("tools", [])])
     print("sampling:", {k: v for k, v in request.items() if k not in ("messages", "tools")})
@@ -203,21 +205,26 @@ def start_server(model: Path, ctx: int, ngl: int) -> subprocess.Popen:
     raise SystemExit("llama-server did not become ready")
 
 
-def complete(request: dict, messages: list[dict]) -> dict:
+def complete(request: dict, messages: list[dict], timeout: float = 1800) -> dict:
     body = {k: v for k, v in request.items() if k not in ("messages", "stream", "stream_options", "model")}
     body |= {"messages": messages, "stream": False}
     req = urllib.request.Request(f"http://127.0.0.1:{PORT}/v1/chat/completions", method="POST",
                                  headers={"Content-Type": "application/json"},
                                  data=json.dumps(body, ensure_ascii=False).encode())
-    return json.loads(urllib.request.urlopen(req, timeout=1800).read())["choices"][0]["message"]
+    return json.loads(urllib.request.urlopen(req, timeout=timeout).read())["choices"][0]["message"]
 
 
-def one_round(request: dict, messages: list[dict], workspace: Workspace) -> tuple[str, list[dict], float]:
+def one_round(request: dict, messages: list[dict], workspace: Workspace,
+              budget_s: float = 3600) -> tuple[str, list[dict], float]:
     """Run the model until it answers in text; tool calls hit the fake workspace.
-    Like the bridge, the same call a third time stops the turn."""
+    Like the bridge, the same call a third time stops the turn; so does the
+    time budget (an unattended run must never hang on one item)."""
     calls, started, repeats = [], time.monotonic(), {}
     for _ in range(MAX_HOPS):
-        reply = complete(request, messages)
+        left = budget_s - (time.monotonic() - started)
+        if left <= 0:
+            break
+        reply = complete(request, messages, timeout=left)
         tool_calls = reply.get("tool_calls") or []
         message = {"role": "assistant", "content": reply.get("content") or ""}
         if tool_calls:
