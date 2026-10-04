@@ -19,7 +19,7 @@ def test_servers_are_validated_and_filled_with_safe_defaults() -> None:
     servers = validate_mcp_servers({"fin": {"command": "node", "args": ["x.mjs"]}})
     assert servers["fin"] | {} == {
         "command": "node", "args": ["x.mjs"], "env": {}, "description": "",
-        "enabled": True, "permission": "ask", "hardware": False, "clients": ["ui"],
+        "enabled": True, "permission": "ask", "hardware": False, "clients": ["ui"], "tools": [],
     }
     for bad, message in [
         ({"a b": {"command": "x"}}, "letters"),
@@ -153,3 +153,23 @@ def test_with_mcp_the_read_only_mode_still_cannot_change_anything(tmp_path, repe
         names = {t["function"]["name"] for t in request.get("tools", [])}
         assert not names & {"edit", "write", "powershell", "bash"}
     assert "inspection only" in json.dumps(state["requests"][2])
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_only_the_listed_tools_can_be_found_or_called(tmp_path, repeating_model):  # noqa: F811
+    port, state = repeating_model
+    server, log = _server(tmp_path, permission="allow", hardware=False, tools=["quo*"])
+    state["sequence"] = [
+        ("tool_search", {"query": "stock quote order journal note"}),
+        ("mcp__fin__quote", {"symbol": "2330"}),
+        ("mcp__fin__place_order", {"symbol": "2330", "shares": 1}),
+    ]
+    chat = NativeChat(model_port=port)
+    try:
+        events = _run(chat, tmp_path, {"fin": server}, approve=lambda data: True)
+    finally:
+        chat.close()
+    found = next(d for n, d in events if n == "tool" and d["phase"] == "finished" and d["tool"] == "tool_search")
+    assert "quote" in json.dumps(found) and "place_order" not in json.dumps(found)
+    assert not any(n == "approval" for n, _ in events)
+    assert _ran(log) == ["quote"]

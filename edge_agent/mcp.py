@@ -11,6 +11,9 @@ own). Per server:
 - "clients": which clients may use it ("ui" by default; Discord only when
   the owner adds it).
 - "enabled": false keeps the entry without starting the program.
+- "tools": the server's tools the model may find, by name or with * as a
+  wildcard ([] = all). A server with ~170 tools would drown a small model;
+  the others stay hidden and cannot be called.
 
 The bridge (agent_bridge.mjs) enforces this; the model sees only a search
 tool until it looks a server's tools up (deferred exposure), so a small model
@@ -25,7 +28,8 @@ from edge_agent.permissions import CLIENTS
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$")
 PERMISSIONS = ("allow", "ask")
-FIELDS = {"command", "args", "env", "description", "enabled", "permission", "hardware", "clients"}
+FIELDS = {"command", "args", "env", "description", "enabled", "permission", "hardware", "clients", "tools"}
+TOOL_PATTERN = re.compile(r"^[A-Za-z0-9_.*-]{1,80}$")
 
 
 def validate_mcp_servers(value: object) -> dict[str, dict[str, object]]:
@@ -68,6 +72,9 @@ def validate_mcp_servers(value: object) -> dict[str, dict[str, object]]:
         clients = raw.get("clients", ["ui"])
         if not isinstance(clients, list) or not set(clients) <= set(CLIENTS):
             raise ValueError(f"MCP server {name}: clients must be among {', '.join(CLIENTS)}")
+        tools = raw.get("tools", [])
+        if not isinstance(tools, list) or not all(isinstance(t, str) and TOOL_PATTERN.match(t) for t in tools):
+            raise ValueError(f"MCP server {name}: tools must be tool names (* as wildcard)")
         for flag in ("enabled", "hardware"):
             if not isinstance(raw.get(flag, flag == "enabled"), bool):
                 raise TypeError(f"MCP server {name}: {flag} must be a boolean")
@@ -75,7 +82,7 @@ def validate_mcp_servers(value: object) -> dict[str, dict[str, object]]:
             "command": command, "args": list(args), "env": dict(env),
             "description": description, "enabled": raw.get("enabled", True),
             "permission": permission, "hardware": raw.get("hardware", False),
-            "clients": list(clients),
+            "clients": list(clients), "tools": list(tools),
         }
     return servers
 
@@ -83,7 +90,7 @@ def validate_mcp_servers(value: object) -> dict[str, dict[str, object]]:
 def servers_for(client: str, servers: dict[str, dict[str, object]]) -> dict[str, dict[str, object]]:
     """The enabled servers this client may use, as the bridge needs them."""
     return {
-        name: {k: server[k] for k in ("command", "args", "env", "description", "permission", "hardware")}
+        name: {k: server[k] for k in ("command", "args", "env", "description", "permission", "hardware", "tools")}
         for name, server in servers.items()
         if server["enabled"] and client in server["clients"]
     }

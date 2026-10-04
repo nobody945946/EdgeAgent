@@ -305,7 +305,9 @@ const mcpExtensions = mcpPrefixes.length ? [sdk.createToolSearchExtension(), sdk
   loadConfig: () => ({
     servers: Object.entries(mcpServers).map(([name, server]) => ({ name, source: 'edgeagent', scope: 'extension',
       config: { command: server.command, args: server.args ?? [], env: server.env ?? {},
-        description: server.description || undefined, exposure: 'deferred', timeout: 60 } })),
+        description: server.description || undefined, exposure: 'deferred', timeout: 60,
+        // Only the tools the owner listed can be found; the rest are hidden.
+        ...(server.tools?.length ? { toolExposure: { ...Object.fromEntries(server.tools.map(t => [t, 'deferred'])), '*': 'hidden' } } : {}) } })),
     autoEnableCodemode: false, errors: [] }),
   logPath: devNull, updateConfig() {}, openUrl() {},
 })] : [];
