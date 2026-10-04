@@ -99,11 +99,20 @@ def test_servers_are_validated_and_filled_with_safe_defaults() -> None:
     assert servers["fin"] | {} == {
         "command": "node", "args": ["x.mjs"], "env": {}, "description": "",
         "enabled": True, "permission": "ask", "hardware": False, "clients": ["ui"], "tools": [],
-        "confirm": "each",
+        "confirm": "each", "read_only_tools": [],
     }
+    local = validate_mcp_servers({"office": {"url": "http://127.0.0.1:8765/mcp"}})["office"]
+    assert local["url"] == "http://127.0.0.1:8765/mcp" and "command" not in local
+    assert validate_mcp_servers({"o": {"url": "http://localhost:9/mcp"}})["o"]["url"] == "http://localhost:9/mcp"
     for bad, message in [
         ({"a b": {"command": "x"}}, "letters"),
-        ({"fin": {"url": "https://example.com/mcp"}}, "unknown fields"),
+        ({"fin": {"url": "https://example.com/mcp"}}, "127.0.0.1 or localhost"),
+        ({"fin": {"url": "http://user:pw@127.0.0.1:1/mcp"}}, "without credentials"),
+        ({"fin": {"url": "file:///etc/passwd"}}, "127.0.0.1 or localhost"),
+        ({"fin": {"command": "x", "url": "http://127.0.0.1:1/"}}, "either command"),
+        ({"fin": {}}, "either command"),
+        ({"fin": {"command": "x", "read_only_tools": ["get_*"]}}, "exact tool names"),
+        ({"fin": {"command": "x", "headers": {"Authorization": "x"}}}, "unknown fields"),
         ({"fin": {"command": "x", "permission": "always"}}, "permission"),
         ({"fin": {"command": "x", "clients": ["web"]}}, "clients"),
         ({"my-fin": {"command": "x"}, "my_fin": {"command": "y"}}, "collides"),
@@ -273,3 +282,24 @@ def test_a_turn_confirm_server_lets_one_approval_cover_the_turn(tmp_path, repeat
         chat.close()
     assert [(d["tool"], d["explicit"]) for n, d in events if n == "approval"] == [("mcp__fin__place_order", "")]
     assert _ran(log) == ["place_order", "place_order"]
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_the_owner_can_vouch_for_unmarked_tools_but_not_against_the_server(tmp_path, repeating_model):  # noqa: F811
+    port, state = repeating_model
+    server, log = _server(tmp_path, permission="allow", read_only_tools=["note", "place_order"])
+    state["sequence"] = [
+        ("tool_search", {"query": "journal note"}),
+        ("mcp__fin__note", {"text": "watch 2330"}),
+        ("tool_search", {"query": "place stock order"}),
+        ("mcp__fin__place_order", {"symbol": "2330", "shares": 1}),
+    ]
+    chat = NativeChat(model_port=port)
+    try:
+        events = _run(chat, tmp_path, {"fin": server}, approve=lambda data: False)
+    finally:
+        chat.close()
+    approvals = [data["tool"] for name, data in events if name == "approval"]
+    # note has no hints: vouched, it runs freely; place_order says it is not read-only: still asks
+    assert approvals == ["mcp__fin__place_order"]
+    assert _ran(log) == ["note"]

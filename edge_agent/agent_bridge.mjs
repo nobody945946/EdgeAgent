@@ -305,7 +305,10 @@ function policy(pi) {
     const server = mcpServerOf(toolName);
     if (!server) return { block: true, reason: 'This MCP server is not enabled here.' };
     const hints = hintsOf(toolName);
-    const readOnly = hints.readOnlyHint === true;
+    // The owner may vouch for tools a server leaves unmarked; never against the server's own word.
+    const shortName = toolName.slice(mcpPrefixes.find(([prefix]) => toolName.startsWith(prefix))[0].length);
+    const readOnly = hints.readOnlyHint === true
+      || (hints.readOnlyHint === undefined && (server.read_only_tools ?? []).includes(shortName));
     if (!readOnly && init.read_only) return { block: true, reason: 'This mode allows inspection only.' };
     // Each call that moves hardware, or cannot be taken back, is its own decision.
     const explicit = readOnly ? '' : server.hardware ? 'hardware'
@@ -362,7 +365,7 @@ const shell = createPowerShellToolDefinition(root, { operations: {
 const mcpExtensions = mcpPrefixes.length ? [sdk.createToolSearchExtension(), sdk.createMcpExtension({
   loadConfig: () => ({
     servers: Object.entries(mcpServers).map(([name, server]) => ({ name, source: 'edgeagent', scope: 'extension',
-      config: { command: server.command, args: server.args ?? [], env: server.env ?? {},
+      config: { ...(server.url ? { url: server.url } : { command: server.command, args: server.args ?? [], env: server.env ?? {} }),
         description: server.description || undefined, exposure: 'deferred', timeout: 60,
         // Only the tools the owner listed can be found; the rest are hidden.
         ...(server.tools?.length ? { toolExposure: { ...Object.fromEntries(server.tools.map(t => [t, 'deferred'])), '*': 'hidden' } } : {}) } })),

@@ -1,8 +1,9 @@
 """MCP servers the owner has added: which exist, for which clients, how far trusted.
 
 The one owner of MCP configuration. Each server is a local program spoken to
-over stdio (no remote URLs: nothing signs in or leaves the machine on its
-own). Per server:
+over stdio, or a server already running on this machine reached over local
+HTTP ("url": http://127.0.0.1 or localhost only, no credentials, no headers:
+nothing signs in or leaves the machine on its own). Per server:
 
 - "permission": "allow" lets its read-only tools (the server's readOnlyHint)
   run without asking; "ask" asks for every call. Calls that change things
@@ -18,6 +19,10 @@ own). Per server:
 - "tools": the server's tools the model may find, by name or with * as a
   wildcard ([] = all). A server with ~170 tools would drown a small model;
   the others stay hidden and cannot be called.
+- "read_only_tools": tools the owner vouches only read, for a server that
+  does not say so itself (TWStockMCPServer marks none of its 173 tools).
+  Exact names; it never overrides a server that says a tool is not
+  read-only.
 
 The bridge (agent_bridge.mjs) enforces this; the model sees only a search
 tool until it looks a server's tools up (deferred exposure), so a small model
@@ -27,13 +32,16 @@ is not handed every tool of every server at once.
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit
 
 from edge_agent.permissions import CLIENTS
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$")
 PERMISSIONS = ("allow", "ask")
-FIELDS = {"command", "args", "env", "description", "enabled", "permission", "hardware", "clients", "tools",
-          "confirm"}
+FIELDS = {"command", "url", "args", "env", "description", "enabled", "permission", "hardware", "clients", "tools",
+          "confirm", "read_only_tools"}
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
+EXACT_TOOL = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 CONFIRMS = ("each", "turn")
 TOOL_PATTERN = re.compile(r"^[A-Za-z0-9_.*-]{1,80}$")
 
@@ -58,9 +66,16 @@ def validate_mcp_servers(value: object) -> dict[str, dict[str, object]]:
         extra = set(raw) - FIELDS
         if extra:
             raise ValueError(f"MCP server {name}: unknown fields {', '.join(sorted(extra))}")
-        command = raw.get("command")
-        if not isinstance(command, str) or not command.strip():
+        command, url = raw.get("command"), raw.get("url")
+        if (command is None) == (url is None):
+            raise ValueError(f"MCP server {name}: give either command (a local program) or url (a local server)")
+        if command is not None and (not isinstance(command, str) or not command.strip()):
             raise ValueError(f"MCP server {name}: command required (a local program)")
+        if url is not None:
+            parts = urlsplit(url) if isinstance(url, str) else None
+            if parts is None or parts.scheme not in ("http", "https") or parts.hostname not in LOCAL_HOSTS \
+                    or parts.username or parts.password:
+                raise ValueError(f"MCP server {name}: url must be http(s)://127.0.0.1 or localhost, without credentials")
         args = raw.get("args", [])
         if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
             raise TypeError(f"MCP server {name}: args must be a list of strings")
@@ -84,14 +99,19 @@ def validate_mcp_servers(value: object) -> dict[str, dict[str, object]]:
         tools = raw.get("tools", [])
         if not isinstance(tools, list) or not all(isinstance(t, str) and TOOL_PATTERN.match(t) for t in tools):
             raise ValueError(f"MCP server {name}: tools must be tool names (* as wildcard)")
+        read_only_tools = raw.get("read_only_tools", [])
+        if not isinstance(read_only_tools, list) or not all(
+                isinstance(t, str) and EXACT_TOOL.match(t) for t in read_only_tools):
+            raise ValueError(f"MCP server {name}: read_only_tools must be exact tool names")
         for flag in ("enabled", "hardware"):
             if not isinstance(raw.get(flag, flag == "enabled"), bool):
                 raise TypeError(f"MCP server {name}: {flag} must be a boolean")
         servers[name] = {
-            "command": command, "args": list(args), "env": dict(env),
+            **({"url": url} if url is not None else {"command": command}), "args": list(args), "env": dict(env),
             "description": description, "enabled": raw.get("enabled", True),
             "permission": permission, "hardware": raw.get("hardware", False),
             "clients": list(clients), "tools": list(tools), "confirm": confirm,
+            "read_only_tools": list(read_only_tools),
         }
     return servers
 
@@ -99,8 +119,8 @@ def validate_mcp_servers(value: object) -> dict[str, dict[str, object]]:
 def servers_for(client: str, servers: dict[str, dict[str, object]]) -> dict[str, dict[str, object]]:
     """The enabled servers this client may use, as the bridge needs them."""
     return {
-        name: {k: server[k] for k in ("command", "args", "env", "description", "permission", "hardware",
-                                      "tools", "confirm")}
+        name: {k: server[k] for k in ("command", "url", "args", "env", "description", "permission", "hardware",
+                                      "tools", "confirm", "read_only_tools") if k in server}
         for name, server in servers.items()
         if server["enabled"] and client in server["clients"]
     }
