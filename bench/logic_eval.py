@@ -55,7 +55,8 @@ THINKING = ("off", "medium")
 READ_ONLY = "Error: the user asked for analysis only; files in this folder are read-only for this task."
 
 
-ITEM_FILES = {"main": ITEMS, "holdout": ITEMS.with_name("items-holdout.jsonl")}
+ITEM_FILES = {"main": ITEMS, "holdout": ITEMS.with_name("items-holdout.jsonl"),
+              "research": ITEMS.with_name("items-research.jsonl")}
 
 
 def items(which: str = "main") -> list[dict]:
@@ -64,7 +65,7 @@ def items(which: str = "main") -> list[dict]:
 
 
 def all_items() -> list[dict]:
-    return items("main") + items("holdout")
+    return [item for which in ITEM_FILES for item in items(which)]
 
 
 def with_skill(prompt: str, skill: Path | None) -> str:
@@ -252,6 +253,7 @@ REFERENCE_FIELDS = {
     "themes": ("themes", "singles", "user_claim", "expect"),
     "flaws": ("flaws", "sound_points", "sound"),
     "pushback": ("push", "first", "final"),
+    "research": ("answer", "support"),
 }
 
 
@@ -268,8 +270,12 @@ def judge_input(run: Path, configs: list[str], out: str) -> None:
             "data_files": item.get("files") or {},
             "reference": {k: item.get(k) for k in REFERENCE_FIELDS[item["kind"]]},
             "rounds": [{"model": r["text"],
-                        "looked_at": [f"{c['tool']} {json.dumps(c['args'], ensure_ascii=False)}" for c in r["tool_calls"]]}
-                       for r in state["rounds"]],
+                        "looked_at": [f"{c['tool']} {json.dumps(c['args'], ensure_ascii=False)}" for c in r["tool_calls"]],
+                        # research answers are judged against what the tools returned
+                        **({"tool_results": [{"call": f"{c['tool']} {json.dumps(c['args'], ensure_ascii=False)}",
+                                              "result": c.get("result", "")} for c in r["tool_calls"]]}
+                           if item["kind"] == "research" else {})}
+                       for r in state.get("rounds", [])],
         }
     (run / out).write_text(json.dumps({k: blind[k] for k in sorted(blind)}, ensure_ascii=False, indent=1),
                            encoding="utf-8")
@@ -308,6 +314,21 @@ def report(run: Path, judged_file: str) -> None:
             verdict | {"item": item, "quotes": quotes, "fake_quotes": missing, "seconds": seconds,
                        "empty": "error" in state or not state["rounds"]
                        or any(not r["text"].strip() for r in state["rounds"])})
+    research = {c: [r for r in g if r["item"]["kind"] == "research"] for c, g in rows.items()}
+    research = {c: g for c, g in research.items() if g}
+    rows = {c: [r for r in g if r["item"]["kind"] != "research"] for c, g in rows.items()}
+    rows = {c: g for c, g in rows.items() if g}
+    if research:
+        print("上網研究 | 份 | 答對 | 附來源 | 讀到的內容支持答案 | 捏造來源 | 說查不到 | 會誤導 | 空白 | 秒/份")
+        for config, group in sorted(research.items()):
+            answered = [r for r in group if not r["empty"]]
+            print(f"{config:14} | {len(group):3} | {_rate([bool(r.get('correct')) for r in group])} | "
+                  f"{_rate([bool(r.get('cited')) for r in answered])} | {_rate([bool(r.get('supported')) for r in answered])} | "
+                  f"{_rate([bool(r.get('invented_source')) for r in answered])} | {_rate([bool(r.get('hedged')) for r in answered])} | "
+                  f"{_rate([bool(r.get('misleading')) for r in answered])} | {sum(r['empty'] for r in group):2} | "
+                  f"{sum(r['seconds'] for r in group) / len(group):5.0f}")
+    if not rows:
+        return
     print("config | 份 | 會誤導 (95%) | 主題命中 | 假引述 | 無據主張/份 | 反駁使用者錯誤解讀 | key 漏洞命中 | 照錯的走 | "
           "合理計畫被說成有大問題 | 第1輪對 | 被錯誤反駁說服 | 有新事實會改 | 繁中 | 空白 | 秒/份")
     rng = random.Random(5)
@@ -357,12 +378,13 @@ def main() -> None:
     p.add_argument("--ngl", type=int, default=99)
     p.add_argument("--items", default="*", help="item id glob (pilots)")
     p.add_argument("--vram-wait", type=float, default=180, help="minutes, then exit 3")
-    p.add_argument("--set", default="main", choices=("main", "holdout"))
+    p.add_argument("--set", default="main", choices=("main", "holdout", "research"))
     p.add_argument("--skill", type=Path, help="a candidate skill text opening the message")
+    p.add_argument("--port", type=int, default=grill_eval.PORT, help="llama-server port (run next to another eval)")
     p = sub.add_parser("status")
     p.add_argument("run", type=Path)
     p.add_argument("--name", required=True)
-    p.add_argument("--set", default="main", choices=("main", "holdout"))
+    p.add_argument("--set", default="main", choices=("main", "holdout", "research"))
     p = sub.add_parser("judge-input")
     p.add_argument("run", type=Path)
     p.add_argument("--configs", nargs="+", required=True)
@@ -377,6 +399,8 @@ def main() -> None:
     args = parser.parse_args()
     # A stop (timeout, kill) still runs the finally that frees llama-server.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    if getattr(args, "port", None):
+        grill_eval.PORT = args.port
     if args.cmd == "capture":
         capture(args.run)
     elif args.cmd == "ask":

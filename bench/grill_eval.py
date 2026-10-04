@@ -247,8 +247,9 @@ def one_round(request: dict, messages: list[dict], workspace: Workspace,
             repeats[signature] = repeats.get(signature, 0) + 1
             if repeats[signature] >= 3:
                 return "", calls, time.monotonic() - started
-            messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
-                             "content": workspace.call(name, args)})
+            result = workspace.call(name, args)
+            calls[-1]["result"] = result[:3000]  # what the model saw, for judges who check sources
+            messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result})
     return "", calls, time.monotonic() - started
 
 
