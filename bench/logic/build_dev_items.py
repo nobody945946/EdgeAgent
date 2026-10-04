@@ -2,6 +2,7 @@
 the real SilentTalk code (eval only). Failure items break one line in a copy
 and record the real pytest output."""
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -65,7 +66,7 @@ for id, path, old, new, test, cause in MUTATIONS:
         target.write_text(text.replace(old, new), encoding="utf-8")
         done = subprocess.run([str(REPO / ".venv/bin/python"), "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", test],
                               cwd=tmp, capture_output=True, text=True, timeout=600,
-                              env={**__import__("os").environ, "PYTHONPATH": tmp})
+                              env={**os.environ, "PYTHONPATH": tmp}, check=False)
         assert done.returncode != 0, (id, done.stdout[-500:])
         output = done.stdout[-3500:]
     items.append({"id": id, "kind": "dev", "task": "failure", "workspace": WS, "files": {},
