@@ -1,7 +1,9 @@
 """Writes bench/logic/items-dev.jsonl: everyday read-only development questions on
 the real SilentTalk code (eval only). Failure items break one line in a copy
 and record the real pytest output."""
-import json, shutil, subprocess, tempfile
+import json
+import subprocess
+import tempfile
 from pathlib import Path
 
 REPO, COMMIT = Path("/home/clawd/SilentTalk"), "c3a44e9"
