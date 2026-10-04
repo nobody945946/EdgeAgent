@@ -61,7 +61,7 @@ SilentTalk 的角色配置與 Agent adapter 選擇分開，adapter 檔案則在�
 
 讀過網頁之後，本輪准許失效，允許的寫檔及指令會重新詢問。刪除及透過指令觸及受保護檔案的操作永遠只有單次批准，卡片說明原因。
 
-權限設為詢問的寫檔、編輯與 PowerShell 執行先由介面批准，可准許單次或本輪工作。介面有兩種模式：「工作」直接動手；「求知儀式」在需要嚴謹的工作前先拷問需求：第一句會開啟內附的 grill-me skill（`edge_agent/skills/grill-me`，翻譯並改寫自 [mattpocock/skills](https://github.com/mattpocock/skills) 的 grill-me／grilling／to-spec，MIT；`bench/grill_eval.py` 實測：E4B 用中文版廢話率 24%，用英文原版 64% 而且全程英文），Agent 依設計樹一輪一輪提問並附建議答案，事實自己查、決定交給使用者；使用者確認共識後寫出規格。儀式中只能讀，不會動檔案；規格定案後切回「工作」叫它照規格做。Pi 不載入任何 skill；EdgeAgent 自己把內附的說明放在第一句前面（不附檔案路徑，小模型看到路徑會去讀、被工作區擋下後一直重試），system prompt 不變。批准不是 OS 沙盒，執行程式仍有目前帳號的權限；受保護的 `.env`、`settings.json`、`personas.json`、`character_state.json` 禁止透過檔案編輯工具修改。
+權限設為詢問的寫檔、編輯與 PowerShell 執行先由介面批准，可准許單次或本輪工作。介面有兩種模式：「工作」直接動手；「求知儀式」在需要嚴謹的工作前先拷問需求：第一句會開啟內附的 grill-me skill（`edge_agent/skills/grill-me`，翻譯並改寫自 [mattpocock/skills](https://github.com/mattpocock/skills) 的 grill-me／grilling／to-spec，MIT；每輪問 3～5 題並逐類想過範圍、資料、行為、例外、驗收、限制。`bench/grill_eval.py` 盲評，E4B：三輪問到使用者真正決定的 66%（沒有清單 44%），四分之一到三分之一的問題是可以自己查的事；英文原版廢話 64% 而且全程英文；指示用中文或英文問到的一樣多），Agent 依設計樹一輪一輪提問並附建議答案，事實自己查、決定交給使用者；使用者確認共識後寫出規格。儀式中只能讀，不會動檔案；規格定案後切回「工作」叫它照規格做。Pi 不載入任何 skill；EdgeAgent 自己把內附的說明放在第一句前面（不附檔案路徑，小模型看到路徑會去讀、被工作區擋下後一直重試），system prompt 不變。批准不是 OS 沙盒，執行程式仍有目前帳號的權限；受保護的 `.env`、`settings.json`、`personas.json`、`character_state.json` 禁止透過檔案編輯工具修改。
 
 相同操作連續重複而無進展，或本輪工具呼叫超過 64 次時停止，保留修改與 RAM context。工作失敗後暫停該對話的佇列；更多操作中的「繼續排隊」明確恢復。每個對話有自己的佇列。
 
