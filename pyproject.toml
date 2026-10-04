@@ -7,7 +7,7 @@ name = "edge-agent"
 version = "2.0.1"
 description = "Local coding agent with hot-swappable models and shared inference leases"
 requires-python = ">=3.12"
-dependencies = ["pypdf==6.19.0", "sqlglot==30.21.0"]
+dependencies = ["pypdf==6.19.0", "sqlglot==30.21.0", "pymavlink==2.4.50"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.11"]
