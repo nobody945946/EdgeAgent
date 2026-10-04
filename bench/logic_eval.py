@@ -190,18 +190,42 @@ def _norm(text: str) -> str:
     return STRIP.sub("", re.sub(r"#\d+\s*", "", text))
 
 
-def quote_check(answer: str, data: str) -> tuple[int, int]:
-    """(quotes, quotes not found in the data); quotes under 5 characters
-    after normalising are ignored (names, single words)."""
-    data_norm = _norm(data)
-    quotes = [next(g for g in m.groups() if g) for m in QUOTED.finditer(answer)]
-    checked = [q for q in quotes if len(_norm(q)) >= 5]
-    missing = 0
-    for quote in checked:
+def quote_candidates(answer: str, item: dict) -> tuple[int, list[dict]]:
+    """(quotes checked, the ones not found in the data). Quotes under 5
+    characters, the user's own words and file names are not data quotes;
+    what is left may still be the model's own label in brackets, which the
+    quote judge tells apart (quote-input / quote-judge.json)."""
+    data_norm = _norm("\n".join(item["files"].values()))
+    own = _norm(item["prompt"] + (item.get("followup") or "")) + "".join(map(_norm, item["files"]))
+    checked, missing = 0, []
+    for match in QUOTED.finditer(answer):
+        quote = next(g for g in match.groups() if g)
+        if len(_norm(quote)) < 5 or _norm(quote) in own:
+            continue
+        checked += 1
         parts = [p for p in re.split(r"\.\.\.|…|⋯", quote) if len(_norm(p)) >= 3]
         if not all(_norm(p) in data_norm for p in parts):
-            missing += 1
-    return len(checked), missing
+            missing.append({"quote": quote, "context": answer[max(0, match.start() - 80):match.end() + 40]})
+    return checked, missing
+
+
+def quote_input(run: Path, judged_file: str, out: str) -> None:
+    """For the quote judge: each quote not found in the data, in context,
+    under the transcript's blind key."""
+    by_id = {item["id"]: item for item in items()}
+    keys = {v: k for k, v in json.loads((run / "keys.json").read_text(encoding="utf-8")).items()}
+    found = {}
+    for key in json.loads((run / judged_file).read_text(encoding="utf-8")):
+        config, item_id = keys[key].split("/")
+        item = by_id[item_id]
+        if item["kind"] != "themes":
+            continue
+        state = json.loads((run / config / f"{item_id}.json").read_text(encoding="utf-8"))
+        _, missing = quote_candidates("\n".join(r["text"] for r in state.get("rounds", [])), item)
+        if missing:
+            found[key] = {"data_files": item["files"], "candidates": missing}
+    (run / out).write_text(json.dumps(found, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"{sum(len(v['candidates']) for v in found.values())} quotes in {len(found)} transcripts -> {out}")
 
 
 # ---------------------------------------------------------------- judge hand-off
@@ -247,6 +271,8 @@ def report(run: Path, judged_file: str) -> None:
     by_id = {item["id"]: item for item in items()}
     keys = {v: k for k, v in json.loads((run / "keys.json").read_text(encoding="utf-8")).items()}
     judged = json.loads((run / judged_file).read_text(encoding="utf-8"))
+    quote_path = run / "quote-judge.json"
+    quote_judge = json.loads(quote_path.read_text(encoding="utf-8")) if quote_path.is_file() else {}
     rows: dict[str, list[dict]] = {}
     for key, verdict in judged.items():
         config, item_id = keys[key].split("/")
@@ -255,8 +281,10 @@ def report(run: Path, judged_file: str) -> None:
         item = by_id[item_id]
         quotes = missing = 0
         if item["kind"] == "themes":
-            data = "\n".join(item["files"].values())
-            quotes, missing = quote_check("\n".join(r["text"] for r in state["rounds"]), data)
+            quotes, candidates = quote_candidates("\n".join(r["text"] for r in state["rounds"]), item)
+            # The quote judge's verdicts (true: presented as the data's own words).
+            verdicts = quote_judge.get(key)
+            missing = sum(verdicts) if verdicts is not None else len(candidates)
         seconds = sum(r["seconds"] for r in state["rounds"])
         rows.setdefault(re.sub(r"-s\d+$", "", config), []).append(
             verdict | {"item": item, "quotes": quotes, "fake_quotes": missing, "seconds": seconds,
@@ -318,6 +346,10 @@ def main() -> None:
     p.add_argument("run", type=Path)
     p.add_argument("--configs", nargs="+", required=True)
     p.add_argument("--out", default="judge-input.json")
+    p = sub.add_parser("quote-input")
+    p.add_argument("run", type=Path)
+    p.add_argument("--judged", default="judge.json")
+    p.add_argument("--out", default="quote-input.json")
     p = sub.add_parser("report")
     p.add_argument("run", type=Path)
     p.add_argument("--judged", default="judge.json")
@@ -332,6 +364,8 @@ def main() -> None:
         sys.exit(status(args.run, args.name))
     elif args.cmd == "judge-input":
         judge_input(args.run, args.configs, args.out)
+    elif args.cmd == "quote-input":
+        quote_input(args.run, args.judged, args.out)
     else:
         report(args.run, args.judged)
 
