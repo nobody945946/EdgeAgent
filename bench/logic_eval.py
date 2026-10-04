@@ -56,7 +56,34 @@ READ_ONLY = "Error: the user asked for analysis only; files in this folder are r
 
 
 ITEM_FILES = {"main": ITEMS, "holdout": ITEMS.with_name("items-holdout.jsonl"),
-              "research": ITEMS.with_name("items-research.jsonl")}
+              "research": ITEMS.with_name("items-research.jsonl"), "dev": ITEMS.with_name("items-dev.jsonl")}
+_REPO_CACHE: dict[tuple, dict[str, str]] = {}
+
+
+def item_files(item: dict) -> dict[str, str]:
+    """The item's workspace: its own files, or text files of a git commit
+    (dev items), with one line broken when the item says so."""
+    repo = item.get("repo")
+    if not repo:
+        return item.get("files") or {}
+    key = (repo["path"], repo["commit"], tuple(repo["include"]))
+    if key not in _REPO_CACHE:
+        names = subprocess.run(["git", "-C", repo["path"], "ls-tree", "-r", "--name-only", repo["commit"],
+                                *repo["include"]], capture_output=True, text=True, check=True).stdout.split()
+        files = {}
+        for name in names:
+            blob = subprocess.run(["git", "-C", repo["path"], "show", f"{repo['commit']}:{name}"],
+                                  capture_output=True, check=True).stdout
+            try:
+                files[name] = blob.decode("utf-8")
+            except UnicodeDecodeError:
+                files[name] = "(binary file)"
+        _REPO_CACHE[key] = files
+    files = dict(_REPO_CACHE[key])
+    mutate = repo.get("mutate")
+    if mutate:
+        files[mutate["file"]] = files[mutate["file"]].replace(mutate["old"], mutate["new"])
+    return files
 
 
 def items(which: str = "main") -> list[dict]:
@@ -144,7 +171,7 @@ def answer(request: dict, item: dict, skill: Path | None = None) -> list[dict]:
     text = text.replace(PLACEHOLDER, json.dumps(with_skill(item["prompt"], skill), ensure_ascii=False)[1:-1])
     text = text.replace(CWD_PLACEHOLDER, item["workspace"].replace("\\", "\\\\"))
     messages = json.loads(text)
-    workspace = AnalysisWorkspace(item["workspace"], item.get("files"))
+    workspace = AnalysisWorkspace(item["workspace"], item_files(item))
     rounds = []
     for user_turn in [None, *([item["followup"]] if item.get("followup") else [])]:
         if user_turn is not None:
@@ -254,6 +281,7 @@ REFERENCE_FIELDS = {
     "flaws": ("flaws", "sound_points", "sound"),
     "pushback": ("push", "first", "final"),
     "research": ("answer", "support"),
+    "dev": ("task", "answer"),
 }
 
 
@@ -327,6 +355,22 @@ def report(run: Path, judged_file: str) -> None:
                   f"{_rate([bool(r.get('invented_source')) for r in answered])} | {_rate([bool(r.get('hedged')) for r in answered])} | "
                   f"{_rate([bool(r.get('misleading')) for r in answered])} | {sum(r['empty'] for r in group):2} | "
                   f"{sum(r['seconds'] for r in group) / len(group):5.0f}")
+    dev = {c: [r for r in g if r["item"]["kind"] == "dev"] for c, g in rows.items()}
+    dev = {c: g for c, g in dev.items() if g}
+    rows = {c: [r for r in g if r["item"]["kind"] != "dev"] for c, g in rows.items()}
+    rows = {c: g for c, g in rows.items() if g}
+    if dev:
+        print("開發日常 | 份 | 找對檔案 | 找對函式 | 測試失敗找到原因 | 修法對 | commit 訊息正確 | 捏造改動 | 會誤導 | 空白 | 秒/份")
+        for config, group in sorted(dev.items()):
+            locate = [r for r in group if r["item"]["task"] == "locate"]
+            failure = [r for r in group if r["item"]["task"] == "failure"]
+            commit = [r for r in group if r["item"]["task"] == "commit"]
+            print(f"{config:14} | {len(group):3} | {_rate([bool(r.get('correct_file')) for r in locate])} | "
+                  f"{_rate([bool(r.get('correct_function')) for r in locate])} | "
+                  f"{_rate([bool(r.get('found_cause')) for r in failure])} | {_rate([bool(r.get('fix_correct')) for r in failure])} | "
+                  f"{_rate([bool(r.get('accurate')) for r in commit])} | {_rate([bool(r.get('invented')) for r in commit])} | "
+                  f"{_rate([bool(r.get('misleading')) for r in group if not r['empty']])} | "
+                  f"{sum(r['empty'] for r in group):2} | {sum(r['seconds'] for r in group) / len(group):5.0f}")
     if not rows:
         return
     print("config | 份 | 會誤導 (95%) | 主題命中 | 假引述 | 無據主張/份 | 反駁使用者錯誤解讀 | key 漏洞命中 | 照錯的走 | "
@@ -378,13 +422,13 @@ def main() -> None:
     p.add_argument("--ngl", type=int, default=99)
     p.add_argument("--items", default="*", help="item id glob (pilots)")
     p.add_argument("--vram-wait", type=float, default=180, help="minutes, then exit 3")
-    p.add_argument("--set", default="main", choices=("main", "holdout", "research"))
+    p.add_argument("--set", default="main", choices=("main", "holdout", "research", "dev"))
     p.add_argument("--skill", type=Path, help="a candidate skill text opening the message")
     p.add_argument("--port", type=int, default=grill_eval.PORT, help="llama-server port (run next to another eval)")
     p = sub.add_parser("status")
     p.add_argument("run", type=Path)
     p.add_argument("--name", required=True)
-    p.add_argument("--set", default="main", choices=("main", "holdout", "research"))
+    p.add_argument("--set", default="main", choices=("main", "holdout", "research", "dev"))
     p = sub.add_parser("judge-input")
     p.add_argument("run", type=Path)
     p.add_argument("--configs", nargs="+", required=True)
