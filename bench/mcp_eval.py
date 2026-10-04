@@ -136,7 +136,7 @@ def _num(value):
         return None
 
 
-def ask(run: Path, model: Path, name: str, thinking: str, port: int) -> None:
+def ask(run: Path, model: Path, name: str, thinking: str, port: int, overview: bool = True) -> None:
     from edge_agent.chat import NativeChat
 
     out = run / name
@@ -147,6 +147,7 @@ def ask(run: Path, model: Path, name: str, thinking: str, port: int) -> None:
     grill_eval.PORT = port
     server = grill_eval.start_server(model, 32768, 99)
     chat = NativeChat(model_port=port)
+    chat.mcp_overview = overview
     try:
         for task in todo:
             result = run_task(chat, task, thinking)
@@ -187,6 +188,7 @@ def main() -> None:
     parser.add_argument("--name")
     parser.add_argument("--thinking", default="off", choices=("off", "medium"))
     parser.add_argument("--port", type=int, default=18315)
+    parser.add_argument("--no-overview", action="store_true", help="without the MCP server list in the prompt")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--report", action="store_true")
     args = parser.parse_args()
@@ -195,7 +197,7 @@ def main() -> None:
     elif args.status:
         sys.exit(status(args.run, args.name))
     else:
-        ask(args.run, args.model, args.name, args.thinking, args.port)
+        ask(args.run, args.model, args.name, args.thinking, args.port, not args.no_overview)
 
 
 if __name__ == "__main__":

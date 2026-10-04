@@ -192,6 +192,9 @@ class NativeChat:
         self.working_context_size = DEFAULT_WORKING_CONTEXT_SIZE
         self.model = ""
         self.slot_id: int | None = 0
+        # List the enabled MCP servers in the system prompt, so a small model
+        # knows tool_search has something to find (measured by bench/mcp_eval.py).
+        self.mcp_overview = True
         self.lora_enabled = False
         self.capabilities = {"vision": False, "audio": False}
         self._sessions: dict[str, ChatSession] = {}
@@ -395,6 +398,7 @@ class NativeChat:
             str(cwd),
             self.model,
             self.slot_id,
+            self.mcp_overview,
             self.lora_enabled,
             self.context_size,
             self.max_output_tokens,
@@ -461,6 +465,7 @@ class NativeChat:
                 "model": "local",
                 "model_name": self.model,
                 "slot_id": self.slot_id,
+                "mcp_overview": self.mcp_overview,
                 "lora_enabled": self.lora_enabled,
                 "capabilities": self.capabilities,
                 "context_size": self.context_size,

@@ -74,6 +74,10 @@ const webTools = rules.web === 'deny' ? [] : ['web_research', 'web_search', 'web
 // tools are deferred: the model sees tool_search until it looks them up.
 const mcpServers = init.agent ? (init.mcp_servers ?? {}) : {};
 const mcpPrefixes = Object.keys(mcpServers).map(name => [`mcp__${name.replace(/[^A-Za-z0-9_]/g, '_')}__`, name]);
+// The enabled servers in one short paragraph: their tools are hidden until
+// tool_search finds them, so without it a small model never looks.
+const mcpOverview = () => 'Connected tool servers (find their tools with tool_search before using other ways): '
+  + Object.entries(mcpServers).map(([name, server]) => `${name}${server.description ? ` - ${server.description}` : ''}`).join('; ') + '.';
 const mcpServerOf = toolName => {
   const found = mcpPrefixes.find(([prefix]) => toolName.startsWith(prefix));
   return found ? { name: found[1], ...mcpServers[found[1]] } : null;
@@ -389,7 +393,8 @@ const factory = async ({ cwd, sessionManager, sessionStartEvent }) => {
     cwd, agentDir, modelRuntime, settingsManager: settings,
     resourceLoaderOptions: { noExtensions: true, noSkills: true,
       noPromptTemplates: true, noThemes: true, extensionFactories: [policy, ...mcpExtensions],
-      appendSystemPrompt: ['Answer in the user\'s language. Preserve user-owned configuration. After edits run relevant checks, repair failures, and report actual results. Conversation and prompts must remain in memory.'],
+      appendSystemPrompt: ['Answer in the user\'s language. Preserve user-owned configuration. After edits run relevant checks, repair failures, and report actual results. Conversation and prompts must remain in memory.',
+        ...(mcpPrefixes.length && init.mcp_overview !== false ? [mcpOverview()] : [])],
     },
   });
   return { ...await sdk.createAgentSessionFromServices({ services, sessionManager,
