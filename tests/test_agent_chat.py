@@ -1219,3 +1219,37 @@ def test_real_sdk_deletes_need_their_own_approval_even_when_shell_is_allowed(
     approvals = [data for name, data in events if name == "approval"]
     assert [a["explicit"] for a in approvals] == ["destructive"]
     assert (tmp_path / "data.db").read_text() == "the user's database"
+
+
+def test_approval_explains_a_powershell_command(tmp_path, monkeypatch):
+    """The approval carries PowerShell's own reading of the command; a
+    translator failure leaves only a note and the approval still goes on."""
+    seen = {}
+
+    class Fake:
+        def text(self):
+            return "影響：會刪除：x"
+
+    def translate(command, cwd=None, timeout=0):
+        seen.update(command=command, cwd=cwd)
+        return Fake()
+
+    monkeypatch.setattr("edge_agent.chat.lingua_powershell.translate", translate)
+    request = {"type": "extension_ui_request", "method": "select", "id": "approval",
+               "title": json.dumps({"tool": "powershell", "arguments": {"command": "Remove-Item x"}})}
+    chat = RPCFixture([request, *ending()])
+    name, data = next(chat.stream_reply("fixture", "fixture", working_dir=tmp_path))
+    assert name == "approval" and data["explain"] == "影響：會刪除：x"
+    assert seen == {"command": "Remove-Item x", "cwd": str(tmp_path.resolve())}
+
+    def broken(command, cwd=None, timeout=0):
+        raise RuntimeError("找不到 PowerShell")
+
+    monkeypatch.setattr("edge_agent.chat.lingua_powershell.translate", broken)
+    chat = RPCFixture([request, *ending()])
+    name, data = next(chat.stream_reply("fixture", "fixture", working_dir=tmp_path))
+    assert name == "approval" and "explain" not in data and "找不到 PowerShell" in data["explain_error"]
+    write = {**request, "title": json.dumps({"tool": "write", "arguments": {"path": "a"}})}
+    chat = RPCFixture([write, *ending()])
+    name, data = next(chat.stream_reply("fixture", "fixture", working_dir=tmp_path))
+    assert "explain" not in data and "explain_error" not in data

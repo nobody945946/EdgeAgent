@@ -127,14 +127,15 @@ ConvertTo-Json -InputObject $out -Depth 12 -Compress
 """
 
 
-def analyze(script: str, pwsh: str | None = None) -> dict:
-    """What PowerShell itself makes of the script (parsed, never run)."""
+def analyze(script: str, pwsh: str | None = None, cwd: str | None = None, timeout: float = 120) -> dict:
+    """What PowerShell itself makes of the script (parsed, never run), in the
+    folder the command would run in (relative script names resolve there)."""
     pwsh = pwsh or find_pwsh()
     if pwsh is None:
         raise RuntimeError("找不到 PowerShell，無法精確翻譯")
     done = subprocess.run([pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", ANALYZE],
                           input=script, capture_output=True, text=True, encoding="utf-8",
-                          timeout=120, check=False)
+                          timeout=timeout, check=False, cwd=cwd)
     if done.returncode != 0 or not done.stdout.strip():
         raise RuntimeError(f"PowerShell 解析失敗：{done.stderr.strip()[:300]}")
     return json.loads(done.stdout)
@@ -410,8 +411,9 @@ def describe_statement(node: dict, depth: int, lines: list[str], effects: list[s
             describe_command(cmd, depth + 1, lines, effects, unknown, windows)
 
 
-def translate(script: str, pwsh: str | None = None) -> Translation:
-    info = analyze(script, pwsh)
+def translate(script: str, pwsh: str | None = None, cwd: str | None = None,
+              timeout: float = 120) -> Translation:
+    info = analyze(script, pwsh, cwd, timeout)
     environment = (f"{'Windows PowerShell' if info['edition'] == 'Desktop' else 'PowerShell'} "
                    f"{info['version']}（{'Windows' if info['windows'] else '非 Windows'}）")
     lines: list[str] = []

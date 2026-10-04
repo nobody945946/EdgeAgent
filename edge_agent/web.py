@@ -288,6 +288,8 @@ async function approve(payload){
     const card=document.createElement('section');card.className='approval-card';
     const title=document.createElement('strong');title.textContent='需要批准 · '+payload.tool;
     const pre=document.createElement('pre');pre.textContent=details;card.append(title,pre);
+    if(payload.explain){const box=document.createElement('details');box.open=true;const summary=document.createElement('summary');summary.textContent='這個指令在做什麼（PowerShell 自己解析的結果，不是模型猜的）';const text=document.createElement('pre');text.textContent=payload.explain;box.append(summary,text);card.append(box)}
+    else if(payload.explain_error){const note=document.createElement('p');note.textContent=payload.explain_error;card.append(note)}
     for(const reason of [payload.explicit==='protected'?'碰到受保護檔案，需要單次批准。':'',payload.explicit==='destructive'?'這個指令會刪除或清除資料，需要單次批准。':'',payload.after_web?'讀過網頁之後的操作，需要重新決定。':''])if(reason){const note=document.createElement('p');note.textContent=reason;card.append(note)}
     const choices=payload.explicit?[['允許一次',true,'once'],['拒絕',false,'once']]:[['允許本輪工作',true,'turn'],['允許一次',true,'once'],['拒絕',false,'once']];
     const stopped=()=>finish({approved:false,scope:'once'});

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
+from edge_agent.lingua import powershell as lingua_powershell
 from edge_agent.permissions import DEFAULT_PERMISSIONS, bridge_rules
 from edge_agent.records import save_session
 from edge_agent.runtime import (
@@ -30,6 +31,20 @@ from edge_agent.runtime import (
 THINKING_PROFILES = {"off": "off", "low": "low", "medium": "medium", "high": "high"}
 # 求知儀式: the grill-me interview (edge_agent/skills/grill-me, MIT).
 INTERVIEW_SKILL = Path(__file__).with_name("skills") / "grill-me" / "SKILL.md"
+
+
+def explain_approval(details: dict, cwd: Path) -> dict[str, str]:
+    """A shell command waiting for approval, in plain Chinese: what each part
+    does and what it would delete, overwrite, run or reach, from PowerShell's
+    own parser (edge_agent/lingua), never a model's reading. A failure only
+    leaves the explanation out; the approval itself goes on."""
+    command = details.get("arguments", {}).get("command") if isinstance(details.get("arguments"), dict) else None
+    if details.get("tool") != "powershell" or not isinstance(command, str) or not command.strip():
+        return {}
+    try:
+        return {"explain": lingua_powershell.translate(command, cwd=str(cwd), timeout=20).text()}
+    except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        return {"explain_error": f"無法翻譯這個指令：{exc}"}
 
 
 def interview_opening(text: str) -> str:
@@ -614,7 +629,8 @@ class NativeChat:
                         details = json.loads(str(event.get("title", "{}")))
                         call_id = str(event["id"])
                         session.approvals[call_id] = event
-                        yield "approval", {"call_id": call_id, **details}
+                        yield "approval", {"call_id": call_id, **details,
+                                           **explain_approval(details, cwd)}
                     elif kind == "tool_execution_start":
                         name, call_id = (
                             str(event.get("toolName")),
