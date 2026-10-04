@@ -26,9 +26,14 @@ $out = foreach ($c in $cases) {
   try {
     $r = [regex]::new([string]$c.pattern, $opts)
     $groups = @($r.GetGroupNumbers() | Where-Object { $_ -ne 0 } | ForEach-Object { ,@($_, $r.GroupNameFromNumber($_)) })
-    $hits = @()
-    if ($c.inputs) { $hits = @($c.inputs | ForEach-Object { $r.IsMatch([string]$_) }) }
-    [pscustomobject]@{ ok = $true; groups = $groups; matches = $hits }
+    $hits = @(); $found = @()
+    if ($c.inputs) {
+      foreach ($s in $c.inputs) {
+        $m = $r.Match([string]$s); $hits += $m.Success
+        $found += ,@($(if ($m.Success) { $m.Value } else { $null }), @($m.Groups | Select-Object -Skip 1 | ForEach-Object { if ($_.Success) { $_.Value } else { $null } }))
+      }
+    }
+    [pscustomobject]@{ ok = $true; groups = $groups; matches = $hits; found = $found }
   } catch {
     $e = $_.Exception; if ($e.InnerException) { $e = $e.InnerException }
     [pscustomobject]@{ ok = $false; error = $e.Message }
@@ -43,8 +48,9 @@ const out = cases.map(c => {
   try {
     const r = new RegExp(c.pattern, c.flags);
     const m = new RegExp('(?:' + c.pattern + ')|', c.flags).exec('');
+    const found = (c.inputs || []).map(s => { const x = r.exec(s); return x ? [x[0], x.slice(1).map(v => v ?? null)] : [null, []]; });
     return { ok: true, count: m.length - 1, names: m.groups ? Object.keys(m.groups) : [],
-             matches: (c.inputs || []).map(s => r.test(s)) };
+             matches: found.map(f => f[0] !== null), found };
   } catch (e) { return { ok: false, error: e.message }; }
 });
 process.stdout.write(JSON.stringify(out));
@@ -82,9 +88,13 @@ def run_python(cases: list[dict]) -> list[dict]:
             out.append({"ok": False, "error": str(exc)})
             continue
         names = {number: name for name, number in compiled.groupindex.items()}
+        found = []
+        for text in case.get("inputs", []):
+            m = compiled.search(text)
+            found.append([m.group(0), list(m.groups())] if m else [None, []])
         out.append({"ok": True,
                     "groups": [[n, names.get(n, "")] for n in range(1, compiled.groups + 1)],
-                    "matches": [bool(compiled.search(s)) for s in case.get("inputs", [])]})
+                    "matches": [f[0] is not None for f in found], "found": found})
     return out
 
 

@@ -50,3 +50,23 @@ def test_refusal_says_why() -> None:
     assert code == 2 and out.startswith("無法翻譯：") and "\x1b" not in out
     code, out = run("regex", "(a")
     assert code == 2 and "無法翻譯" in out
+
+
+@pytest.mark.parametrize("flavor", ["python", "dotnet", "js"])
+def test_regex_samples_run_in_the_real_engine(flavor) -> None:
+    code, out = run("regex", "(\\d+)-(\\d+)?", "--flavor", flavor, "--samples", '["12-34", "x", "５-"]')
+    if "（這台電腦沒有" in out:
+        pytest.skip(f"no {flavor} engine here")
+    assert code == 0
+    assert "「12-34」：符合，比到「12-34」；第 1 組「12」、第 2 組「34」" in out
+    assert "「x」：不符合" in out
+    # full-width digits are digits in Python and .NET, not in JavaScript
+    if flavor == "js":
+        assert "「５-」：不符合" in out
+    else:
+        assert "「５-」：符合，比到「５-」；第 1 組「５」、第 2 組沒有比到" in out
+
+
+def test_samples_must_be_a_list_of_strings() -> None:
+    code, out = run("regex", "a", "--samples", '{"a": 1}')
+    assert code == 2 and "字串的 JSON 清單" in out

@@ -164,10 +164,13 @@ function policy(pi) {
           { description: 'regex rules (default dotnet, what PowerShell uses)' })),
         dialect: Type.Optional(Type.String({ maxLength: 20, description: 'sql: sqlite, postgres or tsql; mavlink: ardupilotmega or common' })),
         arch: Type.Optional(Type.Union(['x86-64', 'x86-32', 'thumb', 'arm', 'arm64'].map(a => Type.Literal(a)))),
+        samples: Type.Optional(Type.Array(Type.String({ maxLength: 2000 }), { maxItems: 20,
+          description: 'regex: example strings to run through the real engine (to check a regex you wrote)' })),
       }),
       async execute(_id, params, signal) {
         const args = ['-m', 'edge_agent.lingua', params.kind];
         for (const key of ['flavor', 'dialect', 'arch']) if (params[key]) args.push(`--${key}`, params[key]);
+        if (params.samples?.length) args.push('--samples', JSON.stringify(params.samples));
         const text = await new Promise((done, fail) => {
           const child = spawn(init.python, args, { cwd: root, env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
             signal, timeout: 60_000 });
