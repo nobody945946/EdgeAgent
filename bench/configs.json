@@ -150,5 +150,20 @@
    "shell": "ask",
    "web": "deny"
   }
+ },
+ "gemma-e4b-bf16": {
+  "_note": "gemma-e4b-search with the original unquantized weights (BF16, dev box only; does not fit the laptop): how much does 4-bit cost E4B? time_scale = its slowdown on the bench GPU, so the budget does not decide.",
+  "model": "gemma-4-E4B-it-BF16.gguf",
+  "vision": true,
+  "context_size": 131072,
+  "max_output_tokens": 8192,
+  "working_context_size": 32768,
+  "effort": "off",
+  "low_vram": true,
+  "prompt_cache_mib": 256,
+  "vram_base_mib": 17000,
+  "vram_slot_mib": 2400,
+  "search_tools": true,
+  "time_scale": 2
  }
 }

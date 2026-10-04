@@ -296,7 +296,10 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
         relay.stdout.readline()
     workspace, original = run_dir / "ws" / job, run_dir / "orig" / job
     prepare(task_dir, task, workspace, original)
-    timeout = task.get("timeout_s", 900)
+    # time_scale: a config that is slower on the bench GPU only for reasons the
+    # comparison is not about (e.g. unquantized weights) gets a longer budget,
+    # so the score measures quality, not speed.
+    timeout = round(task.get("timeout_s", 900) * config.get("time_scale", 1))
     spec = {**{k: config[k] for k in ("model", "context_size", "max_output_tokens",
                                       "working_context_size", "effort")},
             "vision": config.get("vision", False), "prompt": task["prompt"],
