@@ -16,10 +16,8 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-import opencc
-
 ROOT = Path(__file__).resolve().parents[1]
-S2T = opencc.OpenCC("s2t")
+S2T = None
 # A "recommendation" that hands the question back to the user.
 PLACEHOLDER = re.compile(
     r"Your recommended|[Pp]lease|[Dd]escribe|[Pp]rovide|請(提供|說明|描述|告訴|回答)|你的建議答案|看你"
@@ -31,16 +29,32 @@ def scenario_files() -> dict[str, bool]:
     return {row["id"]: bool(row.get("files")) for row in rows if "id" in row}
 
 
-def check(text: str) -> dict:
+def round_counts(text: str) -> dict[str, int]:
+    """Count the skill's question and recommendation markers without saving text."""
     questions = len(re.findall(r"❓", text))
     recs = re.findall(r"➡️([^\n]*)", text)
+    return {
+        "questions": questions,
+        "recommendations": len(recs),
+        "real_recs": sum(1 for r in recs if r.strip() and not PLACEHOLDER.search(r)),
+    }
+
+
+def check(text: str) -> dict:
+    global S2T
+    if S2T is None:
+        import opencc
+
+        S2T = opencc.OpenCC("s2t")
+
+    counts = round_counts(text)
     cjk = [c for c in text if "一" <= c <= "鿿"]
     latin = re.findall(r"[A-Za-z]", re.sub(r"`[^`]*`", "", text))
     simplified = sum(a != b for a, b in zip("".join(cjk), S2T.convert("".join(cjk))))
     return {
-        "produced": questions > 0,
-        "questions": questions,
-        "real_recs": sum(1 for r in recs if r.strip() and not PLACEHOLDER.search(r)),
+        "produced": counts["questions"] > 0,
+        "questions": counts["questions"],
+        "real_recs": counts["real_recs"],
         "chinese": len(cjk) / max(1, len(cjk) + len(latin)) > 0.5,
         "simplified_chars": simplified,
     }

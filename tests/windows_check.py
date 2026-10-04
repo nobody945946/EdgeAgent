@@ -16,7 +16,12 @@ import uuid
 from pathlib import Path
 
 from edge_agent.permissions import validate_permissions
-from edge_agent.runtime import CORE_ROOT, DEFAULT_AGENT_MODEL, NODE_VERSION
+from edge_agent.runtime import (
+    CORE_ROOT,
+    DEFAULT_AGENT_MODEL,
+    DEFAULT_MODEL,
+    NODE_VERSION,
+)
 from edge_agent.service import CONTROL_PORT, EdgeAgent, ExclusiveHTTPServer, Handler
 
 
@@ -36,10 +41,12 @@ def vram() -> int:
 
 def native_probe(core: EdgeAgent, workspace: Path, key: str) -> dict[str, object]:
     text = os.environ[key]
+    interview = key == "EDGE_AGENT_INTERVIEW_PROMPT"
     tools, errors = [], 0
     started = time.monotonic()
     session_id = uuid.uuid4().hex
-    timer = threading.Timer(180, core.chat.cancel, args=(session_id,))
+    timeout = 300 if interview else 180
+    timer = threading.Timer(timeout, core.chat.cancel, args=(session_id,))
     timer.start()
     terminal = ""
     try:
@@ -50,13 +57,14 @@ def native_probe(core: EdgeAgent, workspace: Path, key: str) -> dict[str, object
                     "session_id": session_id,
                     "text": text,
                     "agent": True,
-                    "client": "discord",
+                    "client": "ui" if interview else "discord",
+                    "interview": interview,
                     "working_dir": str(workspace),
                 }
             ).encode(),
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(request, timeout=190) as response:
+        with urllib.request.urlopen(request, timeout=timeout + 10) as response:
             events = []
             event = ""
             for raw_line in response:
@@ -67,7 +75,18 @@ def native_probe(core: EdgeAgent, workspace: Path, key: str) -> dict[str, object
                     events.append((event, json.loads(line[6:])))
                 if not line and event in {"done", "error", "cancelled"}:
                     break
+        answer = ""
+        forbidden_calls = 0
         for event, data in events:
+            if event == "delta":
+                answer += str(data.get("text", ""))
+            if event == "tool" and data["phase"] == "running":
+                forbidden_calls += data["tool"] in {
+                    "edit",
+                    "write",
+                    "powershell",
+                    "bash",
+                }
             if event == "tool" and data["phase"] == "finished":
                 result = json.dumps(data["result"])
                 tools.append(
@@ -93,7 +112,33 @@ def native_probe(core: EdgeAgent, workspace: Path, key: str) -> dict[str, object
             "EDGE_AGENT_WEB_PROMPT": {"web_search", "web_fetch"},
             "EDGE_AGENT_SEARCH_PROMPT": {"grep", "find"},
             "EDGE_AGENT_READ_PROMPT": {"read"},
+            "EDGE_AGENT_INTERVIEW_PROMPT": set(),
         }[key]
+        if interview:
+            from bench.grill_auto import round_counts
+
+            counts = round_counts(answer)
+            result = {
+                "event": "interview_probe",
+                "model": core.active_model,
+                "terminal": terminal,
+                "errors": errors,
+                **counts,
+                "write_or_command_calls": forbidden_calls,
+                "elapsed_ms": round((time.monotonic() - started) * 1000),
+            }
+            # Even an incomplete or empty model answer leaves numeric evidence.
+            print(json.dumps(result), flush=True)
+            if (
+                terminal != "done"
+                or errors
+                or forbidden_calls
+                or not counts["questions"]
+            ):
+                raise AssertionError(
+                    "interview did not finish with questions and zero writes/commands"
+                )
+            return result
         if (
             terminal != "done"
             or errors
@@ -110,6 +155,8 @@ def native_probe(core: EdgeAgent, workspace: Path, key: str) -> dict[str, object
         }
     finally:
         timer.cancel()
+        if interview:
+            core.chat.reset(session_id)
 
 
 def concurrent_control_probe(core: EdgeAgent) -> dict[str, object]:
@@ -162,6 +209,7 @@ def role_probe(core: EdgeAgent) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--browser", action="store_true")
+    parser.add_argument("--interview-models", action="store_true")
     parser.add_argument("--inference-port", type=int, default=18089)
     args = parser.parse_args()
     from edge_agent import service
@@ -251,6 +299,46 @@ def main() -> int:
                     check=True,
                     timeout=240,
                 )
+            if args.interview_models:
+                original = dict(core.config)
+                os.environ["EDGE_AGENT_INTERVIEW_PROMPT"] = "做一個記帳小工具"
+                failures = 0
+                try:
+                    for model in (DEFAULT_MODEL, DEFAULT_AGENT_MODEL):
+                        try:
+                            core.select_model(
+                                {
+                                    "model": model,
+                                    "lora": "",
+                                    "mmproj": "",
+                                    "max_output_tokens": 8192,
+                                }
+                            )
+                            native_probe(core, workspace, "EDGE_AGENT_INTERVIEW_PROMPT")
+                        except (AssertionError, RuntimeError, OSError):
+                            failures += 1
+                            print(
+                                json.dumps(
+                                    {"event": "interview_failed", "model": model}
+                                ),
+                                flush=True,
+                            )
+                        finally:
+                            core.chat.close()
+                finally:
+                    core.select_model(original)
+                    print(
+                        json.dumps(
+                            {
+                                "event": "interview_config_restored",
+                                "equal": core.config == original,
+                                "model": core.active_model,
+                            }
+                        ),
+                        flush=True,
+                    )
+                if failures:
+                    raise AssertionError(f"{failures} interview model checks failed")
             for key in ("EDGE_AGENT_WEB_PROMPT", "EDGE_AGENT_SEARCH_PROMPT"):
                 if key in os.environ:
                     print(json.dumps(native_probe(core, workspace, key)), flush=True)

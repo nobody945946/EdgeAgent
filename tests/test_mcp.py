@@ -4,15 +4,94 @@ every call, with the pinned Pi SDK and a fixture server (fixtures/mcp_fixture.mj
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from edge_agent.chat import NativeChat
 from edge_agent.mcp import servers_for, validate_mcp_servers
+from edge_agent.runtime import CORE_ROOT, NODE_VERSION
 from tests.test_agent_chat import installed_pi, repeating_model  # noqa: F401 - fixture
 
 FIXTURE = Path(__file__).with_name("fixtures") / "mcp_fixture.mjs"
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or not installed_pi(), reason="requires Windows pinned Node"
+)
+def test_probe_cleans_children_after_launcher_exits(tmp_path):
+    node = CORE_ROOT / f".runtime/node/node-v{NODE_VERSION}-win-x64/node.exe"
+    pid_file = tmp_path / "pid.txt"
+    result = subprocess.run(
+        [
+            str(node),
+            str(CORE_ROOT / "scripts/mcp_probe.mjs"),
+            "--",
+            str(node),
+            str(FIXTURE),
+        ],
+        env={
+            **os.environ,
+            "MCP_FIXTURE_LAUNCHER_EXIT": "1",
+            "MCP_FIXTURE_PID_FILE": str(pid_file),
+        },
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode != 0
+    child_pid = int(pid_file.read_text())
+    check = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            f"if(Get-Process -Id {child_pid} -ErrorAction SilentlyContinue){{exit 1}}",
+        ],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert check.returncode == 0, "orphaned MCP child remains alive"
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or not installed_pi(), reason="requires Windows pinned Node"
+)
+def test_probe_resolves_bare_cmd_and_calls_in_one_session(tmp_path):
+    node = CORE_ROOT / f".runtime/node/node-v{NODE_VERSION}-win-x64/node.exe"
+    shim = tmp_path / "mcp-probe-fixture.cmd"
+    shim.write_text(f'@"{node}" "{FIXTURE}"\n', encoding="utf-8")
+    result = subprocess.run(
+        [
+            str(node),
+            str(CORE_ROOT / "scripts/mcp_probe.mjs"),
+            "--call",
+            "quote",
+            "{}",
+            "--call",
+            "quote",
+            "{}",
+            "--",
+            shim.stem,
+        ],
+        env={
+            **os.environ,
+            "PATH": str(tmp_path) + os.pathsep + os.environ.get("PATH", ""),
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    probe = json.loads(result.stdout)
+    assert probe["count"] == 3
+    assert [call["name"] for call in probe["calls"]] == ["quote", "quote"]
+    assert not any(call["isError"] for call in probe["calls"])
 
 
 def test_servers_are_validated_and_filled_with_safe_defaults() -> None:

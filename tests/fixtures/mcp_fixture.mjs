@@ -2,10 +2,19 @@
 // read-only tool, a write tool, a tool with no hints, and (with
 // MCP_FIXTURE_HARDWARE=1) a tool that would move hardware. Every executed
 // call is appended to MCP_FIXTURE_LOG, so a test can see what really ran.
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
 const log = process.env.MCP_FIXTURE_LOG;
+if (process.env.MCP_FIXTURE_LAUNCHER_EXIT === '1') {
+  const child = spawn(process.execPath, [process.argv[1]], {
+    stdio: 'inherit', windowsHide: true,
+    env: {...process.env, MCP_FIXTURE_LAUNCHER_EXIT: '0'},
+  });
+  writeFileSync(process.env.MCP_FIXTURE_PID_FILE, String(child.pid));
+  process.exit(1);
+}
 const hardware = process.env.MCP_FIXTURE_HARDWARE === '1';
 const tools = hardware ? [
   { name: 'telemetry', description: 'Read the drone battery and GPS', inputSchema: { type: 'object', properties: {} },
