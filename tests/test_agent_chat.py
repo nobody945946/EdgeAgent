@@ -1133,6 +1133,55 @@ def test_real_sdk_only_urls_the_model_built_itself_need_approval(
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_spec_mode_opens_grill_me_once_and_cannot_change_files(
+    tmp_path, repeating_model
+):
+    """定規格: the first message opens the bundled grill-me skill, the answers
+    that follow go as they are, the tools are read-only, and the skill never
+    enters the system prompt (it would change every request's cached prefix)."""
+    port, state = repeating_model
+    state["sequence"] = []  # every request is answered at once
+    chat = NativeChat(model_port=port)
+    try:
+        for text, mode in [
+            ("我想做一個記帳 app", {"spec": True}),
+            ("1 用網頁", {"spec": True}),
+            ("照規格做", {}),
+            ("再來一個新點子", {"spec": True}),
+        ]:
+            events = list(chat.stream_reply(
+                "spec", text, agent=True, working_dir=tmp_path, **mode
+            ))
+            assert events[-1][0] == "done"
+    finally:
+        chat.close()
+    requests = state["requests"]
+    assert len(requests) == 4
+    SKILL_MARK = "Interview the user relentlessly"  # once in the skill
+
+    def last_user(request):
+        user = [m for m in request["messages"] if m["role"] == "user"][-1]
+        return json.dumps(user["content"], ensure_ascii=False)
+
+    def tools(request):
+        return {tool["function"]["name"] for tool in request.get("tools", [])}
+
+    opened = last_user(requests[0])
+    assert SKILL_MARK in opened and "我想做一個記帳 app" in opened
+    assert "1 用網頁" in last_user(requests[1])
+    assert SKILL_MARK not in last_user(requests[1])
+    assert json.dumps(requests[1]["messages"]).count(SKILL_MARK) == 1
+    assert SKILL_MARK in last_user(requests[3])
+    for request in (requests[0], requests[1], requests[3]):
+        assert {"read", "grep"} <= tools(request)
+        assert not tools(request) & {"edit", "write", "powershell"}
+    assert "write" in tools(requests[2])
+    for request in requests:
+        system = json.dumps(request["messages"][0], ensure_ascii=False)
+        assert "grill-me" not in system and "available_skills" not in system
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
 def test_real_sdk_deletes_need_their_own_approval_even_when_shell_is_allowed(
     tmp_path, repeating_model
 ):

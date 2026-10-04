@@ -149,6 +149,8 @@ class ChatSession:
     cancelled_at: float | None = None
     changes: dict[str, tuple[str, str]] = field(default_factory=dict)
     approvals: dict[str, dict[str, object]] = field(default_factory=dict)
+    # In a 定規格 stretch: the grill-me skill is already in the history.
+    grilling: bool = False
 
 
 class NativeChat:
@@ -454,9 +456,13 @@ class NativeChat:
         agent: bool = False,
         working_dir: Path | None = None,
         plan: bool = False,
+        spec: bool = False,
         media: list[dict[str, str]] | None = None,
         permissions: dict[str, str] | None = None,
     ) -> Iterator[tuple[str, dict[str, object]]]:
+        """`spec` (定規格): the grill-me interview (edge_agent/skills/grill-me)
+        until the user confirms a spec. Read-only like `plan`; the first
+        message of a stretch opens the skill, later answers go as they are."""
         if thinking_effort not in THINKING_PROFILES:
             raise ValueError("invalid thinking_effort")
         if user_text.strip().split(maxsplit=1)[:1] == ["/edge-snapshot"]:
@@ -513,16 +519,20 @@ class NativeChat:
                             "此對話包含目前模型不支援的附件；請換回支援的模型或開啟新對話。"
                         )
                 rules = permissions or bridge_rules(DEFAULT_PERMISSIONS["ui"])
-                self._start(session, cwd, thinking_effort, agent, plan, rules)
+                self._start(session, cwd, thinking_effort, agent, plan or spec, rules)
                 prompt_id = uuid4().hex
+                opens_spec = spec and not session.grilling
                 self._send(
                     {
                         "type": "prompt",
-                        "message": user_text,
+                        "message": "/skill:grill-me " + user_text
+                        if opens_spec
+                        else user_text,
                         "id": prompt_id,
                         "images": media or [],
                     }
                 )
+                session.grilling = spec
                 while True:
                     try:
                         event = self._receive(timeout=1)

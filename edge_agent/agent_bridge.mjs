@@ -268,7 +268,11 @@ const shell = createPowerShellToolDefinition(root, { operations: {
 const factory = async ({ cwd, sessionManager, sessionStartEvent }) => {
   const services = await sdk.createAgentSessionServices({
     cwd, agentDir, modelRuntime, settingsManager: settings,
+    // No skills from the user's or the project's folders; only the ones
+    // shipped in edge_agent/skills, each opened by its own /skill: command
+    // (disable-model-invocation keeps them out of the system prompt).
     resourceLoaderOptions: { noExtensions: true, noSkills: true,
+      additionalSkillPaths: [fileURLToPath(new URL('./skills', import.meta.url))],
       noPromptTemplates: true, noThemes: true, extensionFactories: [policy],
       appendSystemPrompt: ['Answer in the user\'s language. Preserve user-owned configuration. After edits run relevant checks, repair failures, and report actual results. Conversation and prompts must remain in memory.'],
     },

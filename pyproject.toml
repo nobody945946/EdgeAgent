@@ -19,7 +19,7 @@ edge-agent = "edge_agent.cli:main"
 include = ["edge_agent*"]
 
 [tool.setuptools.package-data]
-edge_agent = ["*.mjs", "pi-runtime*.json"]
+edge_agent = ["*.mjs", "pi-runtime*.json", "skills/*/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
