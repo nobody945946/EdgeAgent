@@ -75,7 +75,7 @@ SilentTalk 租借時，Agent 自動共用角色傳來的基底與 LoRA，不必�
 
 ## 共用推論服務
 
-SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸還後恢復原 Agent 配置。最多載入一個完整模型；租借期間 Agent 自動跟隨角色的基底與 LoRA，使用獨立 slot 做工作，不需要修改原本的 Agent 選擇。租借或工作中禁止手動切換模型。角色 context 預設 32,768，Agent 預設 131,072，分開設定；共用時取兩者較大值並限制在租借模型的 context 上限，模型需至少支援 8,192 token。
+SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸還後恢復原 Agent 配置。最多載入一個完整模型；租借期間 Agent 自動跟隨角色的基底與 LoRA，使用獨立 slot 做工作，不需要修改原本的 Agent 選擇。租借或工作中禁止手動切換模型。角色 context 預設 32,768，Agent 預設 131,072，分開設定；共用時 Agent 跟著角色的 context（限制在租借模型的上限），不會為了 Agent 把角色伺服器開大、拖慢即時聊天。角色的 context 少於 8,192 時 Agent 不共用，租借期間暫停。
 
 單獨安裝 EdgeAgent 只準備 Agent 模型；SilentTalk 部署額外準備公開 Gemma 4 E4B，不取得個人 LoRA。角色有 LoRA 時使用兩個推論 slot，區分套用與未套用 cache；其他情況角色使用一個 slot。相同基底與 LoRA 時另加 Agent 專用 slot，避免互相清除 cache。每個 slot 保留兩個用戶端要求的較大 context，不自動縮小使用者設定；記憶體不足時載入會失敗並回報。
 

@@ -659,18 +659,18 @@ class EdgeAgent:
         else:
             raise ValueError(f"unknown EdgeAgent mode: {mode}")
 
-        # The lease supplies the effective model and adapter for both clients.
-        # Standalone preferences remain in config and return with the lease.
-        shared = mode == "character"
-        role_slots = 2 if mode == "character" and lora_path else 1
-        agent_slot = role_slots if shared else (0 if mode == "base" else None)
-        if shared:
-            context_size = max(context_size, int(self.config["context_size"]))
+        if mode == "character":
             limit = metadata["context_length"]
             if isinstance(limit, int) and limit > 0:
                 context_size = min(context_size, limit)
-            if context_size < MIN_AGENT_CONTEXT_SIZE:
-                raise ValueError("此模型的 context 少於 8192，無法支援 EdgeAgent")
+        # The lease supplies the model, adapter and context window for both
+        # clients. The Agent follows the character's window: a larger
+        # standalone setting would grow every slot of the character's server
+        # and push weights to the CPU, slowing the live chat. Standalone
+        # preferences remain in config and return with the lease.
+        shared = mode == "character" and context_size >= MIN_AGENT_CONTEXT_SIZE
+        role_slots = 2 if mode == "character" and lora_path else 1
+        agent_slot = role_slots if shared else (0 if mode == "base" else None)
         # The upstream router owns model processes, loading and hot replacement.
         # Keep one public inference endpoint for the Agent and leased clients.
         args = build_server_args(

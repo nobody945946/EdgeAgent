@@ -178,11 +178,13 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
             **manager.config,
             "model": "base.gguf",
             "lora": standalone_lora,
-            "context_size": 16384,
+            "context_size": 131072,
         }
     )
     saved = manager.config_path.read_bytes()
-    expected_context = min(16384, model_limit)
+    # The Agent follows the character's window, capped by the model; the
+    # larger standalone setting never grows the character's server.
+    expected_context = min(32768, model_limit)
     manager.process = SimpleNamespace(poll=lambda: None)
     monkeypatch.setattr(service, "find_llama_server", lambda: "llama-server")
     monkeypatch.setattr(manager, "_model_path", lambda name: tmp_path / name)
@@ -217,7 +219,7 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
             "model": leased_model,
             "lora": leased_lora,
             "port": 18088,
-            "context_size": 8192,
+            "context_size": 32768,
             "gpu_layers": 99,
             "low_vram": True,
         },
@@ -242,6 +244,38 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
     assert manager.chat.lora_enabled == bool(standalone_lora)
     assert manager.config == original
     assert manager.config_path.read_bytes() == saved
+
+
+def test_character_window_too_small_for_the_agent_leases_without_sharing(
+    tmp_path, monkeypatch
+):
+    manager = service.EdgeAgent(tmp_path)
+    manager.process = SimpleNamespace(poll=lambda: None)
+    monkeypatch.setattr(service, "find_llama_server", lambda: "llama-server")
+    monkeypatch.setattr(manager, "_model_path", lambda name: tmp_path / name)
+    monkeypatch.setattr(
+        service,
+        "model_metadata",
+        lambda path: {"architecture": "fixture", "adapter": False, "split": False,
+                      "projector": False, "context_length": 131072},
+    )
+    monkeypatch.setattr(manager, "_adapter_path", lambda base, name: None)
+    monkeypatch.setattr(manager, "_model_state", lambda: {"value": "loaded"})
+    monkeypatch.setattr(
+        manager,
+        "_model_request",
+        lambda *args, **kwargs: {"default_generation_settings": {"n_ctx": 4096}, "modalities": {}},
+    )
+    manager.switch(
+        "character",
+        123,
+        {"model": "base.gguf", "lora": "", "port": 18088, "context_size": 4096,
+         "gpu_layers": 99, "low_vram": True},
+    )
+    preset = (tmp_path / ".runtime/models.ini").read_text()
+    assert "parallel = 1" in preset and "ctx-size = 4096" in preset
+    assert manager.agent_slot is None
+    assert manager.status()["agent_slot"] is None
 
 
 def test_busy_stream_cannot_switch_models_but_does_not_hold_service_lock(tmp_path):
