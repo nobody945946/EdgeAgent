@@ -1,0 +1,1 @@
+{"answer": "1085、28417", "calls": [{"name": "mcp__stock__get_stock_daily_trading", "arguments": {"stock_no": "2330"}}]}

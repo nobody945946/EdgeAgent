@@ -1,0 +1,1 @@
+{"answer": "查無股票代號 9999", "calls": [{"name": "mcp__stock__get_stock_daily_trading", "arguments": {"stock_no": "9999"}}]}

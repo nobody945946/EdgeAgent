@@ -42,6 +42,15 @@ def summarize(messages: list[dict]) -> dict:
     return {"turns": turns, "tools": tools, "tool_errors": tool_errors, "usage": usage}
 
 
+def mcp_servers(spec: dict) -> dict | None:
+    """The task's MCP servers, through the product's own settings owner."""
+    if not spec.get("mcp_servers"):
+        return None
+    from edge_agent.mcp import servers_for, validate_mcp_servers
+
+    return servers_for("ui", validate_mcp_servers(spec["mcp_servers"]))
+
+
 def main() -> None:
     spec = json.loads(os.environ["BENCH_SPEC"])
     if spec.get("search_tools"):
@@ -83,7 +92,7 @@ def main() -> None:
         for kind, payload in chat.stream_reply(
             SESSION, spec["prompt"], thinking_effort=spec["effort"], agent=True,
             working_dir=Path("/work"), permissions=spec.get("permissions"),
-            scope=spec.get("scope", "change"),
+            scope=spec.get("scope", "change"), mcp_servers=mcp_servers(spec),
         ):
             if kind == "delta":
                 answer.append(str(payload.get("text", "")))

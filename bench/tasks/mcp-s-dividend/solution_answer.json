@@ -1,0 +1,1 @@
+{"answer": "5", "calls": [{"name": "mcp__stock__get_company_dividend", "arguments": {"code": "2330"}}]}

@@ -1,0 +1,1 @@
+{"answer": "15、2.5", "calls": [{"name": "mcp__stock__get_stock_daily_trading", "arguments": {"stock_no": "2330"}}, {"name": "mcp__stock__get_stock_daily_trading", "arguments": {"stock_no": "2317"}}]}

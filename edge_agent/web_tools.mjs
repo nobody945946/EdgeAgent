@@ -184,38 +184,141 @@ export function rankPassages(query, pool, keep = 6) {
   return scored.filter(s => s.score > 0).sort((a, b) => b.score - a.score).slice(0, keep);
 }
 
-export async function webResearch(question, queries = [], signal, { perQuery = 3, maxPages = 5, keep = 6 } = {}) {
+// How far a source can be trusted (the owner, 2026-10-05: precise research
+// from a few reliable pages, not whatever a friendly netizen posted). By the
+// host name: 1 official or primary (government, schools, standards, exchanges,
+// a project's own documentation), 2 established media and references, 3 the
+// rest; forums, Q&A sites, content farms and repost sites are left out unless
+// the user asked what people online say, and then marked as opinions.
+const PRIMARY = [/\.gov(\.[a-z]{2})?$/, /\.edu(\.[a-z]{2})?$/, /\.ac\.[a-z]{2}$/, /\.mil(\.[a-z]{2})?$/, /\.int$/,
+  /(^|\.)(twse|tpex|taifex)\.com\.tw$/, /(^|\.)(python|nodejs|w3|ietf|rfc-editor|iso|unicode|kernel)\.org$/,
+  /(^|\.)(docs\.python\.org|learn\.microsoft\.com|developer\.mozilla\.org|support\.microsoft\.com|developer\.apple\.com)$/,
+  /(^|\.)(arxiv\.org|nature\.com|science\.org|thelancet\.com|nejm\.org|bmj\.com)$/];
+const SECONDARY = /(^|\.)(cna\.com\.tw|pts\.org\.tw|udn\.com|ltn\.com\.tw|chinatimes\.com|setn\.com|ettoday\.net|tvbs\.com\.tw|storm\.mg|thenewslens\.com|cw\.com\.tw|businessweekly\.com\.tw|wealth\.com\.tw|technews\.tw|ithome\.com\.tw|bnext\.com\.tw|cnyes\.com|moneydj\.com|reuters\.com|apnews\.com|bbc\.co\.uk|bbc\.com|nytimes\.com|theguardian\.com|bloomberg\.com|wsj\.com|ft\.com|cnbc\.com|nikkei\.com|economist\.com|theverge\.com|arstechnica\.com|wikipedia\.org|britannica\.com|nhk\.or\.jp|dw\.com|aljazeera\.com|npr\.org)$/;
+const FORUMS = /(^|\.)(ptt\.cc|dcard\.tw|mobile01\.com|reddit\.com|quora\.com|zhihu\.com|baidu\.com|douban\.com|kknews\.cc|read01\.com|ifuun\.com|xuehua\.us|twgreatdaily\.com|ppfocus\.com|inf\.news|ptt\.best|pttweb\.cc|disp\.cc|gamer\.com\.tw|plurk\.com|threads\.net|facebook\.com|x\.com|twitter\.com|instagram\.com|tiktok\.com|youtube\.com|answers\.yahoo\.com|stackexchange\.com|stackoverflow\.com)$/;
+export const TIER_NAMES = { 1: '一級來源（官方／原始資料）', 2: '二級來源（媒體、百科）', 3: '其他來源', 4: '網友意見（論壇，只是看法）' };
+
+export function sourceTier(value) {
+  let host;
+  try { host = new URL(value).hostname.toLowerCase().replace(/^www\./, ''); } catch { return 3; }
+  if (FORUMS.test(host)) return 4;
+  if (PRIMARY.some(pattern => pattern.test(host))) return 1;
+  if (SECONDARY.test(host)) return 2;
+  return 3;
+}
+
+/** When a page says it was published (YYYY-MM-DD), from its own metadata. */
+export function publishedDate(html) {
+  const patterns = [
+    /<meta[^>]+(?:property|name|itemprop)=["'](?:article:published_time|og:published_time|datePublished|pubdate|publishdate|date|dc\.date|DC\.date\.issued|parsely-pub-date)["'][^>]*content=["']([^"']+)["']/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]*(?:property|name|itemprop)=["'](?:article:published_time|datePublished|pubdate|publishdate|date)["']/i,
+    /"datePublished"\s*:\s*"([^"]+)"/i,
+    /<time[^>]+datetime=["']([^"']+)["']/i,
+  ];
+  for (const pattern of patterns) {
+    const found = String(html).match(pattern)?.[1]?.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+    if (found) return `${found[1]}-${found[2].padStart(2, '0')}-${found[3].padStart(2, '0')}`;
+  }
+  return '';
+}
+
+function hostOf(value) {
+  try { return new URL(value).hostname.toLowerCase().replace(/^www\./, ''); } catch { return ''; }
+}
+
+// Research for a small model: the code searches, keeps the most reliable
+// pages (3-5, at most two per site), and hands the model only the passages
+// that bear on the question, numbered (`first` continues the numbering of an
+// earlier search in the same turn), each with how reliable its source is and
+// when it was published. The rules for using them come with the passages.
+export async function webResearch(question, queries = [], signal,
+  { perQuery = 6, maxPages = 5, keep = 6, opinions = false, first = 1, found = [] } = {}) {
   const searches = (queries.length ? queries : [question]).slice(0, 3);
-  const urls = [];
+  const results = [];
   const failures = [];
+  let skipped = 0;
   for (const query of searches) {
     const url = new URL(SEARCH_URL);
     url.searchParams.set('q', query);
     try {
       const page = await get(url.toString(), signal);
-      for (const result of parseSearchResults(page.body, perQuery)) if (!urls.includes(result.url)) urls.push(result.url);
+      for (const result of parseSearchResults(page.body, perQuery)) {
+        if (results.some(item => item.url === result.url)) continue;
+        const tier = sourceTier(result.url);
+        if (tier === 4 && !opinions) { skipped++; continue; }
+        results.push({ url: result.url, tier, rank: results.length });
+      }
     } catch (error) {
       failures.push(`搜尋「${query}」失敗：${error.message}`);
     }
   }
-  const pages = await Promise.all(urls.slice(0, maxPages).map(async url => {
+  // Primary sources first, then media, then the rest; forum talk last.
+  const order = opinions ? (tier => (tier === 4 ? 2.5 : tier)) : (tier => tier);
+  const chosen = [];
+  const perHost = new Map();
+  for (const item of results.sort((a, b) => order(a.tier) - order(b.tier) || a.rank - b.rank)) {
+    const host = hostOf(item.url);
+    if ((perHost.get(host) ?? 0) >= 2) continue;
+    perHost.set(host, (perHost.get(host) ?? 0) + 1);
+    chosen.push(item);
+    if (chosen.length >= maxPages) break;
+  }
+  const pages = await Promise.all(chosen.map(async item => {
     try {
-      const page = await get(url, signal);
+      const page = await get(item.url, signal);
       if (!(/html|xml|text\//i.test(page.type) || /^\s*<(!doctype|html)/i.test(page.body))) throw new Error(`不是文字網頁（${page.type}）`);
-      const { title, text } = /html|xml/i.test(page.type) || /^\s*</.test(page.body) ? htmlToText(page.body) : { title: '', text: page.body };
-      return { url: page.url, title, text };
+      const html = /html|xml/i.test(page.type) || /^\s*</.test(page.body);
+      const { title, text } = html ? htmlToText(page.body) : { title: '', text: page.body };
+      return { url: page.url, title, text, tier: sourceTier(page.url), date: html ? publishedDate(page.body) : '' };
     } catch (error) {
-      failures.push(`${url}：${error.message}`);
+      failures.push(`${item.url}：${error.message}`);
       return null;
     }
   }));
-  const pool = pages.filter(Boolean).flatMap(page => passages(page.text).map(text => ({ url: page.url, title: page.title, text })));
+  const pool = pages.filter(Boolean).flatMap(page => passages(page.text).map(text => ({ ...page, text })));
   const best = rankPassages(`${question} ${searches.join(' ')}`, pool, keep);
   const read = pages.filter(Boolean).length;
-  const lines = [UNTRUSTED, `問題：${question}`, `搜尋：${searches.join('；')}；讀了 ${read} 個網頁，以下是和問題最相關的 ${best.length} 段原文：`];
-  best.forEach((item, i) => lines.push(`\n[${i + 1}] ${item.title || '（無標題）'}\n${item.url}\n${item.text}`));
+  const lines = [UNTRUSTED, `問題：${question}`,
+    `搜尋：${searches.join('；')}；讀了 ${read} 個網頁${skipped ? `（論壇、內容農場和轉貼站 ${skipped} 個沒有用）` : ''}，以下是和問題最相關的 ${best.length} 段原文：`];
+  best.forEach((item, i) => {
+    found.push({ n: first + i, url: item.url, host: hostOf(item.url), tier: item.tier, date: item.date, text: item.text });
+    lines.push(`\n[${first + i}] ${TIER_NAMES[item.tier]}｜${item.date ? `發布 ${item.date}` : '發布日期不明'}｜${item.title || '（無標題）'}\n${item.url}\n${item.text}`);
+  });
   if (!best.length) lines.push('\n沒有找到和問題相關的段落。');
   if (failures.length) lines.push(`\n讀不到的：${failures.slice(0, 5).join('；')}`);
-  lines.push('\n回答時，每個事實後面標上它的段落編號，例如 [2]；段落裡沒有寫的，就說查不到，不要自己補。');
+  lines.push('\n回答時：每個事實後面標上段落編號，例如 [2]；段落裡沒有寫的，就說查不到，不要自己補。'
+    + '數字要有一個一級來源，或兩個不同網站的二級來源支持，不然就說找不到可靠來源。'
+    + '來源說法不一就把每種說法和出處都列出來。問的是最新狀況時寫出資料日期，舊資料不要當成現在。'
+    + (opinions ? '標成網友意見的段落只是看法，不能當成事實。' : ''));
   return lines.join('\n');
+}
+
+// What the host checks in an answer written from research (the owner: the
+// program, not the model, checks each number against the source): every
+// number in a sentence that cites passages must appear in one of them, and
+// must be backed by a primary source or by secondary sources on two sites.
+const NUMBER = /\d[\d,]*(?:\.\d+)?/g;
+const plain = text => String(text).replace(/,/g, '');
+
+export function checkCitations(answer, found) {
+  const byNumber = new Map(found.map(item => [item.n, item]));
+  const problems = [];
+  for (const sentence of String(answer).split(/(?<=[。！？!?\n])/)) {
+    const cited = [...sentence.matchAll(/\[(\d{1,3})\]/g)].map(match => byNumber.get(Number(match[1]))).filter(Boolean);
+    if (!cited.length) continue;
+    const numbers = [...plain(sentence.replace(/\[\d{1,3}\]/g, '')).matchAll(NUMBER)].map(match => match[0])
+      .filter(number => number.length >= 2 || Number(number) >= 10);
+    for (const number of numbers) {
+      const backing = cited.filter(item => plain(item.text).includes(number));
+      if (!backing.length) {
+        problems.push(`「${number}」在引用的段落 ${cited.map(item => `[${item.n}]`).join('')} 裡找不到`);
+        continue;
+      }
+      const secondaryHosts = new Set(backing.filter(item => item.tier === 2).map(item => item.host));
+      if (!backing.some(item => item.tier === 1) && secondaryHosts.size < 2) {
+        problems.push(`「${number}」只有${backing.some(item => item.tier === 2) ? '一個二級來源' : '不夠可靠的來源'}支持`);
+      }
+    }
+  }
+  return [...new Set(problems)];
 }

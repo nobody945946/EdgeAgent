@@ -1,0 +1,67 @@
+{
+ "kind": "mcp",
+ "prompt": "無人機現在在哪個位置？",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "permissions": {
+  "edit": "deny",
+  "shell": "deny",
+  "web": "deny"
+ },
+ "mcp_servers": {
+  "stock": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "stock"
+   ],
+   "permission": "allow",
+   "tools": [
+    "get_stock_daily_trading",
+    "get_stock_history",
+    "get_twse_institutional_investors_summary",
+    "get_twse_institutional_investors_by_stock",
+    "get_company_monthly_revenue",
+    "get_company_dividend",
+    "get_company_income_statement",
+    "get_company_balance_sheet",
+    "get_company_cash_flow_statement",
+    "get_taiex_index_history",
+    "get_exchange_rates"
+   ],
+   "read_only_tools": [
+    "get_stock_daily_trading",
+    "get_stock_history",
+    "get_twse_institutional_investors_summary",
+    "get_twse_institutional_investors_by_stock",
+    "get_company_monthly_revenue",
+    "get_company_dividend",
+    "get_company_income_statement",
+    "get_company_balance_sheet",
+    "get_company_cash_flow_statement",
+    "get_taiex_index_history",
+    "get_exchange_rates"
+   ],
+   "description": "台股資料：股價、三大法人買賣超、月營收、股利、財報、加權指數、匯率",
+   "clients": [
+    "ui"
+   ]
+  },
+  "drone": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "drone"
+   ],
+   "permission": "ask",
+   "hardware": true,
+   "description": "無人機（MAVLink）：狀態、位置、解鎖、起飛、降落、返航、移動、拍照",
+   "clients": [
+    "ui"
+   ]
+  }
+ }
+}

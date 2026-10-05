@@ -75,6 +75,9 @@ APPROVAL_TIMEOUT_SECONDS = 300
 # Said by the host, not the model, when code was changed and no check passed
 # afterwards: the model may still call the work done.
 UNVERIFIED_NOTICE = "\n\n（主機提醒：這輪改了 {files}，之後沒有通過的檢查，結果未經驗證。）"
+# The host's own check of an answer written from web_research: each cited
+# number against its passages and the sources behind it (web_tools.mjs).
+SOURCES_NOTICE = "\n\n（主機核對來源：{problems}。）"
 
 
 def attachment_context(attachments: object) -> str:
@@ -555,6 +558,7 @@ class NativeChat:
             failure = ""
             stop_reason = ""
             unverified: list[str] = []
+            source_problems: list[str] = []
             steps = 0
             settled = False
             try:
@@ -635,6 +639,9 @@ class NativeChat:
                             "edge-unverified:"
                         ):
                             unverified = json.loads(notice.removeprefix("edge-unverified:"))
+                            continue
+                        if isinstance(notice, str) and notice.startswith("edge-sources:"):
+                            source_problems = json.loads(notice.removeprefix("edge-sources:"))
                             continue
                         if isinstance(notice, str) and notice.startswith("edge-stop:"):
                             stop_reason = notice.removeprefix("edge-stop:")
@@ -826,10 +833,13 @@ class NativeChat:
                             files="、".join(unverified[:5])
                             + (f" 等 {len(unverified)} 個檔案" if len(unverified) > 5 else "")
                         )}
+                    if source_problems:
+                        yield "delta", {"text": SOURCES_NOTICE.format(
+                            problems="；".join(source_problems[:6]))}
                     yield (
                         "done",
                         {"agent_steps": steps, "thinking_effort": thinking_effort,
-                         "unverified": unverified},
+                         "unverified": unverified, "source_problems": source_problems},
                     )
             except (OSError, ValueError, TypeError, RuntimeError, TimeoutError) as exc:
                 # Do not leave an unobserved agent modifying files after a failed

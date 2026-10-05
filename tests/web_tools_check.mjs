@@ -57,10 +57,10 @@ assert.ok(!ranked.some(r => r.url === 'a'));
 const researchServer = createServer((req, res) => {
   if (req.url.startsWith('/html/')) {
     res.writeHead(200, { 'content-type': 'text/html' });
-    return res.end(`<div class="result"><a class="result__a" href="${base2}/law">法規</a></div><div class="result"><a class="result__a" href="${base2}/blog">部落格</a></div>`);
+    return res.end(`<div class="result"><a class="result__a" href="${base2}/law">法規</a></div><div class="result"><a class="result__a" href="https://www.ptt.cc/bbs/drone/M.1.html">PTT</a></div><div class="result"><a class="result__a" href="${base2}/blog">部落格</a></div>`);
   }
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-  if (req.url === '/law') return res.end('<title>遙控無人機管理規則</title><p>前言很長很長。</p><p>最大起飛重量 250 公克以上之遙控無人機，所有人應辦理註冊。</p>');
+  if (req.url === '/law') return res.end('<title>遙控無人機管理規則</title><meta property="article:published_time" content="2026-09-01T00:00:00Z"><p>前言很長很長。</p><p>最大起飛重量 250 公克以上之遙控無人機，所有人應辦理註冊。</p>');
   res.end('<title>旅遊</title><p>我去了海邊，吃了很多海鮮。</p>');
 });
 await new Promise(resolve => researchServer.listen(0, '127.0.0.1', resolve));
@@ -69,6 +69,33 @@ process.env.EDGE_AGENT_SEARCH_URL = base2 + '/html/';
 const research = await import('../edge_agent/web_tools.mjs?research');
 const report = await research.webResearch('多重的無人機要註冊？', ['無人機 註冊 重量']);
 assert.ok(report.startsWith(research.UNTRUSTED));
-assert.ok(/\[1\] 遙控無人機管理規則\nhttp:\/\/127\.0\.0\.1:\d+\/law\n[\s\S]*250 公克以上/.test(report), report);
-assert.ok(report.includes('讀了 2 個網頁') && report.includes('標上它的段落編號'));
+assert.ok(/\[1\] 其他來源｜發布 2026-09-01｜遙控無人機管理規則\nhttp:\/\/127\.0\.0\.1:\d+\/law\n[\s\S]*250 公克以上/.test(report), report);
+assert.ok(report.includes('讀了 2 個網頁') && report.includes('標上段落編號') && report.includes('二級來源'));
+// Forums are left out unless the user asked what people say; numbering goes on across searches.
+const found = [];
+const again = await research.webResearch('多重的無人機要註冊？', ['無人機 論壇'], undefined, { first: 4, found });
+assert.ok(again.includes('論壇、內容農場和轉貼站 1 個沒有用') && again.includes('[4] '), again);
+assert.ok(found.length && found[0].n === 4 && found[0].text.includes('250'));
 researchServer.close();
+
+// Sources: how far each can be trusted, when it was published, and the host's check of cited numbers.
+assert.equal(research.sourceTier('https://www.caa.gov.tw/x'), 1);
+assert.equal(research.sourceTier('https://www.twse.com.tw/zh/'), 1);
+assert.equal(research.sourceTier('https://www.cna.com.tw/news/1'), 2);
+assert.equal(research.sourceTier('https://zh.wikipedia.org/wiki/x'), 2);
+assert.equal(research.sourceTier('https://www.ptt.cc/bbs/x'), 4);
+assert.equal(research.sourceTier('https://kknews.cc/x'), 4);
+assert.equal(research.sourceTier('https://someblog.example/x'), 3);
+assert.equal(research.publishedDate('<meta property="article:published_time" content="2026-09-30T08:00:00+08:00">'), '2026-09-30');
+assert.equal(research.publishedDate('<script type="application/ld+json">{"datePublished": "2025/7/4"}</script>'), '2025-07-04');
+assert.equal(research.publishedDate('<p>no date</p>'), '');
+const sources = [
+  { n: 1, host: 'caa.gov.tw', tier: 1, text: '重量 250 公克以上要註冊，罰鍰 6,000 元。' },
+  { n: 2, host: 'cna.com.tw', tier: 2, text: '去年共有 3,215 架完成註冊。' },
+  { n: 3, host: 'udn.com', tier: 2, text: '註冊數量約 3215 架。' },
+  { n: 4, host: 'ltn.com.tw', tier: 2, text: '業者說價格約 12000 元。' },
+];
+assert.deepEqual(research.checkCitations('250 公克以上要註冊 [1]。罰鍰 6000 元 [1]。去年 3215 架 [2][3]。', sources), []);
+assert.deepEqual(research.checkCitations('罰鍰 9000 元 [1]。', sources), ['「9000」在引用的段落 [1] 裡找不到']);
+assert.deepEqual(research.checkCitations('價格約 12000 元 [4]。', sources), ['「12000」只有一個二級來源支持']);
+assert.deepEqual(research.checkCitations('沒有引用的 123 不檢查。', sources), []);

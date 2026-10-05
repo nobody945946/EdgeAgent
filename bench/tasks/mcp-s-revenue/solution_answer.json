@@ -1,0 +1,1 @@
+{"answer": "12.4", "calls": [{"name": "mcp__stock__get_company_monthly_revenue", "arguments": {"code": "2317"}}]}

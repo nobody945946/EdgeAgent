@@ -169,5 +169,19 @@
   "vram_base_mib": 6000,
   "vram_slot_mib": 2000,
   "search_tools": true
+ },
+ "e4b-product-agent-lora": {
+  "_note": "e4b-product with the Agent adapter trained on the teacher's runs inside the framework (agent-fw1), loaded as the product loads one.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 98304,
+  "max_output_tokens": 8192,
+  "working_context_size": 98304,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "agent-fw1.q8_0.gguf"
  }
 }

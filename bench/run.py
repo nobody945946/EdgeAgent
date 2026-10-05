@@ -76,7 +76,9 @@ def code_mounts(bridge: Path | None = None,
     `bridge` overlays a variant of the product's agent_bridge.mjs."""
     mounts = [(product, "/opt/edgeagent/edge_agent", "ro"),
               (BENCH / "relay.py", "/opt/bench/relay.py", "ro"),
-              (BENCH / "agent_runner.py", "/opt/bench/agent_runner.py", "ro")]
+              (BENCH / "agent_runner.py", "/opt/bench/agent_runner.py", "ro"),
+              # Stand-in MCP servers (stock data, a drone) for tasks that enable them.
+              (BENCH / "mcp_eval", "/opt/bench/mcp", "ro")]
     if bridge is not None:
         mounts.append((bridge, "/opt/edgeagent/edge_agent/agent_bridge.mjs", "ro"))
     return mounts
@@ -134,9 +136,12 @@ class Server:
         self.port = port
         # Relative to the student models folder; teachers live next to it.
         model = (MODELS / config["model"]).resolve()
+        # An adapter (config "lora", next to the model) is loaded the way the
+        # product loads one: applied to every request.
         args = build_server_args(
             str(SERVER), model, port=port, context_size=config["context_size"],
             threads=8, gpu_layers=99, low_vram=config.get("low_vram", True),
+            lora_path=(MODELS / config["lora"]).resolve() if config.get("lora") else None,
         )
         # Bench-only: the dev box is shared and teachers are larger than its
         # 16 GiB lock limit, so the model is not locked in RAM here.
@@ -340,7 +345,9 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
             "scope": task.get("scope", "change"),
             "search_tools": config.get("search_tools", False),
             # The product's permission rules (bridge_rules); None = the UI default.
-            "permissions": config.get("permissions"),
+            # A task may set its own (an MCP task: no files, no shell, no web).
+            "permissions": task.get("permissions", config.get("permissions")),
+            "mcp_servers": task.get("mcp_servers"),
             "timeout_s": timeout}
     name = f"eab-{config_name}-{job}".replace("_", "-")[:120]
     command = sandbox(name, [(workspace, "/work", "rw"), (sock_dir, "/sock", "ro"),

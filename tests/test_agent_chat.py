@@ -1586,3 +1586,44 @@ def test_real_sdk_a_tool_that_changes_files_shows_its_plan_for_approval(tmp_path
     assert len(approvals) == 1 and approvals[0]["tool"] == "organize_folder"
     assert "相片.jpg" in approvals[0]["explain"] and "工具自己算出的計畫" in approvals[0]["explain_title"]
     assert (tmp_path / "下載" / "相片.jpg").is_file()
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_the_host_checks_cited_numbers_against_the_sources(tmp_path, repeating_model, monkeypatch):
+    """The program, not the model, checks the numbers an answer cites from
+    web_research (the owner's research rules): one that is not in its passage
+    is pointed out to whoever reads the answer."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Web(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            base = f"http://127.0.0.1:{self.server.server_address[1]}"
+            body = (f'<div class="result"><a class="result__a" href="{base}/rule">規則</a></div>'
+                    if self.path.startswith("/html/") else
+                    "<title>管理規則</title><p>無人機重量 250 公克以上要註冊，罰鍰 6000 元。</p>")
+            self.wfile.write(body.encode())
+
+        def log_message(self, *args):
+            pass
+
+    web = ThreadingHTTPServer(("127.0.0.1", 0), Web)
+    threading.Thread(target=web.serve_forever, daemon=True).start()
+    monkeypatch.setenv("EDGE_AGENT_SEARCH_URL", f"http://127.0.0.1:{web.server_address[1]}/html/")
+    monkeypatch.setenv("EDGE_AGENT_WEB_ALLOW_LOOPBACK", "1")
+    port, state = repeating_model
+    state["sequence"] = [("web_research", {"question": "無人機罰鍰多少", "queries": ["無人機 罰鍰"]})]
+    state["text"] = "沒註冊會罰 9000 元 [1]。"
+    chat = NativeChat(model_port=port)
+    try:
+        events = list(chat.stream_reply("web", "無人機沒註冊罰多少", agent=True, working_dir=tmp_path,
+                                        permissions={"edit": "deny", "shell": "deny", "web": "allow"}))
+    finally:
+        chat.close()
+        web.shutdown()
+    text = "".join(d["text"] for name, d in events if name == "delta")
+    assert "主機核對來源" in text and "9000" in text
+    assert events[-1][0] == "done" and events[-1][1]["source_problems"]
