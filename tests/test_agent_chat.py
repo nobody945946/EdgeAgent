@@ -1637,3 +1637,22 @@ def test_simplified_that_slips_through_is_shown_in_taiwan_traditional():
     pytest.importorskip("opencc")
     assert taiwan_traditional("这个软件已经安装好了") == "這個軟體已經安裝好了"
     assert taiwan_traditional("測試通過，檔案已存好") == "測試通過，檔案已存好"
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_searching_the_catalog_for_a_job_no_tool_does_stops(tmp_path, repeating_model):
+    """A model that learned to search first rewords a search for a job no
+    tool does (measured: 60 searches for a retry decorator). The answer says
+    there is none, and after four fruitless searches the fifth is refused."""
+    port, state = repeating_model
+    state["sequence"] = [("tool_search", {"query": "retry decorator implementation"})] * 7
+    chat = NativeChat(model_port=port)
+    try:
+        list(chat.stream_reply("search", "寫一個 retry decorator", agent=True, working_dir=tmp_path,
+                               permissions={"edit": "allow", "shell": "ask", "web": "deny"}))
+    finally:
+        chat.close()
+    results = [m for m in state["requests"][-1]["messages"] if m["role"] == "tool"]
+    texts = [json.dumps(m, ensure_ascii=False) for m in results]
+    assert all("has no tool for this" in text or "Nothing new" in text for text in texts[:4])
+    assert all("searched 4 times" in text for text in texts[4:])

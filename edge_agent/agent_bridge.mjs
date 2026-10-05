@@ -129,6 +129,9 @@ function policy(pi) {
   const repeats = new Map();
   // Code files changed since the last check that passed.
   const unverified = new Set();
+  // Catalog searches this turn that loaded nothing new (a small model that
+  // learned to search first can keep rewording a search for a job no tool does).
+  let fruitlessSearches = 0;
   // The passages web_research handed out this turn, numbered across searches,
   // so the host can check the answer's numbers against them.
   const researched = [];
@@ -282,10 +285,14 @@ function policy(pi) {
           all.map(tool => ({ name: tool.name, server: tool.namespace?.name })));
         const load = found.filter(name => !active.has(name));
         if (load.length) pi.setActiveTools([...active, ...load]);
+        else fruitlessSearches++;
         const describe = name => (all.find(tool => tool.name === name)?.description ?? '').trim().split(/\r?\n/)[0];
-        const text = found.length
+        const text = load.length
           ? 'These tools can be used from your next step:\n' + found.map(name => `- ${name}: ${describe(name)}`).join('\n')
-          : 'No matching tool. Try other words (Chinese or English), or do it with the tools you have.';
+          : found.length
+            ? `Nothing new: ${found.join(', ')} ${found.length > 1 ? 'are' : 'is'} already available to you. `
+              + 'The catalog has no other tool for this; use these or the tools you have.'
+            : 'The catalog has no tool for this. Do it with the tools you already have, or say what cannot be done.';
         return { content: [{ type: 'text', text }], details: { found } };
       },
     });
@@ -307,6 +314,7 @@ function policy(pi) {
   });
   pi.on('before_agent_start', event => {
     turnApproved = false; tainted = false; calls = 0; repeats.clear(); unverified.clear(); researched.length = 0;
+    fruitlessSearches = 0;
     remember(event.prompt);
     // The model cannot know the date and otherwise assumes one from its
     // training data. The date alone (no clock time) keeps the prompt prefix,
@@ -373,6 +381,10 @@ function policy(pi) {
   pi.on('tool_call', async (event, ctx) => {
     const { toolName, input } = event;
     if (++calls > 64) return stop(ctx, '本輪已執行 64 次工具操作；停止並保留進度，請縮小範圍或繼續下一輪。');
+    if (toolName === 'tool_search' && fruitlessSearches >= 4) {
+      return { block: true, reason: 'The catalog was searched 4 times this turn without finding a new tool: there is none '
+        + 'for this. Finish with the tools you have, or say what cannot be done.' };
+    }
     if (['edit', 'write', 'powershell', 'bash'].includes(toolName)) {
       const signature = JSON.stringify([toolName, input]);
       const count = (repeats.get(signature) ?? 0) + 1;
