@@ -1,6 +1,6 @@
 """The machine-code translator: each behaviour its Chinese states, executed in
 the unicorn emulator (x86-64 and ARM Thumb / Cortex-M). unicorn is a check-only
-dependency (pip install unicorn), not shipped with the product.
+dependency (the dev extra), not shipped with the product.
 """
 
 from __future__ import annotations

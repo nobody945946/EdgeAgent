@@ -10,7 +10,7 @@ requires-python = ">=3.12"
 dependencies = ["pypdf==6.19.0", "sqlglot==30.21.0", "pymavlink==2.4.50", "capstone==5.0.9"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.11"]
+dev = ["pytest>=8", "ruff>=0.11", "unicorn==2.1.4"]
 
 [project.scripts]
 edge-agent = "edge_agent.cli:main"

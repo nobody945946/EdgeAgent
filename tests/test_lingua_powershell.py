@@ -153,3 +153,11 @@ def test_unknown_is_said_not_guessed() -> None:
     assert "找不到名為「Not-A-Command-Here」" in text
     text = powershell.translate("if ($a) { Remove-Item x }").text()
     assert "if 條件判斷" in text and "不代表都會執行" in text and "會刪除：x" in text
+
+
+def test_windows_aliases() -> None:
+    # ls and rm are aliases only in Windows PowerShell; pwsh elsewhere runs the native programs.
+    if run("[Environment]::OSVersion.Platform -eq 'Win32NT'").strip() != "True":
+        pytest.skip("ls and rm are aliases only on Windows")
+    text = powershell.translate("ls -r *.log | rm -WhatIf").text()
+    assert "ls 是 Get-ChildItem 的別名" in text and "rm 是 Remove-Item 的別名" in text and "只是模擬" in text
