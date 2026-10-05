@@ -99,6 +99,8 @@ async function auditLive(){
   await cdp('Page.navigate',{url:appOrigin+'/'});await wait('document.readyState==="complete"&&!!modelState?.active_model');
   const original=await evaluate("fetch('/config').then(r=>r.json())");
   const workspace=resolve(folderFixture,'live-ui');await mkdir(workspace,{recursive:true});
+  const downloads=resolve(workspace,'downloads');await mkdir(downloads,{recursive:true});
+  await cdp('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:downloads});
   await writeFile(resolve(workspace,'probe.txt'),'UI_AUDIT_FIXTURE_42\n');
   let auditSession='';
   try{
@@ -125,6 +127,20 @@ async function auditLive(){
     await check('新對話及切回恢復草稿與 Workspace',async()=>{await fill('#input','UI_AUDIT_UNSENT_DRAFT');const id=await evaluate('session');await click('#new-thread');assert.notEqual(await evaluate('session'),id);const index=await evaluate(`[...threads.keys()].indexOf(${JSON.stringify(id)})+1`);await click('.thread:nth-child('+index+')');assert.equal(await evaluate('input.value'),'UI_AUDIT_UNSENT_DRAFT');assert.equal(await evaluate('cwd.value'),workspace);await fill('#input','')});
     await check('Agent 讀檔、工具結果與完成狀態',async()=>{await fill('#input','Use the read tool to read probe.txt. Return only its first line. Do not modify files.');await click('#send');await wait('!busy&&completedTurns>0',120000);assert(await evaluate('[...chat.querySelectorAll(".tool-card")].some(card=>card.querySelector("summary").textContent.includes("read")&&card.textContent.includes("UI_AUDIT_FIXTURE_42"))'))});
     await check('工具紀錄展開顯示參數與結果',async()=>{await click('.tool-card summary');assert(await evaluate('document.querySelector(".tool-card").open&&document.querySelectorAll(".tool-card pre").length>=2'))});
+    await check('目前合成測試對話實際匯出 TXT',async()=>{
+      const before=new Set(await readdir(downloads));await openMenu();await click('#export-chat');
+      let filename;
+      for(let index=0;index<100;index++){
+        filename=(await readdir(downloads)).find(name=>name.endsWith('.txt')&&!before.has(name));
+        if(filename)break;await new Promise(resolve=>setTimeout(resolve,100));
+      }
+      assert(filename,'TXT download completed');
+      const bytes=await readFile(resolve(downloads,filename));
+      assert.deepEqual([...bytes.subarray(0,3)],[0xef,0xbb,0xbf],'UTF-8 BOM');
+      const text=bytes.toString('utf8');
+      assert(text.includes('UI_AUDIT_FIXTURE_42')&&text.includes('【使用者】')&&text.includes('【工具】'),'current conversation and tool result exported');
+      assert(!text.includes('UI_AUDIT_UNSENT_DRAFT'),'unsent draft excluded');
+    });
     await check('修改審閱顯示真實空狀態',async()=>{await click('#review-toggle');assert(await evaluate('!review.hidden&&!document.querySelector("#review-empty").hidden'));await click('#review-close')});
     await check('一般設定按鈕實際儲存',async()=>{await openMenu();await click('#save');await wait('[...chat.querySelectorAll(".notice")].some(node=>node.textContent.includes("設定已儲存"))');const saved=await evaluate("fetch('/config').then(r=>r.json())");assert.equal(saved.agent,original.agent);assert.equal(saved.thinking_effort,original.thinking_effort)});
     await check('窄視窗側欄及更多操作可達',async()=>{await setViewport({width:360,height:640,deviceScaleFactor:1,mobile:true});await click('#nav-toggle');assert(await evaluate('document.body.classList.contains("nav-open")'));await click('#nav-close');await openMenu();assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));await click('#actions-menu>summary');await setViewport({width:1280,height:850,deviceScaleFactor:1,mobile:false})});
@@ -133,6 +149,7 @@ async function auditLive(){
     if(await evaluate('busy')){await click('#stop');await wait('!busy',30000)}
     if(auditSession)await evaluate(`modelPost('/chat/reset',{session_id:${JSON.stringify(auditSession)}})`);
     assert.deepEqual(await evaluate("fetch('/config').then(r=>r.json())"),original,'audit leaves user settings unchanged');
+    await cdp('Browser.setDownloadBehavior',{behavior:'default'});
   }
   const result={event:'live_ui_audit',passed:checks.filter(item=>item.status==='passed').length,total:checks.length,checks,untested:['模型實際下載及切換（保留正式租用）','麥克風錄音（headless 無真人音訊）','關閉正式服務（保留 SilentTalk）','Agent 寫檔與審閱差異（本輪只有唯讀工作）','工作佇列實際連續執行']};
   await writeFile('.test-tmp/edge-agent-live-ui-audit.json',JSON.stringify(result,null,2));
