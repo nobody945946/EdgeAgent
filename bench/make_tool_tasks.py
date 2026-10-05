@@ -613,6 +613,11 @@ def describe(url: str, workers: int, seed: int) -> None:
         except (OSError, ValueError, KeyError, TypeError):
             return False
         must = task["spec"].get("must_mention") or []
+        for m in must:
+            # A pattern quoted without its backslashes (JSON ate them) is put
+            # back exactly; anything else missing refuses the request.
+            if m not in text and "\\" in m and m.replace("\\", "") in text:
+                text = text.replace(m.replace("\\", ""), m)
         if not 4 <= len(text) <= 300 or not all(m in text for m in must) or any(
                 tool in text for tool in ("tool", "工具", "run_checks", "archive_files")):
             return False
