@@ -1371,6 +1371,7 @@ def test_approval_explains_a_powershell_command(tmp_path, monkeypatch):
     chat = RPCFixture([request, *ending()])
     name, data = next(chat.stream_reply("fixture", "fixture", working_dir=tmp_path))
     assert name == "approval" and data["explain"] == "影響：會刪除：x"
+    assert data["explain_title"].startswith("這個指令在做什麼")
     assert seen == {"command": "Remove-Item x", "cwd": str(tmp_path.resolve())}
 
     def broken(command, cwd=None, timeout=0):
@@ -1564,3 +1565,24 @@ def test_real_sdk_changed_code_without_a_passing_check_is_flagged(tmp_path, repe
         assert "未經驗證" not in text and events[-1][1]["unverified"] == []
     finally:
         chat.close()
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_a_tool_that_changes_files_shows_its_plan_for_approval(tmp_path, repeating_model):
+    """The owner approves what a ready-made tool will do, worked out by the
+    tool itself (its preview), and a denial leaves the files where they were."""
+    port, state = repeating_model
+    (tmp_path / "下載").mkdir()
+    (tmp_path / "下載" / "相片.jpg").write_bytes(bytes(10))
+    state["sequence"] = [("tool_search", {"query": "整理 資料夾 分類"}),
+                         ("organize_folder", {"folder": "下載"})]
+    chat = NativeChat(model_port=port)
+    try:
+        events = _permission_run(chat, tmp_path, {"edit": "ask", "shell": "ask", "web": "deny"},
+                                 approve=False, prompt="整理下載資料夾")
+    finally:
+        chat.close()
+    approvals = [data for name, data in events if name == "approval"]
+    assert len(approvals) == 1 and approvals[0]["tool"] == "organize_folder"
+    assert "相片.jpg" in approvals[0]["explain"] and "工具自己算出的計畫" in approvals[0]["explain_title"]
+    assert (tmp_path / "下載" / "相片.jpg").is_file()

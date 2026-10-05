@@ -57,7 +57,8 @@ def explain_approval(details: dict, cwd: Path) -> dict[str, str]:
     if details.get("tool") != "powershell" or not isinstance(command, str) or not command.strip():
         return {}
     try:
-        return {"explain": lingua_powershell.translate(command, cwd=str(cwd), timeout=20).text()}
+        return {"explain": lingua_powershell.translate(command, cwd=str(cwd), timeout=20).text(),
+                "explain_title": "這個指令在做什麼（PowerShell 自己解析的結果，不是模型猜的）"}
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return {"explain_error": f"無法翻譯這個指令：{exc}"}
 

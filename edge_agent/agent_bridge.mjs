@@ -401,7 +401,7 @@ function policy(pi) {
     const preview = toolboxByName.has(toolName) && toolboxByName.get(toolName).kind === 'change'
       ? await toolboxCall('preview', toolName, input).then(({ text }) => text, () => '') : '';
     const choice = await ctx.ui.select(JSON.stringify({ tool: toolName, arguments: input, after_web: tainted, explicit,
-      ...(preview ? { explain: preview } : {}) }),
+      ...(preview ? { explain: preview, explain_title: '這個工具會做什麼（工具自己算出的計畫，不是模型猜的）' } : {}) }),
       explicit ? ['Allow once', 'Deny'] : ['Allow this turn', 'Allow once', 'Deny'], { timeout: 300000 });
     // An explicit approval covers this one command only.
     if (choice === 'Allow this turn' && !explicit) turnApproved = true;
