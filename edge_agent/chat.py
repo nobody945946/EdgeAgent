@@ -15,6 +15,7 @@ import zipfile
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
 from uuid import uuid4
 
@@ -75,6 +76,32 @@ APPROVAL_TIMEOUT_SECONDS = 300
 # Said by the host, not the model, when code was changed and no check passed
 # afterwards: the model may still call the work done.
 UNVERIFIED_NOTICE = "\n\n（主機提醒：這輪改了 {files}，之後沒有通過的檢查，結果未經驗證。）"
+
+
+@cache
+def _converters() -> tuple[object, object] | None:
+    try:
+        # opencc-python-reimplemented: pure Python, installs as module `opencc`.
+        from opencc import OpenCC
+    except ImportError:
+        return None
+    return OpenCC("s2t"), OpenCC("s2twp")
+
+
+def taiwan_traditional(text: str) -> str:
+    """The last gate on what the Agent says (the owner: a safety net; the
+    prompt and training fix the model): Simplified characters that slipped
+    through, in Taiwan's forms. Text already in Traditional is left alone:
+    s2twp also swaps phrases and would turn 測試通過 into 測試透過."""
+    converters = _converters()
+    if converters is None or not text:
+        return text
+    characters, taiwan = converters
+    if str(characters.convert(text)) == text:  # type: ignore[attr-defined]
+        return text
+    return str(taiwan.convert(text))  # type: ignore[attr-defined]
+
+
 # The host's own check of an answer written from web_research: each cited
 # number against its passages and the sources behind it (web_tools.mjs).
 SOURCES_NOTICE = "\n\n（主機核對來源：{problems}。）"
@@ -559,6 +586,7 @@ class NativeChat:
             stop_reason = ""
             unverified: list[str] = []
             source_problems: list[str] = []
+            converted = 0
             steps = 0
             settled = False
             try:
@@ -663,7 +691,10 @@ class NativeChat:
                     if kind == "message_update":
                         update = event.get("assistantMessageEvent", {})
                         if update.get("type") == "text_delta":
-                            yield "delta", {"text": update.get("delta", "")}
+                            text = str(update.get("delta", ""))
+                            shown = taiwan_traditional(text)
+                            converted += shown != text
+                            yield "delta", {"text": shown}
                         elif update.get("type") == "thinking_start":
                             yield "status", {"message": "思考中…"}
                     elif kind == "message_end":
@@ -839,7 +870,9 @@ class NativeChat:
                     yield (
                         "done",
                         {"agent_steps": steps, "thinking_effort": thinking_effort,
-                         "unverified": unverified, "source_problems": source_problems},
+                         "unverified": unverified, "source_problems": source_problems,
+                         # How often the Simplified->Traditional gate fired (for the logs).
+                         "converted": converted},
                     )
             except (OSError, ValueError, TypeError, RuntimeError, TimeoutError) as exc:
                 # Do not leave an unobserved agent modifying files after a failed

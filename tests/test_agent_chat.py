@@ -1627,3 +1627,13 @@ def test_real_sdk_the_host_checks_cited_numbers_against_the_sources(tmp_path, re
     text = "".join(d["text"] for name, d in events if name == "delta")
     assert "主機核對來源" in text and "9000" in text
     assert events[-1][0] == "done" and events[-1][1]["source_problems"]
+
+
+def test_simplified_that_slips_through_is_shown_in_taiwan_traditional():
+    """The output's last gate: Simplified text is converted, Traditional
+    text is left exactly as it is (s2twp would rewrite 通過 as 透過)."""
+    from edge_agent.chat import taiwan_traditional
+
+    pytest.importorskip("opencc")
+    assert taiwan_traditional("这个软件已经安装好了") == "這個軟體已經安裝好了"
+    assert taiwan_traditional("測試通過，檔案已存好") == "測試通過，檔案已存好"
