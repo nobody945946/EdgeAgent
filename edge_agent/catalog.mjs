@@ -80,3 +80,18 @@ export function rank(query, tools, limit) {
   });
   return scored.sort((x, y) => y.score - x.score).slice(0, limit);
 }
+
+/** A server's tools come together: once one of them is found, the rest of
+ * that server's (when it has at most `cap`) are listed too. A query that only
+ * names the server (Chinese words against English tool descriptions) ties
+ * every tool of it, and a cut at the limit could drop the right one. */
+export function withServers(found, tools, cap = 12) {
+  const names = found.map(match => match.name);
+  const serverOf = name => tools.find(tool => tool.name === name)?.server;
+  for (const server of new Set(names.map(serverOf).filter(Boolean))) {
+    const members = tools.filter(tool => tool.server === server).map(tool => tool.name);
+    if (members.length > cap) continue;
+    for (const name of members) if (!names.includes(name)) names.push(name);
+  }
+  return names;
+}

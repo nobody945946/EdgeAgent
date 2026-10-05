@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { compactionSettings, searchHistory, historyReference } from './memory.mjs';
 import { webSearch, webFetch, webResearch, checkCitations, normalURL, urlsIn } from './web_tools.mjs';
 import { explicitApproval } from './shell_guard.mjs';
-import { rank, searchText } from './catalog.mjs';
+import { rank, searchText, withServers } from './catalog.mjs';
 
 const packageURL = new URL('../.runtime/pi/node_modules/@earendil-works/pi-coding-agent/dist/', import.meta.url);
 const sdk = await import(new URL('index.js', packageURL));
@@ -278,14 +278,15 @@ function policy(pi) {
           && (active.has(tool.name) || tool.exposure === 'deferred'));
         const documents = all.map(tool => ({ name: tool.name,
           text: searchText({ ...tool, keywords: toolboxByName.get(tool.name)?.keywords ?? OWN_KEYWORDS[tool.name] }) }));
-        const found = rank(params.query, documents, params.limit ?? 5);
-        const load = found.map(match => match.name).filter(name => !active.has(name));
+        const found = withServers(rank(params.query, documents, params.limit ?? 5),
+          all.map(tool => ({ name: tool.name, server: tool.namespace?.name })));
+        const load = found.filter(name => !active.has(name));
         if (load.length) pi.setActiveTools([...active, ...load]);
         const describe = name => (all.find(tool => tool.name === name)?.description ?? '').trim().split(/\r?\n/)[0];
         const text = found.length
-          ? 'These tools can be used from your next step:\n' + found.map(({ name }) => `- ${name}: ${describe(name)}`).join('\n')
+          ? 'These tools can be used from your next step:\n' + found.map(name => `- ${name}: ${describe(name)}`).join('\n')
           : 'No matching tool. Try other words (Chinese or English), or do it with the tools you have.';
-        return { content: [{ type: 'text', text }], details: { found: found.map(match => match.name) } };
+        return { content: [{ type: 'text', text }], details: { found } };
       },
     });
   }

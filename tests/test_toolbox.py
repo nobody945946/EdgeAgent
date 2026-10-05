@@ -816,3 +816,29 @@ def test_organize_into_the_folders_the_user_named(tmp_path):
     (d / "h.ttf").write_bytes(b"x")
     out = tool.run({"folder": "下載", "folders": ["圖片"]}, tmp_path)
     assert (d / "h.ttf").is_file() and "沒有適合" in out
+
+
+def test_a_servers_tools_are_listed_together():
+    """Chinese words that only name a server tie its English-described tools;
+    once one is found, the rest of that small server come along (catalog.mjs)."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    script = (
+        "import { rank, searchText, withServers } from './edge_agent/catalog.mjs';"
+        "const ns = { name: 'mcp__drone', description: '無人機：狀態、位置、起飛、降落' };"
+        "const tools = ['arm', 'land', 'return_to_launch', 'get_position', 'takeoff', 'get_status']"
+        ".map(n => ({ name: 'mcp__drone__' + n, description: n === 'get_status' ? 'Vehicle status: armed, flight mode, "
+        "battery voltage and percentage, GPS fix and satellites' : n, namespace: ns }));"
+        "const docs = tools.map(t => ({ name: t.name, text: searchText(t) }));"
+        "const found = rank('無人機電池狀態', docs, 5);"
+        "console.log(JSON.stringify([found.map(m => m.name), withServers(found, tools.map(t => ({ name: t.name, server: t.namespace.name })))]));"
+    )
+    out = subprocess.run([node, "--input-type=module", "-e", script], capture_output=True, text=True,
+                         cwd=Path(__file__).resolve().parents[1], check=True)
+    ranked, listed = json.loads(out.stdout)
+    assert "mcp__drone__get_status" not in ranked  # the tie the cut would lose
+    assert "mcp__drone__get_status" in listed and len(listed) == 6
