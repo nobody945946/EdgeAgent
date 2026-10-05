@@ -1146,6 +1146,10 @@ class Handler(BaseHTTPRequestHandler):
         mode = payload.get("mode", "work")
         if mode not in MODES:
             raise ValueError(f"mode must be one of {', '.join(MODES)}")
+        # A client can narrow one task to reading only (never widen it).
+        read_only = payload.get("read_only", False)
+        if not isinstance(read_only, bool):
+            raise TypeError("read_only must be a boolean")
         client = payload.get("client", "ui")
         profile = profile_for(self.core.config["permissions"], client)
         mcp_servers = servers_for(client, self.core.config["mcp_servers"])
@@ -1191,6 +1195,7 @@ class Handler(BaseHTTPRequestHandler):
                     mode=mode,
                     media=media,
                     permissions=bridge_rules(profile),
+                    read_only=read_only,
                     mcp_servers=mcp_servers,
                     record_folder=self.core.config["record_folder"]
                     if self.core.config["record_sessions"]

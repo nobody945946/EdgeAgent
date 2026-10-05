@@ -19,7 +19,12 @@ from pathlib import Path
 from uuid import uuid4
 
 from edge_agent.lingua import powershell as lingua_powershell
-from edge_agent.permissions import DEFAULT_PERMISSIONS, bridge_rules, routine_shell
+from edge_agent.permissions import (
+    DEFAULT_PERMISSIONS,
+    bridge_rules,
+    read_only_rules,
+    routine_shell,
+)
 from edge_agent.records import save_session
 from edge_agent.runtime import (
     CORE_ROOT,
@@ -506,10 +511,14 @@ class NativeChat:
         permissions: dict[str, str] | None = None,
         mcp_servers: dict[str, dict[str, object]] | None = None,
         record_folder: str | None = None,
+        read_only: bool = False,
     ) -> Iterator[tuple[str, dict[str, object]]]:
         """`mode` (MODES): the first message of a stretch in interview or
         discussion opens its skill; the messages that follow go as they are.
-        The interview has read-only tools so nothing is built before a spec."""
+        The interview has read-only tools so nothing is built before a spec.
+        `read_only`: a task the owner asked only to read. Inspection tools,
+        and in the shell only provable reads (read_only_rules); everything
+        else is refused without asking, whatever the model tries."""
         if mode not in MODES:
             raise ValueError("invalid mode")
         if thinking_effort not in THINKING_PROFILES:
@@ -568,7 +577,10 @@ class NativeChat:
                             "此對話包含目前模型不支援的附件；請換回支援的模型或開啟新對話。"
                         )
                 rules = permissions or bridge_rules(DEFAULT_PERMISSIONS["ui"])
-                self._start(session, cwd, thinking_effort, agent, mode == "interview", rules, mcp_servers or {})
+                if read_only:
+                    rules = read_only_rules(rules)
+                self._start(session, cwd, thinking_effort, agent,
+                            mode == "interview" or read_only, rules, mcp_servers or {})
                 prompt_id = uuid4().hex
                 opens = mode != "work" and session.opened_mode != mode
                 self._send(
@@ -644,17 +656,20 @@ class NativeChat:
                         details = json.loads(str(event.get("title", "{}")))
                         call_id = str(event["id"])
                         session.approvals[call_id] = event
-                        if (
-                            permissions and permissions.get("shell") == "routine"
-                            and details.get("tool") == "powershell"
-                            and not details.get("after_web")
-                            and details.get("explicit", "") in {"", "destructive"}
-                            and isinstance(details.get("arguments"), dict)
-                            and isinstance(details["arguments"].get("command"), str)
-                            and routine_shell(details["arguments"]["command"], cwd)
-                        ):
-                            self.resolve_approval(session_id, call_id, True, "once")
-                            continue
+                        shell = rules.get("shell")
+                        if details.get("tool") == "powershell" and shell in ("routine", "read"):
+                            provable = (
+                                not details.get("after_web")
+                                and details.get("explicit", "") in {"", "destructive"}
+                                and isinstance(details.get("arguments"), dict)
+                                and isinstance(details["arguments"].get("command"), str)
+                                and routine_shell(details["arguments"]["command"], cwd)
+                            )
+                            # "read" never asks the owner: a provable read
+                            # runs, anything else is refused.
+                            if provable or shell == "read":
+                                self.resolve_approval(session_id, call_id, provable, "once")
+                                continue
                         yield "approval", {"call_id": call_id, **details,
                                            **explain_approval(details, cwd)}
                     elif kind == "tool_execution_start":

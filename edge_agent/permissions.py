@@ -5,6 +5,9 @@ the Agent at all, what happens for file edits, shell commands and web access
 ("allow" runs it, "ask" waits for the owner's approval, "deny" refuses), and
 which workspace folders it may open. Shell also supports "routine": the host
 approves native literal reads, and asks for everything else through the bridge.
+A single task can be narrowed to read-only (read_only_rules): edits are
+refused and shell becomes "read", where the host runs the same provable reads
+and refuses everything else without asking.
 The bridge enforces the rules; after web
 content enters a turn, earlier "allow this turn" approvals lapse and
 "allow" for edits and shell becomes "ask", because a page can carry
@@ -101,6 +104,13 @@ def workspace_allowed(profile: dict[str, object], directory: Path) -> bool:
 def bridge_rules(profile: dict[str, object]) -> dict[str, str]:
     """The decisions the bridge enforces for one session."""
     return {category: str(profile[category]) for category in CATEGORIES}
+
+
+def read_only_rules(rules: dict[str, str]) -> dict[str, str]:
+    """Narrow a session's rules for a task the owner asked only to read: no
+    edits, and only provable reads in the shell (never asking). It cannot
+    widen anything: a refused shell stays refused, web stays as set."""
+    return {**rules, "edit": "deny", "shell": "deny" if rules["shell"] == "deny" else "read"}
 
 
 def routine_shell(command: str, directory: Path) -> bool:

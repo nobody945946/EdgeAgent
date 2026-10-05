@@ -296,7 +296,9 @@ function policy(pi) {
     if (toolName.startsWith('mcp__')) return mcpGate(toolName, input, ctx);
     const category = CATEGORY[toolName];
     if (!category) return;
-    if (category !== 'web' && (init.read_only || !init.agent)) return { block: true, reason: 'This mode allows inspection only.' };
+    // A read-only task keeps the shell, where the host lets only provable reads run.
+    const provableReads = category === 'shell' && rules.shell === 'read' && init.agent;
+    if (category !== 'web' && (init.read_only || !init.agent) && !provableReads) return { block: true, reason: 'This mode allows inspection only.' };
     if (toolName === 'edit' && input.edits?.every(edit => edit.oldText === edit.newText)) {
       return { block: true, reason: 'The replacement is identical to the original text. Make an actual correction or run validation.' };
     }
@@ -305,12 +307,15 @@ function policy(pi) {
     if (rule === 'allow' && tainted && category !== 'web') rule = 'ask';
     const explicit = CATEGORY[toolName] === 'shell' ? explicitApproval(input?.command)
       : toolName === 'web_fetch' && !seenURLs.has(normalURL(input?.url)) ? 'new_url' : '';
-    if (!explicit && (rule === 'allow' || turnApproved)) return;
+    // In a read-only task every command goes to the host's proof; no standing approval covers it.
+    if (!explicit && !provableReads && (rule === 'allow' || turnApproved)) return;
     const choice = await ctx.ui.select(JSON.stringify({ tool: toolName, arguments: input, after_web: tainted, explicit }),
       explicit ? ['Allow once', 'Deny'] : ['Allow this turn', 'Allow once', 'Deny'], { timeout: 300000 });
     // An explicit approval covers this one command only.
     if (choice === 'Allow this turn' && !explicit) turnApproved = true;
-    if (!choice || choice === 'Deny') return { block: true, reason: 'Operation was not approved.' };
+    if (!choice || choice === 'Deny') return { block: true, reason: provableReads
+      ? 'This task is read-only: only commands that provably just read inside the workspace run. Do not try another way to change anything; if the work needs more, say so in your answer.'
+      : 'Operation was not approved.' };
   });
   // MCP calls: the server's own hints (readOnlyHint, destructiveHint,
   // openWorldHint; missing ones mean "may change things, may reach out")
@@ -396,7 +401,7 @@ const mcpExtensions = mcpPrefixes.length ? [sdk.createToolSearchExtension(), sdk
 // With MCP the allowlist would also hide every server tool (their names are
 // known only once the servers connect), so the same set is the default and
 // every other built-in tool is excluded instead.
-const ownTools = [...(init.agent ? (init.read_only ? ['read', 'grep', 'find', 'ls', 'search_history']
+const ownTools = [...(init.agent ? (init.read_only ? ['read', 'grep', 'find', 'ls', 'search_history', ...(rules.shell === 'read' ? ['powershell'] : [])]
   : ['read', 'grep', 'find', 'ls', 'edit', 'write', 'powershell', 'search_history']) : ['search_history']),
   ...(init.agent && init.python ? ['translate_machine'] : []), ...webTools];
 const BUILTIN_TOOLS = ['read', 'bash', 'powershell', 'edit', 'write', 'grep', 'find', 'ls'];

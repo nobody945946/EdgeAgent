@@ -1049,6 +1049,44 @@ def test_real_sdk_tells_the_model_todays_date(tmp_path, repeating_model):
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_read_only_task_refuses_changes_without_asking(tmp_path, repeating_model):
+    """The owner asked only to read: whatever the model tries, nothing that
+    changes files runs and nothing asks the owner; provable reads still go
+    through the shell. Standing permissions ("allow") do not loosen it."""
+    port, state = repeating_model
+    for name in ("one.tmp", "two.tmp"):
+        (tmp_path / name).write_text("fixture")
+    count = 'Get-ChildItem -Path . -Filter "*.tmp" -File | Measure-Object | Select-Object -ExpandProperty Count'
+    state["sequence"] = [
+        ("powershell", {"command": count}),
+        ("powershell", {"command": "Set-Content -Path result.txt -Value 2"}),
+        ("powershell", {"command": "Get-ChildItem > result.txt"}),
+        ("powershell", {"command": "python -c \"open('result.txt','w')\""}),
+        ("write", {"path": "result.txt", "content": "2"}),
+        ("edit", {"path": "one.tmp", "edits": [{"oldText": "fixture", "newText": "changed"}]}),
+    ]
+    chat = NativeChat(model_port=port)
+    events = []
+    try:
+        for name, data in chat.stream_reply(
+            "read-only", "數一下有幾個 tmp 檔", agent=True, working_dir=tmp_path,
+            permissions={"edit": "allow", "shell": "allow", "web": "deny"}, read_only=True,
+        ):
+            events.append((name, data))
+    finally:
+        chat.close()
+    assert not any(name == "approval" for name, _ in events)
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["one.tmp", "two.tmp"]
+    assert (tmp_path / "one.tmp").read_text() == "fixture"
+    tools = [t["function"]["name"] for t in state["requests"][0].get("tools", [])]
+    assert "powershell" in tools and "write" not in tools and "edit" not in tools
+    results = [m for m in state["requests"][-1]["messages"] if m["role"] == "tool"]
+    refused = [m for m in results if "read-only" in json.dumps(m) or "inspection only" in json.dumps(m)]
+    assert "This task is read-only" not in json.dumps(results[0])
+    assert len(refused) == 3  # the three shell changes; write and edit are not even offered
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
 def test_real_sdk_denied_edits_never_reach_disk_or_ask(tmp_path, repeating_model):
     port, state = repeating_model
     state["sequence"] = [("write", {"path": "new.txt", "content": "x"})]

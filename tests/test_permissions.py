@@ -7,6 +7,7 @@ from edge_agent.permissions import (
     DEFAULT_PERMISSIONS,
     bridge_rules,
     profile_for,
+    read_only_rules,
     routine_shell,
     validate_permissions,
     workspace_allowed,
@@ -114,3 +115,12 @@ def test_routine_shell_uses_native_syntax_and_workspace_scope(
     tmp_path, command, expected
 ):
     assert routine_shell(command, tmp_path) is expected
+
+
+def test_read_only_task_narrows_but_never_widens():
+    assert read_only_rules({"edit": "allow", "shell": "allow", "web": "allow"}) == {
+        "edit": "deny", "shell": "read", "web": "allow"}
+    assert read_only_rules({"edit": "ask", "shell": "routine", "web": "deny"}) == {
+        "edit": "deny", "shell": "read", "web": "deny"}
+    assert read_only_rules({"edit": "deny", "shell": "deny", "web": "ask"}) == {
+        "edit": "deny", "shell": "deny", "web": "ask"}
