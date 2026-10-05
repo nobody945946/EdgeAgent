@@ -113,3 +113,14 @@ SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸�
 `tests/browser_check.mjs` 使用真實 Edge／CDP 驗證 UI，不保存使用者對話。修改應在既有 owner 重寫、同步呼叫端與測試，刪除被取代的路徑；不讓 UI 補償引擎缺陷，也不增加第二套部署或模型專用流程。
 
 `python -m tests.windows_check --inference-port 18090` 可使用暫存設定啟動真正服務、驗證清理，避開已被其他程式占用的推論埠。測試指示只透過環境變數傳入記憶體：`EDGE_AGENT_WEB_PROMPT` 要求搜尋及讀網頁，`EDGE_AGENT_SEARCH_PROMPT` 要求 grep/find；`EDGE_AGENT_ROLE_PROMPT` 配合 `EDGE_AGENT_READ_PROMPT` 測量 8K／16K／32K 共用 slot 的並行交談與讀檔。runner 確認工具及完成事件，只輸出事件和數字。`--browser` 會自己用暫存 profile 開一個隱藏的 Edge（CDP 9223，該埠被占用就拒跑），跑 `tests/browser_check.mjs`，結束時用自己的 PID 關掉它，profile 隨暫存目錄刪除。
+
+## 授權
+
+SilentTalk 與 EdgeAgent 以 [PolyForm Strict License 1.0.0](LICENSE) 授權，著作權屬於 nobody945946。以下是白話摘要，實際以英文條文為準：
+
+- **可以**：個人、非商業的使用，例如自己玩、學習、研究、興趣專案；學校、公益團體、研究與政府機構也可以使用。
+- **不可以**：重新散布或轉載（想分享請給[官方下載頁](https://github.com/nobody945946/SilentTalk-download/releases/latest)的連結）；修改後發布或做成衍生作品；用於商業目的。
+- **免責**：在法律允許的範圍內，軟體照現狀提供，不做任何保證；使用造成的損失（例如 Agent 改動或刪除了檔案），作者不負責。
+- **違反時**：收到書面通知後 32 天內改正並補救，可以繼續使用；否則授權終止。
+
+這份授權只涵蓋 nobody945946 撰寫的程式。`edge_agent/skills/grill-me` 改寫自 [mattpocock/skills](https://github.com/mattpocock/skills)，依其 MIT 授權（同資料夾的 `LICENSE`）。安裝時下載的 Python 與 Node 套件、推論引擎、語音模型與語言模型，各自依原本的授權條款，不在這份授權範圍內。

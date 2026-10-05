@@ -17,7 +17,8 @@ def test_players_get_the_package_and_installer_but_not_the_developers_files(tmp_
     names = set(zipfile.ZipFile(tmp_path / "a.zip").namelist())
     assert result["files"] == len(names)
     for needed in ("scripts/bootstrap.ps1", "pyproject.toml", "開啟 EdgeAgent.cmd", "edge_agent/web.py",
-                   "edge_agent/skills/discussion/SKILL.md", "edge_agent/lingua/regex.py", "README.md"):
+                   "edge_agent/skills/discussion/SKILL.md", "edge_agent/lingua/regex.py", "README.md",
+                   "edge_agent/skills/grill-me/LICENSE", "LICENSE"):
         assert needed in names, needed
     assert not any(n.startswith(("bench/", "scripts/windows-ai-maintenance/")) for n in names)
     assert "AGENTS.md" not in names

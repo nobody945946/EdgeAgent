@@ -19,7 +19,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TOP_FILES = {"README.md", "VALIDATION.md", "pyproject.toml", ".gitignore", ".gitattributes", "開啟 EdgeAgent.cmd"}
+TOP_FILES = {"LICENSE", "README.md", "VALIDATION.md", "pyproject.toml", ".gitignore", ".gitattributes", "開啟 EdgeAgent.cmd"}
 TREES = ("edge_agent/", "tests/")
 # Fixed time for every entry so a commit always packs to the same bytes.
 STAMP = (2020, 1, 1, 0, 0, 0)
