@@ -1,4 +1,4 @@
-// Stand-in MCP servers for the tool-use eval (bench/mcp_eval.py), over stdio:
+// Stand-in MCP servers for the bench mcp-* tasks (in the sandbox), over stdio:
 // "stock" with the 11 TWStockMCPServer tools the laptop picked, with the real
 // server's own names, Chinese descriptions and input schemas (twstock_tools.json,
 // from twjackysu/TWStockMCPServer 8857b2e, MIT; no hints, like the real one)

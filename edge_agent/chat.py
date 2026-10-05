@@ -215,7 +215,7 @@ class NativeChat:
         self.model = ""
         self.slot_id: int | None = 0
         # List the enabled MCP servers in the system prompt, so a small model
-        # knows tool_search has something to find (measured by bench/mcp_eval.py).
+        # knows tool_search has something to find (measured by the bench mcp-* tasks).
         self.mcp_overview = True
         self.lora_enabled = False
         self.capabilities = {"vision": False, "audio": False}

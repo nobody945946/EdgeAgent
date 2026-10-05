@@ -9,8 +9,9 @@ whose JSON files this script reads; nothing here trains anything.
 
 The model sees exactly what the product sends: the request Pi builds in
 interview mode (system prompt, tools, the skill block) is captured once from
-the real bridge with a fake model server that never calls a tool. Tool calls
-during the eval run against an in-memory fake workspace, never the disk.
+the real bridge, in the bench sandbox (dev-box rule 2), with a fake model
+server that never calls a tool. Tool calls during the eval run against an
+in-memory fake workspace, never the disk.
 
     python bench/grill_eval.py capture --out RUN
     python bench/grill_eval.py ask RUN --model PATH.gguf --name e4b
@@ -23,6 +24,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import os
 import re
 import subprocess
 import sys
@@ -54,9 +56,22 @@ def scenarios() -> list[dict]:
 
 def capture(out: Path, *, mode: str = "interview", thinking: str = "off",
             name: str = "pi-request.json") -> None:
-    """Pi's first request (a mode, at a thinking level), from the real bridge."""
-    sys.path.insert(0, str(ROOT))
+    """Pi's first request (a mode, at a thinking level), from the real bridge,
+    which runs only inside the bench sandbox."""
+    if os.environ.get("BENCH_IN_SANDBOX") != "1":
+        sys.path.insert(0, str(ROOT / "bench"))
+        import run
+
+        out.mkdir(parents=True, exist_ok=True)
+        subprocess.run(run.sandbox(
+            "eab-capture", [*run.code_mounts(), (Path(__file__).resolve(), "/opt/bench/grill_eval.py", "ro"),
+                            (out.resolve(), "/out", "rw")], {"BENCH_IN_SANDBOX": "1"},
+            ["python", "/opt/bench/grill_eval.py", "capture", "--out", "/out", "--mode", mode,
+             "--thinking", thinking, "--name", name]), check=True)
+        return
     from edge_agent.chat import NativeChat
+
+    product = Path(sys.modules["edge_agent.chat"].__file__).resolve().parents[1]
 
     seen: list[dict] = []
 
@@ -77,7 +92,7 @@ def capture(out: Path, *, mode: str = "interview", thinking: str = "off",
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Model)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    chat = NativeChat(model_port=server.server_port)
+    chat = NativeChat(model_port=server.server_port, core_dir=product)
     try:
         with tempfile.TemporaryDirectory() as tmp:
             for _ in chat.stream_reply("capture", PLACEHOLDER, agent=True, working_dir=Path(tmp),
@@ -85,7 +100,7 @@ def capture(out: Path, *, mode: str = "interview", thinking: str = "off",
                 pass
             text = json.dumps(seen[0], ensure_ascii=False)
             text = text.replace(str(Path(tmp).resolve()), CWD_PLACEHOLDER)
-            text = text.replace(str(ROOT), SKILL_HOME.replace("\\", "\\\\"))
+            text = text.replace(str(product), SKILL_HOME.replace("\\", "\\\\"))
     finally:
         chat.close()
         server.shutdown()
@@ -482,6 +497,9 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("capture")
     p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--mode", default="interview")
+    p.add_argument("--thinking", default="off")
+    p.add_argument("--name", default="pi-request.json")
     p = sub.add_parser("ask")
     p.add_argument("run", type=Path)
     p.add_argument("--model", type=Path, required=True)
@@ -505,7 +523,7 @@ def main() -> None:
         p.add_argument("--round", type=int, required=True)
     args = parser.parse_args()
     if args.cmd == "capture":
-        capture(args.out)
+        capture(args.out, mode=args.mode, thinking=args.thinking, name=args.name)
     elif args.cmd == "ask":
         ask(args.run, args.model, args.name, args.ctx, args.ngl, args.skill, args.lang)
     elif args.cmd == "sim-input":
