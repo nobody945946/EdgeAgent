@@ -5,7 +5,7 @@ import io
 import json
 import os
 import zipfile
-from datetime import UTC
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -1029,6 +1029,23 @@ def test_real_sdk_search_tools_on_windows(tmp_path, repeating_model, tool, argum
         assert not any(name == "approval" for name, _ in events)
     finally:
         chat.close()
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_tells_the_model_todays_date(tmp_path, repeating_model):
+    """The host states the date and time zone, so the model never assumes one
+    from its training data."""
+    port, state = repeating_model
+    state["answer"] = True
+    chat = NativeChat(model_port=port)
+    try:
+        _permission_run(chat, tmp_path, {"edit": "ask", "shell": "ask", "web": "deny"}, prompt="今天幾號？")
+    finally:
+        chat.close()
+    now = datetime.now().astimezone()
+    system = json.dumps(state["requests"][0]["messages"][0], ensure_ascii=False)
+    assert state["requests"][0]["messages"][0]["role"] == "system"
+    assert f"Today is {now:%Y-%m-%d} ({now:%A}), time zone " in system
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")

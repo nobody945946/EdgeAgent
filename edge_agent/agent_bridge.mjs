@@ -83,6 +83,18 @@ const mcpServerOf = toolName => {
   return found ? { name: found[1], ...mcpServers[found[1]] } : null;
 };
 
+// Today's date in this computer's time zone, e.g. "Today is 2026-10-05
+// (Monday), time zone Asia/Taipei (UTC+08:00). ..."
+function today(now = new Date()) {
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  const parts = options => Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: zone, ...options })
+    .formatToParts(now).map(({ type, value }) => [type, value]));
+  const { year, month, day, weekday } = parts({ year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long' });
+  const offset = parts({ timeZoneName: 'longOffset' }).timeZoneName.replace('GMT', 'UTC');
+  return `Today is ${year}-${month}-${day} (${weekday}), time zone ${zone} (${offset === 'UTC' ? 'UTC+00:00' : offset}). `
+    + 'Use this date for anything time-sensitive; never assume a date from training data.';
+}
+
 function policy(pi) {
   let turnApproved = false;
   // Set once web content enters the turn: a page can carry instructions, so
@@ -206,6 +218,10 @@ function policy(pi) {
   });
   pi.on('before_agent_start', event => {
     turnApproved = false; tainted = false; calls = 0; repeats.clear(); remember(event.prompt);
+    // The model cannot know the date and otherwise assumes one from its
+    // training data. The date alone (no clock time) keeps the prompt prefix,
+    // and llama.cpp's cache, unchanged until the day turns.
+    event.systemPromptOptions.sections = { ...event.systemPromptOptions.sections, today: today() };
   });
   pi.on('before_provider_request', (event, ctx) => {
     const payload = { ...event.payload, cache_prompt: true, ...(init.agent ? { temperature: 0.2 } : {}) };
