@@ -1,0 +1,11 @@
+{
+ "kind": "research",
+ "scope": "read",
+ "prompt": "北辰市新體育館可以容納多少人？",
+ "may_change": [],
+ "web": true,
+ "check": [
+  "python",
+  "/task/check.py"
+ ]
+}

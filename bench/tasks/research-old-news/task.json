@@ -1,0 +1,11 @@
+{
+ "kind": "research",
+ "scope": "read",
+ "prompt": "北辰捷運現在單程票最低多少錢？",
+ "may_change": [],
+ "web": true,
+ "check": [
+  "python",
+  "/task/check.py"
+ ]
+}

@@ -26,6 +26,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -51,9 +52,11 @@ DECOY = Path.home() / "edgeagent-bench-decoy"
 
 
 def sandbox(name: str, mounts: list[tuple[Path, str, str]], env: dict[str, str],
-            command: list[str], *, memory: str = "6g", image: str = IMAGE) -> list[str]:
+            command: list[str], *, memory: str = "6g", image: str = IMAGE,
+            hosts: tuple[str, ...] = ()) -> list[str]:
     """The one docker command line for agent and grader: no network, read-only
-    root, no capabilities, unprivileged user, explicit mounts only."""
+    root, no capabilities, unprivileged user, explicit mounts only. `hosts`
+    are names that resolve to the sandbox's own loopback (a stand-in web)."""
     args = ["docker", "run", "--rm", "--name", name, "--network", "none", "--read-only",
             "--tmpfs", "/tmp:rw,exec,size=2g,mode=1777",
             "--tmpfs", "/home/bench:rw,size=512m,mode=1777",
@@ -64,6 +67,8 @@ def sandbox(name: str, mounts: list[tuple[Path, str, str]], env: dict[str, str],
             "-e", "PYTHONPATH=/opt/edgeagent", "-w", "/work"]
     for source, target, mode in mounts:
         args += ["-v", f"{source}:{target}:{mode}"]
+    for host in hosts:
+        args += ["--add-host", f"{host}:127.0.0.1"]
     for key, value in env.items():
         args += ["-e", f"{key}={value}"]
     return [*args, image, *command]
@@ -350,11 +355,14 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
             "mcp_servers": task.get("mcp_servers"),
             "timeout_s": timeout}
     name = f"eab-{config_name}-{job}".replace("_", "-")[:120]
+    mounts, env, hosts = web_fixture(task_dir, task)
     command = sandbox(name, [(workspace, "/work", "rw"), (sock_dir, "/sock", "ro"),
-                             *code_mounts(bridge, product)],
-                      {"BENCH_SPEC": json.dumps(spec, ensure_ascii=False)},
-                      ["python", "/opt/bench/agent_runner.py"],
-                      image=task.get("image", IMAGE))
+                             *code_mounts(bridge, product), *mounts],
+                      {"BENCH_SPEC": json.dumps(spec, ensure_ascii=False), **env},
+                      ["sh", "-c", "python /opt/bench/web_fixture.py /web > /tmp/web.log 2>&1 & "
+                       "sleep 1; exec python /opt/bench/agent_runner.py"] if hosts
+                      else ["python", "/opt/bench/agent_runner.py"],
+                      image=task.get("image", IMAGE), hosts=hosts)
     started = time.monotonic()
     try:
         agent = subprocess.run(command, capture_output=True, text=True, timeout=timeout + 180)
@@ -381,6 +389,18 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
     return {"task": task_dir.name, "kind": task.get("kind", ""), "rep": rep,
             "config": config_name, "wall": wall, **result, "grade": grade,
             "passed": bool(grade.get("passed"))}
+
+
+def web_fixture(task_dir: Path, task: dict) -> tuple[list, dict[str, str], tuple[str, ...]]:
+    """A research task's stand-in web (bench/web_fixture.py): its pages (only
+    web/, never the task's check), the product's own search and loopback
+    seams pointed at it, and the pages' host names mapped to loopback."""
+    if not task.get("web"):
+        return [], {}, ()
+    pages = json.loads((task_dir / "web" / "pages.json").read_text(encoding="utf-8"))
+    hosts = tuple(sorted({urllib.parse.urlsplit(page["url"]).hostname for page in pages}))
+    return ([(task_dir / "web", "/web", "ro"), (BENCH / "web_fixture.py", "/opt/bench/web_fixture.py", "ro")],
+            {"EDGE_AGENT_SEARCH_URL": "http://127.0.0.1:8080/html/", "EDGE_AGENT_WEB_ALLOW_LOOPBACK": "1"}, hosts)
 
 
 def containment(run_dir: Path) -> None:

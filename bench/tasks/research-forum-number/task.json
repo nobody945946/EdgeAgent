@@ -1,0 +1,11 @@
+{
+ "kind": "research",
+ "scope": "public",
+ "prompt": "北辰市的電動機車補助一台多少錢？",
+ "may_change": [],
+ "web": true,
+ "check": [
+  "python",
+  "/task/check.py"
+ ]
+}

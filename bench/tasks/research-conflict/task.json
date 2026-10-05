@@ -1,0 +1,11 @@
+{
+ "kind": "research",
+ "scope": "read",
+ "prompt": "北辰市去年的觀光人次是多少？",
+ "may_change": [],
+ "web": true,
+ "check": [
+  "python",
+  "/task/check.py"
+ ]
+}

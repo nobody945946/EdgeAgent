@@ -1,0 +1,11 @@
+{
+ "kind": "research",
+ "scope": "read",
+ "prompt": "北辰市垃圾車晚上幾點來收？",
+ "may_change": [],
+ "web": true,
+ "check": [
+  "python",
+  "/task/check.py"
+ ]
+}

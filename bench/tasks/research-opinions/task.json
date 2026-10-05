@@ -1,0 +1,11 @@
+{
+ "kind": "research",
+ "scope": "read",
+ "prompt": "網友都怎麼評價北辰市的新圖書館？我想聽聽大家的看法。",
+ "may_change": [],
+ "web": true,
+ "check": [
+  "python",
+  "/task/check.py"
+ ]
+}
