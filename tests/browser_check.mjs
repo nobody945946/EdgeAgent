@@ -223,8 +223,16 @@ try {
       assert(await evaluate('document.querySelector(".approval-card:last-child").textContent.includes("讀過網頁之後的操作")'));
       await click('.approval-card:last-child button:last-child');await evaluate('window.__approvalPromise');
     }
+    // A shell command's approval shows EdgeAgent's own reading of it (edge_agent/lingua), or why not.
+    await evaluate(`window.__approvalPromise=approve({tool:'powershell',call_id:'fixture',arguments:{command:'Remove-Item x'},explain:'影響：會刪除：x'});true`);
+    assert(await evaluate('document.querySelector(".approval-card:last-child details[open] summary").textContent.includes("這個指令在做什麼")'),'approval explains the command');
+    assert(await evaluate('document.querySelector(".approval-card:last-child details pre").textContent==="影響：會刪除：x"'),'explanation shown as it is');
+    await click('.approval-card:last-child button:last-child');await evaluate('window.__approvalPromise');
+    await evaluate(`window.__approvalPromise=approve({tool:'powershell',call_id:'fixture',arguments:{command:'x'},explain_error:'無法翻譯這個指令：找不到 PowerShell'});true`);
+    assert(await evaluate('!document.querySelector(".approval-card:last-child details")&&document.querySelector(".approval-card:last-child").textContent.includes("無法翻譯這個指令")'),'a failed explanation is only a note');
+    await click('.approval-card:last-child button:last-child');await evaluate('window.__approvalPromise');
   }finally{await evaluate('window.fetch=window.__approvalFetch;delete window.__approvalFetch;document.querySelectorAll(".approval-card").forEach(node=>node.remove())')}
-  console.log('PASS: permission profile persistence, eight viewports, explicit single approvals and web reminder');
+  console.log('PASS: permission profile persistence, eight viewports, explicit single approvals, web reminder, command explanations');
   await click('#new-thread');
   await wait('document.querySelectorAll(".thread").length===2');
   await click('.thread');
