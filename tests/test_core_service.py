@@ -243,6 +243,21 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
     assert manager.config_path.read_bytes() == saved
 
 
+def test_a_lease_brings_the_bases_projector_kept_off_the_gpu(tmp_path, monkeypatch):
+    """Images posted in a chat reach the Agent during a lease (OCR)."""
+    manager = service.EdgeAgent(tmp_path)
+    _lease_fixture(manager, monkeypatch, tmp_path, 131072, 131072)
+    projector = tmp_path / "mmproj-fixture.gguf"
+    monkeypatch.setattr(service, "ensure_projector", lambda path, architecture: projector)
+    manager.switch(
+        "character", 123,
+        {"model": "base.gguf", "lora": "", "port": 18088, "context_size": 32768},
+    )
+    preset = (tmp_path / ".runtime/models.ini").read_text()
+    assert f"mmproj = {projector.as_posix()}" in preset
+    assert "no-mmproj-offload = true" in preset
+
+
 def test_a_pool_the_character_fills_leases_without_the_agent(tmp_path, monkeypatch):
     """A 16K setting leaves the Agent nothing once the character's 32K is
     reserved: the character still gets its part, the Agent waits."""

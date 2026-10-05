@@ -1,8 +1,8 @@
 // Pi owns agent execution, tools, compaction and recovery. This host only
 // supplies the local model, RAM storage and the application's approval policy.
-import { realpathSync, existsSync } from 'node:fs';
-import { devNull } from 'node:os';
-import { dirname, resolve, relative, isAbsolute } from 'node:path';
+import { realpathSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { devNull, tmpdir } from 'node:os';
+import { dirname, resolve, relative, isAbsolute, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
@@ -70,8 +70,10 @@ const rules = init.permissions ?? { edit: 'ask', shell: 'ask', web: 'allow' };
 const CATEGORY = { edit: 'edit', write: 'edit', powershell: 'shell', bash: 'shell',
   web_search: 'web', web_fetch: 'web', web_research: 'web' };
 const webTools = rules.web === 'deny' ? [] : ['web_research', 'web_search', 'web_fetch'];
-// A public lookup (scope "public"): the web tools alone, nothing of this
-// computer's and nothing that would ask the owner.
+// A public task (scope "public", anyone in a chat may ask): what is in the
+// conversation (its attachments arrive with the prompt) and the public web,
+// with the web tools and the translators that work on given text alone;
+// nothing of this computer's, and nothing that would ask the owner.
 const publicOnly = init.public === true;
 // MCP servers the owner enabled for this client (edge_agent/mcp.py). Their
 // tools are deferred: the model sees tool_search until it looks them up.
@@ -190,8 +192,11 @@ function policy(pi) {
         const args = ['-m', 'edge_agent.lingua', params.kind];
         for (const key of ['flavor', 'dialect', 'arch']) if (params[key]) args.push(`--${key}`, params[key]);
         if (params.samples?.length) args.push('--samples', JSON.stringify(params.samples));
+        // The translators work on the given text alone; a public lookup runs
+        // them in an empty folder, away from the workspace.
+        const cwd = publicOnly ? mkdtempSync(join(tmpdir(), 'edgeagent-public-')) : root;
         const text = await new Promise((done, fail) => {
-          const child = spawn(init.python, args, { cwd: root, env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+          const child = spawn(init.python, args, { cwd, env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
             signal, timeout: 60_000 });
           let out = '';
           child.stdout.on('data', chunk => { out += chunk; });
@@ -199,7 +204,7 @@ function policy(pi) {
           child.on('error', fail);
           child.on('close', () => done(out.trim() || '無法翻譯：沒有輸出'));
           child.stdin.end(params.text);
-        });
+        }).finally(() => { if (cwd !== root) rmSync(cwd, { recursive: true, force: true }); });
         return { content: [{ type: 'text', text }], details: {} };
       },
     });
@@ -409,7 +414,7 @@ const mcpExtensions = mcpPrefixes.length ? [sdk.createToolSearchExtension(), sdk
 // With MCP the allowlist would also hide every server tool (their names are
 // known only once the servers connect), so the same set is the default and
 // every other built-in tool is excluded instead.
-const ownTools = publicOnly ? [...webTools] : [...(init.agent ? (init.read_only ? ['read', 'grep', 'find', 'ls', 'search_history', ...(rules.shell === 'read' ? ['powershell'] : [])]
+const ownTools = publicOnly ? [...webTools, ...(init.python ? ['translate_machine'] : [])] : [...(init.agent ? (init.read_only ? ['read', 'grep', 'find', 'ls', 'search_history', ...(rules.shell === 'read' ? ['powershell'] : [])]
   : ['read', 'grep', 'find', 'ls', 'edit', 'write', 'powershell', 'search_history']) : ['search_history']),
   ...(init.agent && init.python ? ['translate_machine'] : []), ...webTools];
 const BUILTIN_TOOLS = ['read', 'bash', 'powershell', 'edit', 'write', 'grep', 'find', 'ls'];

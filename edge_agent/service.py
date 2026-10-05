@@ -646,8 +646,11 @@ class EdgeAgent:
             port = self._bounded_int(character, "port", 1_024, 65_535)
             if port in (CONTROL_PORT, GENERAL_PORT):
                 raise ValueError("character port conflicts with EdgeAgent")
-            # Character leases continue to use their existing text-only contract.
-            projector_path = None
+            # The Agent shares the lease and reads the images people post in a
+            # chat (the owner, 2026-10-05: OCR in chat), so the leased base
+            # brings its own pinned projector (E4B: about 0.55 GB of RAM with
+            # low VRAM, which keeps it off the GPU).
+            projector_path = ensure_projector(model_path, str(metadata["architecture"]))
         else:
             raise ValueError(f"unknown EdgeAgent mode: {mode}")
 

@@ -1091,8 +1091,8 @@ def test_real_sdk_read_only_task_refuses_changes_without_asking(tmp_path, repeat
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
 def test_real_sdk_public_lookup_has_the_web_alone_and_never_asks(tmp_path, repeating_model):
-    """A lookup anyone may ask for by voice: only the web tools are offered,
-    files and commands are out of reach, an address the model built is
+    """A task anyone in a chat may ask for: only the web tools and the
+    translators are offered, files and commands are out of reach, an address the model built is
     refused instead of asking the owner, and so is web the owner set to ask."""
     port, state = repeating_model
     (tmp_path / "private.txt").write_text("PRIVATE-CONTENT-7f3")
@@ -1113,7 +1113,8 @@ def test_real_sdk_public_lookup_has_the_web_alone_and_never_asks(tmp_path, repea
             ):
                 events.append((name, data))
             tools = sorted(t["function"]["name"] for t in state["requests"][0].get("tools", []))
-            assert tools == ["web_fetch", "web_research", "web_search"]
+            # The web, and the translators that work on given text alone.
+            assert tools == ["translate_machine", "web_fetch", "web_research", "web_search"]
             results = json.dumps([m for m in state["requests"][-1]["messages"] if m["role"] == "tool"])
             assert "Tool read not found" in results and "Tool powershell not found" in results
             assert "public lookup" in results
