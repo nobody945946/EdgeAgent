@@ -670,6 +670,9 @@ def test_real_sdk_compacts_at_working_target_and_retains_ram_archive(
     port, state = repeating_model
     state["answer"] = True
     chat = NativeChat(model_port=port)
+    # An owner who trades history for faster prompts: compaction at 32K of a
+    # 128K window (by default the target is the whole window).
+    chat.configure_context(131072, working_context_size=32768)
     try:
         assert (
             list(

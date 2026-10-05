@@ -16,17 +16,17 @@ EdgeAgent 是可換模型的 Windows 本機編程 Agent。開啟專案後，Agen
 
 附件大小上限不代表任何長度的媒體都能放進模型 context；長音訊、圖片與對話都會使用輸入空間。
 
-預設模型為 `Qwen3.5-4B-Q4_K_M.gguf`、131,072 token（128K）context、thinking off，單次輸出上限預設 8,192 token。8 GB RAM／RTX 3050 Ti 4 GB 筆電已實際載入此容量，引擎回報 131,072；q8 KV cache、GPU 層數 99，載入後整機顯存為 3,872 MiB。一次小型修碼與驗證流程在 75.09 秒完成，獨立 pytest 通過，測試檔未修改。大型專案與填滿 100K 輸入的能力尚未建立；完整證據見 [VALIDATION.md](VALIDATION.md)。
+預設模型為 `gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf`（機魂的基底，和 SilentTalk 的角色同一個模型）、131,072 token（128K，E4B 的上限）context、thinking off，單次輸出上限預設 8,192 token。`Qwen3.5-4B-Q4_K_M.gguf` 也支援（考場寫程式較好），從模型頁下載後選用。開發機實測（RTX 3090，q8 KV）：E4B 128K 全放 GPU 約 4.5 GB，筆電的 4 GB 放不下，靠下面的自動分配把一部分層放到 CPU；Qwen3.5-4B 128K 要 5.7 GB。較早的 Qwen 筆電證據見 [VALIDATION.md](VALIDATION.md)。
 
 GPU 層數預設為 `-1`（自動分配）；llama.cpp 依當時可用顯存決定放在 GPU／CPU 的部分，預留 512 MiB，context 保持選定容量，q8 KV cache 精度不變。`0` 使用 CPU，正整數為手動層數。上面的 99 層實測是在顯存充足時；另一輪切換後手動 99 層載入失敗，因此正式預設使用自動分配。自動分配的同一修碼案例在 186.67 秒完成，獨立驗證通過；CPU 分配增加、RAM 緊張時可能變慢。
 
 Context 與單次輸出是兩個設定：context 放入輸入、媒體、歷史和輸出；單次輸出上限包含思考與回答。輸出額度至多為 context 的一半，Pi SDK 還會依目前輸入估算與 4,096 token 安全空間減少本次請求額度。先前將 Agent context 設成 4,096 的測試實際只剩 1 token 輸出，並非這台機器只能支援小 context。EdgeAgent 現在拒絕此配置；舊 4K 配置載入時只在 RAM 提升為 8K，保留其他設定。8K 是相容最低門檻，預設工作容量為 128K。
 
-日常工作記憶目標另設為 32,768 token，模型模組可調整到 128K 或模型容量範圍內的其他值。它決定何時由 Pi 整理歷史，不會縮小引擎的 128K context，也不會減少已配置的 KV cache。實際工作目標至少為輸出額度的兩倍，至多為引擎 context；SDK 為輸出與安全空間提早摘要。摘要保留完整訊息邊界，單則大輸入仍可能暫時超過目標。
+日常工作記憶目標預設和 context 一樣大（整個視窗都給歷史），模型模組可調小以換取較快的 prompt 處理。它決定何時由 Pi 整理歷史，不會縮小引擎的 context，也不會減少已配置的 KV cache。實際工作目標至少為輸出額度的兩倍，至多為 Agent 的 context；SDK 為輸出與 4,096 token 安全空間提早摘要。摘要保留完整訊息邊界，單則大輸入仍可能暫時超過目標。
 
 每次請求使用 SDK 的滾動摘要、近期對話、當前問題與相關歷史節錄。原始 session tree 是 RAM 歷史的唯一來源；摘要不會刪掉原始文字。中文詞組與關鍵字檢索每次最多加入四段、合計 6,000 字元，另有 `search_history` 工具供模型查詢早期細節。這不是語意向量檢索，可能漏掉只換了說法的資料；圖片、音訊與思考區塊不作文字歷史搜尋。歷史節錄是可能過期的參考資料，不能當成本輪指令或工具批准。新對話彼此隔離，關閉服務或刪除對話會清除該 RAM 歷史。
 
-本機請求啟用 `cache_prompt`，llama.cpp 重用共同前綴的 KV，只計算變動部分；摘要或切換模型後仍需重算相應部分。Agent 的已保存 prompt-state 快取上限設為 256 MiB、recurrent context checkpoints 設為 2。這些是額外快取的限制，不是整個模型或 active KV 的記憶體上限；引擎原本的 8 GiB cache 預算也不代表預先占用 8 GiB。角色租借保留原設定，不共用 Agent 的工作記憶政策。
+本機請求啟用 `cache_prompt`，llama.cpp 重用共同前綴的 KV，只計算變動部分；摘要或切換模型後仍需重算相應部分。模型鎖在 RAM（`--load-mode mlock`），不會被換到磁碟；每種模式的已保存 prompt-state 快取上限都是 256 MiB、checkpoints 每個 slot 2 個（上游預設 8 GiB 與 32 個，比 8 GB 筆電的整個 RAM 還多）。
 
 生成截斷時介面會顯示 context、單次輸出額度、本次請求上限及引擎回報的輸出 token 數，已完成的修改和 RAM 對話保留。Pi 既有的摘要與重試仍運作；本機 host 不另加無限制續寫。
 
@@ -75,9 +75,9 @@ SilentTalk 租借時，Agent 自動共用角色傳來的基底與 LoRA，不必�
 
 ## 共用推論服務
 
-SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸還後恢復原 Agent 配置。最多載入一個完整模型；租借期間 Agent 自動跟隨角色的基底與 LoRA，使用獨立 slot 做工作，不需要修改原本的 Agent 選擇。租借或工作中禁止手動切換模型。角色 context 預設 32,768，Agent 預設 131,072，分開設定；共用時 Agent 跟著角色的 context（限制在租借模型的上限），不會為了 Agent 把角色伺服器開大、拖慢即時聊天。角色的 context 少於 8,192 時 Agent 不共用，租借期間暫停。
+SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸還後恢復原 Agent 配置。最多載入一個完整模型；租借期間 Agent 自動跟隨角色的基底與 LoRA，使用獨立 slot 做工作，不需要修改原本的 Agent 選擇。租借或工作中禁止手動切換模型。所有 slot 共用一塊 context（`--kv-unified`），大小就是 EdgeAgent 的 context 設定（不超過模型上限）；角色只說它要多少（預設 32,768，有 LoRA 時兩個 slot 各一份），剩下的是 Agent 的視窗。GPU／CPU 分配一律由 EdgeAgent 的設定決定。剩下不到 8,192 時 Agent 不共用，租借期間暫停。
 
-單獨安裝 EdgeAgent 只準備 Agent 模型；SilentTalk 部署額外準備公開 Gemma 4 E4B，不取得個人 LoRA。角色有 LoRA 時使用兩個推論 slot，區分套用與未套用 cache；其他情況角色使用一個 slot。相同基底與 LoRA 時另加 Agent 專用 slot，避免互相清除 cache。每個 slot 保留兩個用戶端要求的較大 context，不自動縮小使用者設定；記憶體不足時載入會失敗並回報。
+安裝時準備公開的 Gemma 4 E4B（Agent 和 SilentTalk 共用），不取得個人 LoRA。角色有 LoRA 時使用兩個推論 slot，區分套用與未套用 cache；其他情況角色使用一個 slot。另加 Agent 專用 slot，避免互相清除 cache。記憶體不足時載入會失敗並回報。
 
 | 操作 | 指令 |
 |---|---|
@@ -106,7 +106,7 @@ SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸�
 
 採用 llama.cpp 是為了所需的 LoRA 與單一模型管理入口。[Ollama 0.35.0 建立流程](https://github.com/ollama/ollama/blob/v0.35.0/server/create.go)與本機實測均拒絕 LoRA，實測 HTTP 400。沒有同模型、量化與 context 的吞吐量對照，不能宣稱 llama.cpp 比 Ollama 快。
 
-預設 [Qwen3.5-4B GGUF](https://huggingface.co/unsloth/Qwen3.5-4B-GGUF) 使用固定來源 commit 與 SHA256。上游：[Pi SDK](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sdk.md)、[Pi RPC](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md)、[llama.cpp router](https://github.com/ggml-org/llama.cpp/blob/b11193/tools/server/README.md#using-multiple-models)。
+預設 [Gemma 4 E4B QAT GGUF](https://huggingface.co/unsloth/gemma-4-E4B-it-qat-GGUF)，另支援 [Qwen3.5-4B GGUF](https://huggingface.co/unsloth/Qwen3.5-4B-GGUF)，都使用固定來源 commit 與 SHA256。上游：[Pi SDK](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sdk.md)、[Pi RPC](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md)、[llama.cpp router](https://github.com/ggml-org/llama.cpp/blob/b11193/tools/server/README.md#using-multiple-models)。
 
 ## 開發與驗證
 

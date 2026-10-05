@@ -150,7 +150,31 @@ def test_base_server_is_one_slot_without_an_extra_agent_loop() -> None:
 
     assert _value_after(args, "--ctx-size") == "131072"
     assert _value_after(args, "--parallel") == "1"
+    assert "--kv-unified" not in args
+    assert _value_after(args, "--load-mode") == "mlock"
     assert "--tools" not in args
+
+
+def _lease_fixture(manager, monkeypatch, tmp_path, model_limit, reported):
+    manager.process = SimpleNamespace(poll=lambda: None)
+    monkeypatch.setattr(service, "find_llama_server", lambda: "llama-server")
+    monkeypatch.setattr(manager, "_model_path", lambda name: tmp_path / name)
+    monkeypatch.setattr(
+        service,
+        "model_metadata",
+        lambda path: {"architecture": "fixture", "adapter": False, "split": False,
+                      "projector": False, "context_length": model_limit},
+    )
+    monkeypatch.setattr(
+        manager, "_adapter_path", lambda base, name: tmp_path / name if name else None
+    )
+    monkeypatch.setattr(manager, "_model_state", lambda: {"value": "loaded"})
+    monkeypatch.setattr(
+        manager,
+        "_model_request",
+        lambda *args, **kwargs: {"default_generation_settings": {"n_ctx": reported},
+                                 "modalities": {}},
+    )
 
 
 @pytest.mark.parametrize(
@@ -163,7 +187,7 @@ def test_base_server_is_one_slot_without_an_extra_agent_loop() -> None:
         (False, "agent.gguf", ""),
     ],
 )
-@pytest.mark.parametrize("model_limit", [8192, 16384, 32768])
+@pytest.mark.parametrize("model_limit", [131072, 98304])
 def test_character_lease_shares_model_and_adapter_then_restores_preferences(
     tmp_path,
     monkeypatch,
@@ -172,6 +196,9 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
     leased_lora,
     model_limit,
 ):
+    """One pool for both clients: EdgeAgent's own size (up to the model's
+    limit), the character's part reserved, the rest the Agent's window; the
+    server is placed by EdgeAgent (--fit), locked in RAM, its cache bounded."""
     manager = service.EdgeAgent(tmp_path)
     original = manager._save_config(
         {
@@ -182,54 +209,24 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
         }
     )
     saved = manager.config_path.read_bytes()
-    # The Agent follows the character's window, capped by the model; the
-    # larger standalone setting never grows the character's server.
-    expected_context = min(32768, model_limit)
-    manager.process = SimpleNamespace(poll=lambda: None)
-    monkeypatch.setattr(service, "find_llama_server", lambda: "llama-server")
-    monkeypatch.setattr(manager, "_model_path", lambda name: tmp_path / name)
-    monkeypatch.setattr(
-        service,
-        "model_metadata",
-        lambda path: {
-            "architecture": "fixture",
-            "adapter": False,
-            "split": False,
-            "projector": False,
-            "context_length": model_limit,
-        },
-    )
-    monkeypatch.setattr(
-        manager, "_adapter_path", lambda base, name: tmp_path / name if name else None
-    )
-    monkeypatch.setattr(manager, "_model_state", lambda: {"value": "loaded"})
-    monkeypatch.setattr(
-        manager,
-        "_model_request",
-        lambda *args, **kwargs: {
-            "default_generation_settings": {"n_ctx": expected_context},
-            "modalities": {},
-        },
-    )
+    role_slots = 2 if leased_lora else 1
+    pool = model_limit
+    agent_window = pool - role_slots * 32768
+    _lease_fixture(manager, monkeypatch, tmp_path, model_limit, pool)
     leased_model = "base.gguf" if same_base else "other.gguf"
     status = manager.switch(
         "character",
         123,
-        {
-            "model": leased_model,
-            "lora": leased_lora,
-            "port": 18088,
-            "context_size": 32768,
-            "gpu_layers": 99,
-            "low_vram": True,
-        },
+        {"model": leased_model, "lora": leased_lora, "port": 18088, "context_size": 32768},
     )
     preset = (tmp_path / ".runtime/models.ini").read_text()
-    role_slots = 2 if leased_lora else 1
     assert f"parallel = {role_slots + 1}" in preset
+    assert f"ctx-size = {pool}" in preset
+    for line in ("kv-unified = true", "load-mode = mlock", "cache-ram = 256",
+                 "ctx-checkpoints = 2", "n-gpu-layers = auto", "fit = on"):
+        assert line in preset
     assert manager.agent_slot == manager.chat.slot_id == role_slots
-    assert manager.chat.context_size == expected_context
-    assert f"ctx-size = {expected_context * (role_slots + 1)}" in preset
+    assert manager.chat.context_size == status["context_size"] == agent_window
     assert manager.chat.lora_enabled == bool(leased_lora)
     assert status["model"] == leased_model
     assert status["lora"] == leased_lora
@@ -246,34 +243,19 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
     assert manager.config_path.read_bytes() == saved
 
 
-def test_character_window_too_small_for_the_agent_leases_without_sharing(
-    tmp_path, monkeypatch
-):
+def test_a_pool_the_character_fills_leases_without_the_agent(tmp_path, monkeypatch):
+    """A 16K setting leaves the Agent nothing once the character's 32K is
+    reserved: the character still gets its part, the Agent waits."""
     manager = service.EdgeAgent(tmp_path)
-    manager.process = SimpleNamespace(poll=lambda: None)
-    monkeypatch.setattr(service, "find_llama_server", lambda: "llama-server")
-    monkeypatch.setattr(manager, "_model_path", lambda name: tmp_path / name)
-    monkeypatch.setattr(
-        service,
-        "model_metadata",
-        lambda path: {"architecture": "fixture", "adapter": False, "split": False,
-                      "projector": False, "context_length": 131072},
-    )
-    monkeypatch.setattr(manager, "_adapter_path", lambda base, name: None)
-    monkeypatch.setattr(manager, "_model_state", lambda: {"value": "loaded"})
-    monkeypatch.setattr(
-        manager,
-        "_model_request",
-        lambda *args, **kwargs: {"default_generation_settings": {"n_ctx": 4096}, "modalities": {}},
-    )
+    manager._save_config({**manager.config, "context_size": 16384})
+    _lease_fixture(manager, monkeypatch, tmp_path, 131072, 32768)
     manager.switch(
-        "character",
-        123,
-        {"model": "base.gguf", "lora": "", "port": 18088, "context_size": 4096,
-         "gpu_layers": 99, "low_vram": True},
+        "character", 123,
+        {"model": "base.gguf", "lora": "", "port": 18088, "context_size": 32768},
     )
     preset = (tmp_path / ".runtime/models.ini").read_text()
-    assert "parallel = 1" in preset and "ctx-size = 4096" in preset
+    assert "parallel = 1" in preset and "ctx-size = 32768" in preset
+    assert "kv-unified" not in preset
     assert manager.agent_slot is None
     assert manager.status()["agent_slot"] is None
 
@@ -314,7 +296,6 @@ def test_automatic_device_fitting_preserves_large_context_and_cache_precision():
         threads=4,
         gpu_layers=-1,
         low_vram=True,
-        prompt_cache_mib=256,
     )
     assert _value_after(args, "--n-gpu-layers") == "auto"
     assert _value_after(args, "--ctx-size") == "131072"
@@ -339,12 +320,16 @@ def test_character_server_gets_two_slots_and_lora() -> None:
         slots=2,
     )
 
-    assert _value_after(args, "--ctx-size") == "65536"
+    # One pool both slots draw from, the model locked in RAM, the prompt
+    # cache bounded in every mode (upstream keeps 8 GiB and 32 checkpoints).
+    assert _value_after(args, "--ctx-size") == "32768"
     assert _value_after(args, "--parallel") == "2"
+    assert "--kv-unified" in args
+    assert _value_after(args, "--load-mode") == "mlock"
+    assert _value_after(args, "--cache-ram") == "256"
+    assert _value_after(args, "--ctx-checkpoints") == "2"
     assert _value_after(args, "--lora") == "character.gguf"
     assert "--tools" not in args
-    assert "--cache-ram" not in args
-    assert "--ctx-checkpoints" not in args
 
 
 def test_config_never_persists_workspace_or_chat(tmp_path: Path) -> None:
@@ -507,7 +492,7 @@ def test_router_acceptance_is_not_model_readiness(tmp_path, monkeypatch):
 
     manager = service.EdgeAgent(tmp_path)
     manager.model_dir.mkdir()
-    (manager.model_dir / service.DEFAULT_AGENT_MODEL).write_bytes(gguf())
+    (manager.model_dir / service.DEFAULT_MODEL).write_bytes(gguf())
     manager.process = SimpleNamespace(poll=lambda: None)
     monkeypatch.setattr(service, "find_llama_server", lambda: "llama-server")
     states = iter(
@@ -536,7 +521,7 @@ def test_router_keeps_parent_and_verifies_loaded_context(
 
     manager = service.EdgeAgent(tmp_path)
     manager.model_dir.mkdir()
-    (manager.model_dir / service.DEFAULT_AGENT_MODEL).write_bytes(gguf())
+    (manager.model_dir / service.DEFAULT_MODEL).write_bytes(gguf())
     parent = SimpleNamespace(poll=lambda: None)
     manager.process = parent
     monkeypatch.setattr(service, "find_llama_server", lambda: "llama-server")
@@ -558,5 +543,5 @@ def test_router_keeps_parent_and_verifies_loaded_context(
         return
     manager._start_child("base", None, None)
     assert manager.process is parent
-    assert manager.active_model == service.DEFAULT_AGENT_MODEL
-    assert manager.chat.model == service.DEFAULT_AGENT_MODEL
+    assert manager.active_model == service.DEFAULT_MODEL
+    assert manager.chat.model == service.DEFAULT_MODEL

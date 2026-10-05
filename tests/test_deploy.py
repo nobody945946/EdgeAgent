@@ -150,11 +150,6 @@ def test_agent_install_does_not_require_private_toy_assets(tmp_path, monkeypatch
         deploy, "download", lambda url, target, digest: downloads.append(target.name)
     )
     monkeypatch.setattr(deploy, "install_agent_runtime", lambda root: None)
-    monkeypatch.setattr(
-        deploy,
-        "install_character_assets",
-        lambda root: pytest.fail("toy must be opt-in"),
-    )
 
     def extract(archive, directory):
         directory.mkdir(parents=True, exist_ok=True)
@@ -169,24 +164,10 @@ def test_agent_install_does_not_require_private_toy_assets(tmp_path, monkeypatch
         ),
     )
     assert deploy.install(tmp_path, "cpu")["backend"] == "cpu"
-    assert downloads[0] == runtime.DEFAULT_AGENT_MODEL
+    # Only the public base the Agent and SilentTalk share; never an adapter.
+    assert downloads[0] == runtime.DEFAULT_MODEL
+    assert runtime.QWEN_MODEL not in downloads
     assert not any("lora" in name.lower() for name in downloads)
-
-
-def test_character_install_downloads_only_public_base(tmp_path, monkeypatch):
-    downloads = []
-    monkeypatch.setattr(
-        deploy,
-        "download",
-        lambda url, target, digest: downloads.append((url, target.name)),
-    )
-    monkeypatch.setattr(
-        deploy.subprocess,
-        "run",
-        lambda *args, **kwargs: pytest.fail("private asset lookup"),
-    )
-    deploy.install_character_assets(tmp_path)
-    assert downloads == [(deploy.MODEL_URL, runtime.DEFAULT_MODEL)]
 
 
 def test_search_deployment_repairs_missing_and_corrupt_tools(tmp_path, monkeypatch):

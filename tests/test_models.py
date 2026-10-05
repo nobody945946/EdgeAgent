@@ -42,7 +42,7 @@ def gguf(*, context=8192, adapter=False, split=1, architecture="qwen2"):
 def core(tmp_path, monkeypatch):
     manager = service.EdgeAgent(tmp_path)
     manager.model_dir.mkdir()
-    (manager.model_dir / service.DEFAULT_AGENT_MODEL).write_bytes(gguf(context=98304))
+    (manager.model_dir / service.DEFAULT_MODEL).write_bytes(gguf(context=98304))
     (manager.model_dir / "replacement.gguf").write_bytes(gguf())
     starts = []
 
@@ -102,7 +102,7 @@ def test_switch_uses_model_context_limit_and_retains_ram_sessions(core):
     assert manager.chat.session("memory-fixture") is session
     assert manager.chat.context_size == 8192
     assert service.EdgeAgent(manager.core_dir).config == manager.config
-    assert starts == [service.DEFAULT_AGENT_MODEL, "replacement.gguf"]
+    assert starts == [service.DEFAULT_MODEL, "replacement.gguf"]
 
 
 def test_bad_model_is_rejected_before_stopping_current_model(core):
@@ -111,13 +111,13 @@ def test_bad_model_is_rejected_before_stopping_current_model(core):
     with pytest.raises(ValueError):
         manager.select_model({"model": "bad.gguf"})
     assert manager.process is not None
-    assert starts == [service.DEFAULT_AGENT_MODEL]
+    assert starts == [service.DEFAULT_MODEL]
 
 
 def test_optional_user_adapter_can_be_selected_and_cleared(core):
     manager, _ = core
     (manager.model_dir / "mine.gguf").write_bytes(gguf(adapter=True))
-    manager.select_model({"model": service.DEFAULT_AGENT_MODEL, "lora": "mine.gguf"})
+    manager.select_model({"model": service.DEFAULT_MODEL, "lora": "mine.gguf"})
     assert manager.config["lora"] == "mine.gguf"
     manager.select_model({"model": "replacement.gguf"})
     assert manager.config["lora"] == ""
@@ -130,13 +130,13 @@ def test_wrong_adapter_rejected_before_interrupting_current_model(core):
     )
     with pytest.raises(ValueError, match="architecture"):
         manager.select_model(
-            {"model": service.DEFAULT_AGENT_MODEL, "lora": "wrong.gguf"}
+            {"model": service.DEFAULT_MODEL, "lora": "wrong.gguf"}
         )
     with pytest.raises(ValueError, match="adapter"):
         manager.select_model(
-            {"model": service.DEFAULT_AGENT_MODEL, "lora": "replacement.gguf"}
+            {"model": service.DEFAULT_MODEL, "lora": "replacement.gguf"}
         )
-    assert starts == [service.DEFAULT_AGENT_MODEL]
+    assert starts == [service.DEFAULT_MODEL]
 
 
 def test_loader_failure_restores_model_and_does_not_save_bad_selection(
@@ -156,7 +156,7 @@ def test_loader_failure_restores_model_and_does_not_save_bad_selection(
         manager.select_model({"model": "replacement.gguf"})
     assert manager.config == previous
     assert manager.status()["ready"] is True
-    assert manager.active_model == service.DEFAULT_AGENT_MODEL
+    assert manager.active_model == service.DEFAULT_MODEL
     assert not manager.loading
     assert not manager.config_path.exists()
 
@@ -251,7 +251,7 @@ def test_background_download_verifies_file_and_reports_progress(core, monkeypatc
         assert manager.model_job["state"] == "done"
         assert manager.model_job["received"] == manager.model_job["total"] == len(body)
         assert (manager.model_dir / "new.gguf").read_bytes() == body
-        assert manager.active_model == service.DEFAULT_AGENT_MODEL
+        assert manager.active_model == service.DEFAULT_MODEL
     finally:
         server.shutdown()
         server.server_close()
@@ -261,7 +261,7 @@ def test_background_download_verifies_file_and_reports_progress(core, monkeypatc
 def test_existing_config_migrates_without_chat_or_workspace_fields(tmp_path):
     (tmp_path / "config.json").write_text('{"agent":false,"thinking_effort":"off"}')
     config = service.EdgeAgent(tmp_path).config
-    assert config["model"] == service.DEFAULT_AGENT_MODEL
+    assert config["model"] == service.DEFAULT_MODEL
     assert config["agent"] is False
 
 

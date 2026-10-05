@@ -2,8 +2,7 @@ param(
     [string]$CoreDir = (Split-Path $PSScriptRoot -Parent),
     [ValidateSet('auto', 'cpu', 'cuda')][string]$Backend = 'auto',
     [switch]$Library,
-    [switch]$SetupOnly,
-    [switch]$CharacterAssets
+    [switch]$SetupOnly
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -103,9 +102,7 @@ function Install-EdgeAgent {
     }
     Push-Location $Root
     try {
-        $deployArgs = @('-m', 'edge_agent.deploy', '--backend', $SelectedBackend)
-        if ($CharacterAssets) { $deployArgs += '--character' }
-        Invoke-Checked $venv $deployArgs
+        Invoke-Checked $venv @('-m', 'edge_agent.deploy', '--backend', $SelectedBackend)
         Invoke-Checked $venv @('-m', 'edge_agent.cli', 'install')
     } finally { Pop-Location }
     $env:PATH = "$(Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links');$env:PATH"

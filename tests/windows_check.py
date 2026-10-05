@@ -18,9 +18,9 @@ from pathlib import Path
 from edge_agent.permissions import validate_permissions
 from edge_agent.runtime import (
     CORE_ROOT,
-    DEFAULT_AGENT_MODEL,
     DEFAULT_MODEL,
     NODE_VERSION,
+    QWEN_MODEL,
 )
 from edge_agent.service import CONTROL_PORT, EdgeAgent, ExclusiveHTTPServer, Handler
 
@@ -284,7 +284,7 @@ def main() -> int:
         core.chat.core_dir = CORE_ROOT
         core.config = {
             **core.config,
-            "model": DEFAULT_AGENT_MODEL,
+            "model": QWEN_MODEL,
             "context_size": 16384,
             "max_output_tokens": 512,
             "working_context_size": 8192,
@@ -326,7 +326,7 @@ def main() -> int:
                 os.environ["EDGE_AGENT_INTERVIEW_PROMPT"] = "做一個記帳小工具"
                 failures = 0
                 try:
-                    for model in (DEFAULT_MODEL, DEFAULT_AGENT_MODEL):
+                    for model in (DEFAULT_MODEL, QWEN_MODEL):
                         try:
                             core.select_model(
                                 {
@@ -442,7 +442,7 @@ def main() -> int:
                         "character",
                         os.getpid(),
                         {
-                            "model": DEFAULT_AGENT_MODEL,
+                            "model": QWEN_MODEL,
                             "lora": "",
                             "context_size": context,
                             "gpu_layers": 99,

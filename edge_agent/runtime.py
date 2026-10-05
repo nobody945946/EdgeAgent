@@ -6,14 +6,25 @@ import shutil
 import subprocess
 from pathlib import Path
 
+# E4B's own limit. On the laptop (4 GB GPU, 8 GB RAM) --fit keeps it by
+# putting some layers on the CPU: slower, accepted by the owner (2026-10-05).
 GENERAL_CONTEXT_SIZE = 131_072
 DEFAULT_MAX_OUTPUT_TOKENS = 8_192
-DEFAULT_WORKING_CONTEXT_SIZE = 32_768
+# The history target before compaction: the whole window unless the owner
+# trades history for faster prompt processing.
+DEFAULT_WORKING_CONTEXT_SIZE = GENERAL_CONTEXT_SIZE
 MIN_AGENT_CONTEXT_SIZE = 8_192
 CONTROL_PORT = 18_087
 GENERAL_PORT = 18_089
+# The machine spirit's base: the character and the Agent are one model.
 DEFAULT_MODEL = "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf"
-DEFAULT_AGENT_MODEL = "Qwen3.5-4B-Q4_K_M.gguf"
+# Also shipped, for the owner to choose (writes code better, measured).
+QWEN_MODEL = "Qwen3.5-4B-Q4_K_M.gguf"
+# Saved prompt states kept in RAM, and checkpoints per slot (sliding-window
+# and recurrent models need them to reuse a prompt). Upstream defaults are
+# 8 GiB and 32: more than the laptop's whole RAM.
+PROMPT_CACHE_MIB = 256
+CONTEXT_CHECKPOINTS = 2
 NODE_VERSION = "22.23.3"
 CORE_ROOT = Path(__file__).resolve().parents[1]
 MODEL_DIR = CORE_ROOT / "models"
@@ -47,9 +58,12 @@ def build_server_args(
     lora_path: Path | None = None,
     projector_path: Path | None = None,
     slots: int = 1,
-    prompt_cache_mib: int | None = None,
 ) -> list[str]:
-    """Build the one canonical llama-server command for every core mode."""
+    """Build the one canonical llama-server command for every core mode.
+
+    `context_size` is one pool all slots share (the character's and the
+    Agent's turns take what they need from it). The model stays locked in
+    RAM: never swapped to disk."""
     if slots not in (1, 2, 3):
         raise ValueError("slots must be 1, 2 or 3")
     args = [
@@ -61,7 +75,7 @@ def build_server_args(
         "--port",
         str(port),
         "--ctx-size",
-        str(context_size * slots),
+        str(context_size),
         "--threads",
         str(threads),
         "--n-gpu-layers",
@@ -69,17 +83,19 @@ def build_server_args(
         "--parallel",
         str(slots),
         "--jinja",
+        "--load-mode",
+        "mlock",
+        "--cache-ram",
+        str(PROMPT_CACHE_MIB),
+        "--ctx-checkpoints",
+        str(CONTEXT_CHECKPOINTS),
     ]
+    if slots > 1:
+        args += ["--kv-unified"]
     if gpu_layers == -1:
         # Upstream owns device-memory fitting. Explicit context plus fit-ctx
         # preserves the chosen window while weights can move to CPU.
         args += ["--fit", "on", "--fit-ctx", str(context_size), "--fit-target", "512"]
-    if prompt_cache_mib is not None:
-        if prompt_cache_mib < 0:
-            raise ValueError("prompt_cache_mib must be nonnegative")
-        # Saved prompt states are separate from active KV memory. Bound only
-        # the Agent's cache; character leases retain their upstream defaults.
-        args += ["--cache-ram", str(prompt_cache_mib), "--ctx-checkpoints", "2"]
     if lora_path is not None:
         args += ["--lora", str(lora_path)]
     if projector_path is not None:

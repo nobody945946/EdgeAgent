@@ -18,9 +18,9 @@ from pathlib import Path
 
 from edge_agent.runtime import (
     CORE_ROOT,
-    DEFAULT_AGENT_MODEL,
     DEFAULT_MODEL,
     NODE_VERSION,
+    QWEN_MODEL,
 )
 
 LLAMA_TAG = "b11193"
@@ -30,11 +30,11 @@ MODEL_URL = (
     "8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265/" + DEFAULT_MODEL
 )
 MODEL_SHA = "df0fd4ee07072c607c29a0a1cb4f98918426cca12f45a2776bdd6ee6d09a4de3"
-AGENT_MODEL_URL = (
+QWEN_MODEL_URL = (
     "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/"
-    "e87f176479d0855a907a41277aca2f8ee7a09523/" + DEFAULT_AGENT_MODEL
+    "e87f176479d0855a907a41277aca2f8ee7a09523/" + QWEN_MODEL
 )
-AGENT_MODEL_SHA = "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
+QWEN_MODEL_SHA = "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
 PROJECTOR_ASSETS = {
     DEFAULT_MODEL: (
         "gemma4",
@@ -45,10 +45,10 @@ PROJECTOR_ASSETS = {
         ),
         "197f49a93027f9843772bd24a6a9e0be2a32a788de5a3def330e9c585d86edd1",
     ),
-    DEFAULT_AGENT_MODEL: (
+    QWEN_MODEL: (
         "qwen35",
         "mmproj-Qwen3.5-4B-F16.gguf",
-        AGENT_MODEL_URL.rsplit("/", 1)[0] + "/mmproj-F16.gguf",
+        QWEN_MODEL_URL.rsplit("/", 1)[0] + "/mmproj-F16.gguf",
         "cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864",
     ),
 }
@@ -241,11 +241,6 @@ def has_nvidia() -> bool:
         return False
 
 
-def install_character_assets(root: Path) -> None:
-    """Install the toy's public base model; adapters remain user-owned."""
-    download(MODEL_URL, root / "models" / DEFAULT_MODEL, MODEL_SHA)
-
-
 def install_search_tools(root: Path) -> None:
     """Pi runs offline; deploy verified tools instead of relying on system PATH."""
     destination = root / ".runtime/tools"
@@ -337,16 +332,14 @@ def install_agent_runtime(root: Path) -> None:
     receipt.write_text(digest, encoding="ascii")
 
 
-def install(
-    root: Path = CORE_ROOT, backend: str = "auto", *, character: bool = False
-) -> dict[str, str]:
+def install(root: Path = CORE_ROOT, backend: str = "auto") -> dict[str, str]:
     root = root.resolve()
     cache = root / ".runtime/downloads"
     cache.mkdir(parents=True, exist_ok=True)
-    download(AGENT_MODEL_URL, root / "models" / DEFAULT_AGENT_MODEL, AGENT_MODEL_SHA)
+    # The machine spirit's public base, for the Agent and SilentTalk alike;
+    # adapters remain user-owned. Other models come from the model page.
+    download(MODEL_URL, root / "models" / DEFAULT_MODEL, MODEL_SHA)
     install_agent_runtime(root)
-    if character:
-        install_character_assets(root)
     selected = "cuda" if backend == "auto" and has_nvidia() else backend
     if selected == "auto":
         selected = "cpu"
@@ -379,7 +372,7 @@ def install(
     if probe.returncode != 0 or b"--models-preset" not in probe.stdout + probe.stderr:
         if selected == "cuda" and backend == "auto":
             print("CUDA cannot initialize on this driver; installing the CPU backend.")
-            return install(root, "cpu", character=character)
+            return install(root, "cpu")
         raise RuntimeError("llama-server cannot run or does not support model routing")
     result = {
         "server": str(executable.relative_to(root)),
@@ -397,14 +390,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=CORE_ROOT)
     parser.add_argument("--backend", choices=("auto", "cpu", "cuda"), default="auto")
-    parser.add_argument(
-        "--character",
-        action="store_true",
-        help="also install the SilentTalk public base model",
-    )
     args = parser.parse_args(argv)
     try:
-        result = install(args.root, args.backend, character=args.character)
+        result = install(args.root, args.backend)
         print(f"[OK] EdgeAgent runtime ({result['backend']})")
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:

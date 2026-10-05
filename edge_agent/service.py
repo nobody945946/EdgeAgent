@@ -30,8 +30,8 @@ from edge_agent.records import prepare_record_folder, recording_status
 from edge_agent.runtime import (
     CONTROL_PORT,
     CORE_ROOT,
-    DEFAULT_AGENT_MODEL,
     DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_MODEL,
     DEFAULT_WORKING_CONTEXT_SIZE,
     GENERAL_CONTEXT_SIZE,
     GENERAL_PORT,
@@ -46,7 +46,7 @@ from edge_agent.web import NATIVE_CHAT_HTML
 DEFAULT_CONFIG: dict[str, object] = {
     "thinking_effort": "off",
     "agent": True,
-    "model": DEFAULT_AGENT_MODEL,
+    "model": DEFAULT_MODEL,
     "lora": "",
     "mmproj": "",
     "context_size": GENERAL_CONTEXT_SIZE,
@@ -627,20 +627,12 @@ class EdgeAgent:
             if metadata["adapter"] or metadata["split"] or metadata["projector"]:
                 raise ValueError("selected file is not a standalone model")
             lora_path = self._adapter_path(metadata, str(self.config["lora"]))
-            context_size = int(self.config["context_size"])
-            limit = metadata["context_length"]
-            if isinstance(limit, int) and limit > 0:
-                context_size = min(context_size, limit)
-            if context_size < MIN_AGENT_CONTEXT_SIZE:
-                raise ValueError("此模型的 context 少於 8192，無法支援 EdgeAgent")
-            port = GENERAL_PORT
-            gpu_layers = int(self.config["gpu_layers"])
-            low_vram = bool(self.config["low_vram"])
             projector_path = (
                 self._projector_path(str(self.config["mmproj"]))
                 if self.config["mmproj"]
                 else ensure_projector(model_path, str(metadata["architecture"]))
             )
+            character_context = 0
         elif mode == "character":
             if character is None:
                 raise ValueError("character configuration required")
@@ -648,28 +640,33 @@ class EdgeAgent:
             lora_name = self._required_string(character, "lora")
             metadata = model_metadata(model_path)
             lora_path = self._adapter_path(metadata, lora_name)
-            context_size = self._bounded_int(character, "context_size", 1_024, 32_768)
+            # How much of the shared window the character's turns need.
+            character_context = self._bounded_int(character, "context_size", 1_024, 32_768)
             port = self._bounded_int(character, "port", 1_024, 65_535)
             if port in (CONTROL_PORT, GENERAL_PORT):
                 raise ValueError("character port conflicts with EdgeAgent")
-            gpu_layers = self._bounded_int(character, "gpu_layers", 0, 999)
-            low_vram = character.get("low_vram") is True
             # Character leases continue to use their existing text-only contract.
             projector_path = None
         else:
             raise ValueError(f"unknown EdgeAgent mode: {mode}")
 
-        if mode == "character":
-            limit = metadata["context_length"]
-            if isinstance(limit, int) and limit > 0:
-                context_size = min(context_size, limit)
-        # The lease supplies the model, adapter and context window for both
-        # clients. The Agent follows the character's window: a larger
-        # standalone setting would grow every slot of the character's server
-        # and push weights to the CPU, slowing the live chat. Standalone
-        # preferences remain in config and return with the lease.
-        shared = mode == "character" and context_size >= MIN_AGENT_CONTEXT_SIZE
+        # EdgeAgent owns the server: one pool of context (its setting, up to
+        # the model's own limit) that every slot draws from, placed on the
+        # GPU and CPU by --fit. A lease supplies the model and adapter for
+        # both clients and reserves the character's part; the Agent gets the
+        # rest. Standalone preferences remain in config and return with it.
+        context_size = int(self.config["context_size"])
+        limit = metadata["context_length"]
+        if isinstance(limit, int) and limit > 0:
+            context_size = min(context_size, limit)
+            character_context = min(character_context, limit)
         role_slots = 2 if mode == "character" and lora_path else 1
+        reserved = role_slots * character_context
+        context_size = max(context_size, reserved)
+        agent_context = context_size - reserved
+        if mode == "base" and agent_context < MIN_AGENT_CONTEXT_SIZE:
+            raise ValueError("此模型的 context 少於 8192，無法支援 EdgeAgent")
+        shared = mode == "character" and agent_context >= MIN_AGENT_CONTEXT_SIZE
         agent_slot = role_slots if shared else (0 if mode == "base" else None)
         # The upstream router owns model processes, loading and hot replacement.
         # Keep one public inference endpoint for the Agent and leased clients.
@@ -679,12 +676,11 @@ class EdgeAgent:
             port=GENERAL_PORT,
             context_size=context_size,
             threads=max(2, min(6, (os.cpu_count() or 4) // 2)),
-            gpu_layers=gpu_layers,
-            low_vram=low_vram,
+            gpu_layers=int(self.config["gpu_layers"]),
+            low_vram=bool(self.config["low_vram"]),
             lora_path=lora_path,
             projector_path=projector_path,
             slots=role_slots + (1 if shared else 0),
-            prompt_cache_mib=256 if mode == "base" else None,
         )
         preset = self.core_dir / ".runtime/models.ini"
         preset.parent.mkdir(parents=True, exist_ok=True)
@@ -765,14 +761,15 @@ class EdgeAgent:
             "vision": isinstance(modalities, dict) and modalities.get("vision") is True,
             "audio": isinstance(modalities, dict) and modalities.get("audio") is True,
         }
-        self.active_model, self.active_context_size = model_path.name, context_size
+        # The Agent's window: the whole pool, or what a lease leaves it.
+        self.active_model, self.active_context_size = model_path.name, agent_context
         self.active_lora = lora_path.name if lora_path else ""
         self.agent_slot = agent_slot
         self.owner_pid = owner_pid if mode == "character" else None
         self.owner_dead_since = None
         self.handoff_until = 0.0
         self.chat.configure_context(
-            context_size,
+            agent_context,
             model_path.name,
             self.capabilities,
             int(self.config["max_output_tokens"]),
