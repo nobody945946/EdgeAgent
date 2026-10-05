@@ -75,6 +75,8 @@ BEHAVIOUR = {
     "Get-ChildItem hides hidden items unless -Force":
         "$h = New-Item .hid -ItemType File; if ($IsWindows -or $PSVersionTable.PSEdition -eq 'Desktop')"
         " { $h.Attributes = 'Hidden' }; @(Get-ChildItem).Count -eq 0 -and @(Get-ChildItem -Force).Count -eq 1",
+    "Get-ChildItem -r is -Recurse (the translator says so)":
+        "mkdir d | Out-Null; 'x' | Set-Content d/a.log; @(Get-ChildItem -r -Filter *.log).Name -join ',' -eq 'a.log'",
     "Get-ChildItem -Filter and -Recurse":
         "mkdir d | Out-Null; 'x' | Set-Content d/a.log; 'x' | Set-Content b.txt;"
         " @(Get-ChildItem -Recurse -Filter *.log).Name -join ',' -eq 'a.log'",

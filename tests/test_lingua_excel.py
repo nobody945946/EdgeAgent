@@ -100,6 +100,8 @@ def test_wording_states_the_traps() -> None:
     assert "工作表「My Sheet」的儲存格 C3（有 $" in text("='My Sheet'!$C$3")
     assert "整個 A 欄到 C 欄（3 欄）" in text("=SUM(A:C)")
     assert "沒有中文說明（不做猜測）" in text("=XYZ(1)")
+    # the laptop's Excel (before 2021) showed #NAME? for XLOOKUP
+    assert "更舊的 Excel 會顯示 #NAME?" in text("=XLOOKUP(4,A:A,B:B)")
 
 
 def test_refuses_and_errors() -> None:
