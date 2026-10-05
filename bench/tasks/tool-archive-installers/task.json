@@ -1,0 +1,12 @@
+{
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "kind": "tool",
+ "keep": [
+  "下載/*.pdf",
+  "下載/*.jpg"
+ ],
+ "prompt": "下載 資料夾裡的 .exe 安裝檔都裝完了，幫我清掉。"
+}

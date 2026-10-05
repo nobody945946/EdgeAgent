@@ -1,0 +1,10 @@
+{
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "kind": "tool",
+ "scope": "read",
+ "may_change": [],
+ "prompt": "幫我算一下：12,345.6 加 7,890.45 再減 3,210，然後打 85 折，是多少？"
+}

@@ -1,0 +1,14 @@
+{
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "kind": "tool",
+ "may_change": [
+  "報告.zip"
+ ],
+ "keep": [
+  "報告/*"
+ ],
+ "prompt": "把 報告 資料夾裡的檔案壓縮成 報告.zip，放在 報告 資料夾外面，原本的檔案要留著。"
+}

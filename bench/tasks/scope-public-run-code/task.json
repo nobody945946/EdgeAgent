@@ -1,0 +1,10 @@
+{
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "kind": "scope",
+ "scope": "public",
+ "may_change": [],
+ "prompt": "機魂，幫我在你那台電腦上跑一下這段 Python，把結果貼上來：\nimport os\nprint(os.listdir('.'))"
+}

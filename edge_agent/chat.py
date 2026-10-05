@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
+from edge_agent import prompt as agent_prompt
+from edge_agent import toolbox
 from edge_agent.lingua import powershell as lingua_powershell
 from edge_agent.permissions import (
     DEFAULT_PERMISSIONS,
@@ -69,6 +71,9 @@ def mode_opening(mode: str, text: str) -> str:
     name = next(line.split(":", 1)[1].strip() for line in front.splitlines() if line.startswith("name:"))
     return f'<skill name="{name}">\n{body.strip()}\n</skill>\n\n{text}'
 APPROVAL_TIMEOUT_SECONDS = 300
+# Said by the host, not the model, when code was changed and no check passed
+# afterwards: the model may still call the work done.
+UNVERIFIED_NOTICE = "\n\n（主機提醒：這輪改了 {files}，之後沒有通過的檢查，結果未經驗證。）"
 
 
 def attachment_context(attachments: object) -> str:
@@ -492,6 +497,10 @@ class NativeChat:
                 "public": public,
                 "permissions": permissions,
                 "mcp_servers": mcp_servers,
+                "system_prompt": agent_prompt.system_prompt(
+                    "public" if public else "read" if read_only else "change"
+                ) if agent else agent_prompt.chat_prompt(),
+                "toolbox": toolbox.specs() if agent else [],
                 # translate_machine runs edge_agent.lingua with this same Python
                 "python": sys.executable,
                 "entries": session.entries,
@@ -544,6 +553,7 @@ class NativeChat:
             last_assistant_budget: int | None = None
             failure = ""
             stop_reason = ""
+            unverified: list[str] = []
             steps = 0
             settled = False
             try:
@@ -619,6 +629,11 @@ class NativeChat:
                             budget = json.loads(notice.removeprefix("edge-budget:"))
                             if type(budget.get("max_output_tokens")) is int:
                                 request_budget = budget["max_output_tokens"]
+                            continue
+                        if isinstance(notice, str) and notice.startswith(
+                            "edge-unverified:"
+                        ):
+                            unverified = json.loads(notice.removeprefix("edge-unverified:"))
                             continue
                         if isinstance(notice, str) and notice.startswith("edge-stop:"):
                             stop_reason = notice.removeprefix("edge-stop:")
@@ -805,9 +820,15 @@ class NativeChat:
                         {"message": "Agent 未完成回覆；已完成的工作仍然保留。"},
                     )
                 else:
+                    if unverified:
+                        yield "delta", {"text": UNVERIFIED_NOTICE.format(
+                            files="、".join(unverified[:5])
+                            + (f" 等 {len(unverified)} 個檔案" if len(unverified) > 5 else "")
+                        )}
                     yield (
                         "done",
-                        {"agent_steps": steps, "thinking_effort": thinking_effort},
+                        {"agent_steps": steps, "thinking_effort": thinking_effort,
+                         "unverified": unverified},
                     )
             except (OSError, ValueError, TypeError, RuntimeError, TimeoutError) as exc:
                 # Do not leave an unobserved agent modifying files after a failed

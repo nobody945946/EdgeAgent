@@ -768,3 +768,28 @@ def test_date_calc() -> None:
         run("date_calc", here, op="weekday", date="2026-02-30")
     with pytest.raises(ToolError, match="要給 days"):
         run("date_calc", here, op="add", date="2026-01-01")
+
+
+def test_catalog_search_reads_chinese_and_english():
+    """edge_agent/catalog.mjs: Chinese requests are indexed as character pairs."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    from edge_agent.toolbox import specs
+
+    script = (
+        "import { rank, searchText } from './edge_agent/catalog.mjs';"
+        "const tools = JSON.parse(process.argv[1]).map(t => ({ name: t.name, text: searchText({ ...t, description: t.summary }) }));"
+        "console.log(JSON.stringify(['把下載資料夾整理一下', '照片 改名 日期', 'convert Big5 text to UTF-8', '跑測試']"
+        ".map(q => rank(q, tools, 3).map(m => m.name))));"
+    )
+    out = subprocess.run([node, "--input-type=module", "-e", script, json.dumps(specs())],
+                         capture_output=True, text=True, cwd=Path(__file__).resolve().parents[1], check=True)
+    organize, photos, encoding, checks = json.loads(out.stdout)
+    assert organize[0] == "organize_folder"
+    assert photos[0] == "rename_photos_by_date"
+    assert encoding[0] == "convert_text_encoding"
+    assert "run_checks" in checks

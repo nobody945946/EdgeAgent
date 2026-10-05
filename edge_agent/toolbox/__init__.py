@@ -191,6 +191,14 @@ def oserror_text(exc: OSError) -> str:
     return reason
 
 
+SPEC_FIELDS = ("name", "summary", "keywords", "parameters", "kind", "destructive", "windows_only")
+
+
+def specs() -> list[dict]:
+    """Every tool as the Agent's bridge registers it (no functions)."""
+    return [{field: getattr(tool, field) for field in SPEC_FIELDS} for tool in REGISTRY.values()]
+
+
 def register(tool: Tool) -> Tool:
     """Add a tool whose run/preview check parameters and keep the output small."""
     if tool.kind not in KINDS:

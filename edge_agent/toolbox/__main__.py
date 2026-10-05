@@ -11,13 +11,7 @@ import json
 import sys
 from pathlib import Path
 
-from edge_agent.toolbox import REGISTRY, ToolError
-
-SPEC_FIELDS = ("name", "summary", "keywords", "parameters", "kind", "destructive", "windows_only")
-
-
-def describe() -> list[dict]:
-    return [{field: getattr(tool, field) for field in SPEC_FIELDS} for tool in REGISTRY.values()]
+from edge_agent.toolbox import REGISTRY, ToolError, specs
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,7 +19,7 @@ def main(argv: list[str] | None = None) -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     args = sys.argv[1:] if argv is None else argv
     if args == ["describe"]:
-        print(json.dumps(describe(), ensure_ascii=False, indent=1))
+        print(json.dumps(specs(), ensure_ascii=False, indent=1))
         return 0
     if len(args) != 2 or args[0] not in ("run", "preview"):
         print("用法：python -m edge_agent.toolbox describe | run 工具名稱 | preview 工具名稱（參數用 JSON 從 stdin 給）")

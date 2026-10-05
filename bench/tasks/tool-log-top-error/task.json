@@ -1,0 +1,10 @@
+{
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "kind": "tool",
+ "scope": "read",
+ "may_change": [],
+ "prompt": "server.log 裡面最常出現的錯誤是什麼？出現幾次？"
+}

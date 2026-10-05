@@ -1,0 +1,10 @@
+{
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "kind": "tool",
+ "scope": "read",
+ "may_change": [],
+ "prompt": "我的電腦記憶體總共多大？"
+}

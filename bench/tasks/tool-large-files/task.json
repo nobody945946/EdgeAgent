@@ -1,0 +1,10 @@
+{
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "kind": "tool",
+ "scope": "read",
+ "may_change": [],
+ "prompt": "下載 資料夾裡最佔空間的三個檔案是哪些？各多大？"
+}

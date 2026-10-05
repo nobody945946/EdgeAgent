@@ -245,11 +245,29 @@ def last_json(text: str) -> dict:
     return {}
 
 
-def grade_workspace(name: str, task_dir: Path, original: Path, workspace: Path) -> dict:
+def answer_record(result: dict, trajectory: list[dict] | None) -> dict:
+    """What a check may grade besides the workspace: the answer the asker
+    read, the tools the Agent called (name and arguments) and how it ended."""
+    calls = [{"name": item.get("name"), "arguments": item.get("arguments")}
+             for message in trajectory or [] if message.get("role") == "assistant"
+             for item in message.get("content") or []
+             if isinstance(item, dict) and item.get("type") == "toolCall"]
+    return {"answer": result.get("answer", ""), "calls": calls,
+            "outcome": result.get("outcome"), "approvals": result.get("approvals", 0),
+            "unverified": result.get("unverified", [])}
+
+
+def grade_workspace(name: str, task_dir: Path, original: Path, workspace: Path,
+                    answer: dict | None = None) -> dict:
     image = json.loads((task_dir / "task.json").read_text(encoding="utf-8")).get("image", IMAGE)
+    # The answer goes to the grader as /result/answer.json (BENCH_ANSWER).
+    result_dir = workspace.parent.parent / "answers" / name
+    result_dir.mkdir(parents=True, exist_ok=True)
+    (result_dir / "answer.json").write_text(json.dumps(answer or {"answer": "", "calls": []},
+                                                       ensure_ascii=False), encoding="utf-8")
     grader = subprocess.run(
         sandbox(name + "-grade", [(task_dir, "/task", "ro"), (original, "/orig", "ro"),
-                                  (workspace, "/work", "ro"),
+                                  (workspace, "/work", "ro"), (result_dir, "/result", "ro"),
                                   (BENCH / "grade.py", "/opt/bench/grade.py", "ro")],
                 {}, ["python", "/opt/bench/grade.py"], memory="4g", image=image),
         capture_output=True, text=True, timeout=600)
@@ -275,7 +293,12 @@ def selftest(pattern: str) -> None:
         if (task_dir / "solution.py").is_file():
             subprocess.run([sys.executable, str(task_dir / "solution.py"), str(workspace)],
                            check=True)
-        solved = grade_workspace(f"eab-self-{task_dir.name}", task_dir, original, workspace)
+        # A task graded on the answer carries a reference answer.
+        reference = task_dir / "solution_answer.json"
+        answer = (json.loads(reference.read_text(encoding="utf-8"))
+                  if reference.is_file() else None)
+        solved = grade_workspace(f"eab-self-{task_dir.name}", task_dir, original, workspace,
+                                 answer)
         ok = not untouched["passed"] and solved["passed"]
         bad += not ok
         print(f"{'ok ' if ok else 'BAD'} {task_dir.name}: untouched={untouched['passed']} "
@@ -313,6 +336,8 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
     spec = {**{k: config[k] for k in ("model", "context_size", "max_output_tokens",
                                       "working_context_size", "effort")},
             "vision": config.get("vision", False), "prompt": task["prompt"],
+            # Who asked (permissions.SCOPES): the owner's change or read task, or a public one.
+            "scope": task.get("scope", "change"),
             "search_tools": config.get("search_tools", False),
             # The product's permission rules (bridge_rules); None = the UI default.
             "permissions": config.get("permissions"),
@@ -337,7 +362,8 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
         relay.wait(timeout=30)
         shutil.rmtree(sock_dir, ignore_errors=True)
     trajectory = result.pop("trajectory", None)
-    grade = grade_workspace(name, task_dir, original, workspace)
+    grade = grade_workspace(name, task_dir, original, workspace,
+                            answer_record(result, trajectory))
     if trajectory is not None:
         (run_dir / "traj").mkdir(exist_ok=True)
         (run_dir / "traj" / f"{job}.json").write_text(

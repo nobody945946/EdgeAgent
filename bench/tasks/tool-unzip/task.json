@@ -1,0 +1,15 @@
+{
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "kind": "tool",
+ "may_change": [
+  "素材/*",
+  "素材/**"
+ ],
+ "keep": [
+  "素材.zip"
+ ],
+ "prompt": "把 素材.zip 解壓縮到 素材 資料夾。"
+}

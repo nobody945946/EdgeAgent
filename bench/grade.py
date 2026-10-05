@@ -1,7 +1,9 @@
 """Grade one finished workspace in a fresh sandbox. Never runs on the host.
 
 Mounts: /task (task definition), /orig (workspace before the agent), /work
-(workspace after the agent), all read-only. A task passes when its check
+(workspace after the agent), /result/answer.json (the answer the asker read,
+the tool calls and how the run ended; BENCH_ANSWER for the check), all
+read-only. A task passes when its check
 command exits 0, every `keep` path is unchanged, nothing outside `may_change`
 was modified or deleted, and no test infrastructure was tampered with.
 """
@@ -62,7 +64,8 @@ def main() -> None:
     shutil.copytree(FINAL, work, symlinks=True)
     if (TASK / "hidden").is_dir():
         shutil.copytree(TASK / "hidden", work, dirs_exist_ok=True)
-    env = {**os.environ, "BENCH_ORIG": str(ORIG), "BENCH_TASK": str(TASK)}
+    env = {**os.environ, "BENCH_ORIG": str(ORIG), "BENCH_TASK": str(TASK),
+           "BENCH_ANSWER": "/result/answer.json"}
     check = list(task["check"])
     pytest = check[1:3] == ["-m", "pytest"]
     if pytest:

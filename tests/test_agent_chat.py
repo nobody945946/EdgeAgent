@@ -1112,8 +1112,9 @@ def test_real_sdk_public_lookup_has_the_web_alone_and_never_asks(tmp_path, repea
             ):
                 events.append((name, data))
             tools = sorted(t["function"]["name"] for t in state["requests"][0].get("tools", []))
-            # The web, and the translators that work on given text alone.
-            assert tools == ["translate_machine", "web_fetch", "web_research", "web_search"]
+            # The web, and the tools that work on given text alone; no catalog.
+            assert tools == ["calculate", "date_calc", "translate_machine", "web_fetch",
+                             "web_research", "web_search"]
             results = json.dumps([m for m in state["requests"][-1]["messages"] if m["role"] == "tool"])
             assert "Tool read not found" in results and "Tool powershell not found" in results
             assert "public lookup" in results
@@ -1154,7 +1155,9 @@ def test_real_sdk_allowed_edits_run_without_asking(tmp_path, repeating_model):
     assert (tmp_path / "new.txt").read_text() == "x"
     tools = [t["function"]["name"] for t in state["requests"][0].get("tools", [])]
     assert "write" in tools and "web_fetch" not in tools and "web_research" not in tools
-    assert "translate_machine" in tools
+    # The rest of the Agent's tools wait in the catalog behind tool_search.
+    assert {"grep", "find", "ls", "run_checks", "tool_search"} <= set(tools)
+    assert "translate_machine" not in tools and "organize_folder" not in tools
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
@@ -1491,3 +1494,73 @@ def test_browser_exports_conversations_and_displays_native_tool_errors(
                 check=False,
                 timeout=15,
             )
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_the_agent_speaks_as_itself_per_scope(tmp_path, repeating_model):
+    """The Agent's own prompt (edge_agent/prompt.py) replaces Pi's coding
+    assistant, and says who asked: the owner's task or a public one."""
+    from edge_agent import prompt
+
+    port, state = repeating_model
+    state["answer"] = True
+    chat = NativeChat(model_port=port)
+    try:
+        for scope in ("change", "public"):
+            state["requests"] = []
+            list(chat.stream_reply(scope, "你好", agent=True, working_dir=tmp_path, scope=scope))
+            system = state["requests"][0]["messages"][0]["content"]
+            assert system.startswith(prompt.system_prompt(scope))
+            assert "expert coding assistant" not in system and "Pi documentation" not in system
+    finally:
+        chat.close()
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_tool_search_finds_the_toolbox_in_chinese(tmp_path, repeating_model):
+    """A catalogued tool is not declared until tool_search finds it; a Chinese
+    request finds it (Pi's own search keeps only ASCII words), and it then runs."""
+    port, state = repeating_model
+    (tmp_path / "下載").mkdir()
+    (tmp_path / "下載" / "a.mp4").write_bytes(bytes(5000))
+    (tmp_path / "下載" / "b.txt").write_bytes(bytes(10))
+    state["sequence"] = [
+        ("tool_search", {"query": "找出 最大 的 檔案"}),
+        ("find_large_files", {"folder": "下載", "top": 1}),
+    ]
+    chat = NativeChat(model_port=port)
+    try:
+        list(chat.stream_reply("search", "下載資料夾最大的檔案是哪個", agent=True,
+                               working_dir=tmp_path, scope="read"))
+    finally:
+        chat.close()
+    declared = [[t["function"]["name"] for t in r.get("tools", [])] for r in state["requests"]]
+    assert "find_large_files" not in declared[0] and "find_large_files" in declared[1]
+    results = json.dumps([m for m in state["requests"][-1]["messages"] if m["role"] == "tool"],
+                         ensure_ascii=False)
+    assert "find_large_files" in results and "a.mp4" in results
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_changed_code_without_a_passing_check_is_flagged(tmp_path, repeating_model):
+    """Two layers for "done means verified": the prompt asks for run_checks,
+    and the host itself says so when code changed and no check passed after."""
+    port, state = repeating_model
+    state["sequence"] = [("write", {"path": "calc.py", "content": "def f():\n    return 1\n"})]
+    state["text"] = "完成了"
+    chat = NativeChat(model_port=port)
+    try:
+        events = _permission_run(chat, tmp_path, {"edit": "allow", "shell": "allow", "web": "deny"})
+        text = "".join(d["text"] for name, d in events if name == "delta")
+        assert "未經驗證" in text and "calc.py" in text
+        assert events[-1] == ("done", {**events[-1][1], "unverified": ["calc.py"]})
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_calc.py").write_text("from calc import f\n\ndef test_f():\n    assert f() == 1\n")
+        state["calls"], state["requests"], state.pop("answer", None)
+        state["sequence"] = [("write", {"path": "calc.py", "content": "def f():\n    return 1\n"}),
+                             ("run_checks", {})]
+        events = _permission_run(chat, tmp_path, {"edit": "allow", "shell": "allow", "web": "deny"})
+        text = "".join(d["text"] for name, d in events if name == "delta")
+        assert "未經驗證" not in text and events[-1][1]["unverified"] == []
+    finally:
+        chat.close()

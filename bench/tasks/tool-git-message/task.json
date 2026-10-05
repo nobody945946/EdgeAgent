@@ -1,0 +1,11 @@
+{
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "kind": "tool",
+ "scope": "read",
+ "git": true,
+ "may_change": [],
+ "prompt": "幫我看一下還沒 commit 的修改，寫一段 commit 訊息給我就好，先不要 commit。"
+}

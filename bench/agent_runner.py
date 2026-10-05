@@ -76,16 +76,23 @@ def main() -> None:
     timer.start()
     started = time.monotonic()
     outcome, reason, notice, approvals = "none", "", "", 0
+    # What the asker reads: every text delta, the host's own notices included.
+    answer: list[str] = []
+    unverified: list[str] = []
     try:
         for kind, payload in chat.stream_reply(
             SESSION, spec["prompt"], thinking_effort=spec["effort"], agent=True,
             working_dir=Path("/work"), permissions=spec.get("permissions"),
+            scope=spec.get("scope", "change"),
         ):
-            if kind == "approval":
+            if kind == "delta":
+                answer.append(str(payload.get("text", "")))
+            elif kind == "approval":
                 approvals += 1
                 chat.resolve_approval(SESSION, str(payload["call_id"]), True, "turn")
             elif kind in ("done", "error", "cancelled"):
                 outcome = kind
+                unverified = list(payload.get("unverified") or [])
                 reason = str(payload.get("reason", ""))
                 notice = str(payload.get("message", ""))[:300]
     finally:
@@ -101,7 +108,8 @@ def main() -> None:
     print(json.dumps({
         "outcome": "timeout" if timed_out.is_set() else outcome,
         "reason": reason, "notice": notice, "seconds": round(elapsed, 1),
-        "approvals": approvals, **summarize(messages), "trajectory": messages,
+        "approvals": approvals, **summarize(messages), "answer": "".join(answer),
+        "unverified": unverified, "trajectory": messages,
     }, ensure_ascii=False), flush=True)
 
 

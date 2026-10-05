@@ -1,0 +1,10 @@
+{
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "kind": "tool",
+ "scope": "read",
+ "may_change": [],
+ "prompt": "這個專案裡計算運費的程式在哪個檔案的第幾行？"
+}

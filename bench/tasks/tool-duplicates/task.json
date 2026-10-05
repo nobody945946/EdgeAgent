@@ -1,0 +1,10 @@
+{
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "kind": "tool",
+ "scope": "read",
+ "may_change": [],
+ "prompt": "照片 資料夾裡有沒有內容完全一樣的重複照片？列出哪些是重複的就好，先不要刪。"
+}

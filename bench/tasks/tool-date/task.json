@@ -1,0 +1,10 @@
+{
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "kind": "tool",
+ "scope": "read",
+ "may_change": [],
+ "prompt": "2027 年 2 月 14 日是星期幾？從 2026 年 10 月 6 日算起還有幾天？"
+}

@@ -50,7 +50,7 @@ def check(text: str) -> dict:
     counts = round_counts(text)
     cjk = [c for c in text if "一" <= c <= "鿿"]
     latin = re.findall(r"[A-Za-z]", re.sub(r"`[^`]*`", "", text))
-    simplified = sum(a != b for a, b in zip("".join(cjk), S2T.convert("".join(cjk))))
+    simplified = sum(a != b for a, b in zip("".join(cjk), S2T.convert("".join(cjk)), strict=False))
     return {
         "produced": counts["questions"] > 0,
         "questions": counts["questions"],

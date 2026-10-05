@@ -156,5 +156,18 @@
   "vram_slot_mib": 2400,
   "search_tools": true,
   "time_scale": 2
+ },
+ "e4b-product": {
+  "_note": "The laptop product as agreed 2026-10-05: E4B QAT Q4_K_XL, the Agent's share of the one 128K pool (131072 minus the character's 32768), history kept to the whole window, thinking off, rg/fd shipped.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 98304,
+  "max_output_tokens": 8192,
+  "working_context_size": 98304,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true
  }
 }
