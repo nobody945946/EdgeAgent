@@ -242,6 +242,7 @@ try {
   try{
     await click('#permission-discord-enabled');
     await choose('#permission-discord-edit','deny');
+    await choose('#permission-discord-shell','routine');
     await choose('#permission-ui-shell','allow');
     await fill('#permission-discord-workspaces',folderFixture);
     await click('#permissions-save');
@@ -249,6 +250,7 @@ try {
     const saved=await evaluate("fetch('/config').then(r=>r.json()).then(c=>c.permissions)");
     assert.equal(saved.discord.enabled,!originalPermissions.discord.enabled);
     assert.equal(saved.discord.edit,'deny');assert.equal(saved.ui.shell,'allow');
+    assert.equal(saved.discord.shell,'routine');
     assert.deepEqual(saved.discord.workspaces,[folderFixture]);
     for(const [width,height] of [[1280,850],[1280,600],[768,1024],[390,844],[360,640],[320,568],[480,360],[844,390]]){
       await setViewport({width,height,deviceScaleFactor:1,mobile:false});
@@ -256,6 +258,9 @@ try {
       await click('#permissions-save');
       assert(await evaluate('document.querySelector("#permissions-save").getBoundingClientRect().bottom<=innerHeight+1'),'permission save reachable');
     }
+    await setViewport({width:360,height:640,deviceScaleFactor:1,mobile:false});
+    await writeFile('.test-tmp/edge-agent-routine-permissions.png',Buffer.from((await cdp('Page.captureScreenshot',{format:'png'})).data,'base64'));
+    console.log('PASS: routine shell permission saved and restored; eight permission panel viewports');
   }finally{
     await evaluate(`modelPost('/config',{permissions:${JSON.stringify(originalPermissions)}})`);
     await click('#permissions-close');await setViewport({width:1280,height:850,deviceScaleFactor:1,mobile:false});

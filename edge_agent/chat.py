@@ -19,7 +19,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from edge_agent.lingua import powershell as lingua_powershell
-from edge_agent.permissions import DEFAULT_PERMISSIONS, bridge_rules
+from edge_agent.permissions import DEFAULT_PERMISSIONS, bridge_rules, routine_shell
 from edge_agent.records import save_session
 from edge_agent.runtime import (
     CORE_ROOT,
@@ -644,6 +644,17 @@ class NativeChat:
                         details = json.loads(str(event.get("title", "{}")))
                         call_id = str(event["id"])
                         session.approvals[call_id] = event
+                        if (
+                            permissions and permissions.get("shell") == "routine"
+                            and details.get("tool") == "powershell"
+                            and not details.get("after_web")
+                            and details.get("explicit", "") in {"", "destructive"}
+                            and isinstance(details.get("arguments"), dict)
+                            and isinstance(details["arguments"].get("command"), str)
+                            and routine_shell(details["arguments"]["command"], cwd)
+                        ):
+                            self.resolve_approval(session_id, call_id, True, "once")
+                            continue
                         yield "approval", {"call_id": call_id, **details,
                                            **explain_approval(details, cwd)}
                     elif kind == "tool_execution_start":

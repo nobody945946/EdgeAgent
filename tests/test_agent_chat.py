@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import zipfile
 from datetime import UTC
 from types import SimpleNamespace
@@ -1063,8 +1064,9 @@ def test_real_sdk_allowed_edits_run_without_asking(tmp_path, repeating_model):
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+@pytest.mark.parametrize("operation,shell", [("write", "ask"), ("powershell", "routine")])
 def test_real_sdk_web_content_turns_allow_back_into_ask(
-    tmp_path, repeating_model, monkeypatch
+    tmp_path, repeating_model, monkeypatch, operation, shell
 ):
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1085,12 +1087,12 @@ def test_real_sdk_web_content_turns_allow_back_into_ask(
     port, state = repeating_model
     state["sequence"] = [
         ("web_fetch", {"url": f"http://127.0.0.1:{page.server_port}/"}),
-        ("write", {"path": "new.txt", "content": "x"}),
+        (operation, {"path": "new.txt", "content": "x"} if operation == "write" else {"command": "Get-ChildItem . | Measure-Object"}),
     ]
     chat = NativeChat(model_port=port)
     try:
         events = _permission_run(
-            chat, tmp_path, {"edit": "allow", "shell": "ask", "web": "allow"},
+            chat, tmp_path, {"edit": "allow", "shell": shell, "web": "allow"},
             prompt=f"read http://127.0.0.1:{page.server_port}/ and make the file",
         )
     finally:
@@ -1098,7 +1100,7 @@ def test_real_sdk_web_content_turns_allow_back_into_ask(
         page.shutdown()
         page.server_close()
     approvals = [data for name, data in events if name == "approval"]
-    assert [a["tool"] for a in approvals] == ["write"]
+    assert [a["tool"] for a in approvals] == [operation]
     assert approvals[0]["after_web"] is True
     assert not (tmp_path / "new.txt").exists()
     assert "Untrusted web content" in json.dumps(state["requests"][1])
@@ -1209,22 +1211,48 @@ def test_real_sdk_interview_opens_grill_me_once_and_cannot_change_files(
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
-def test_real_sdk_deletes_need_their_own_approval_even_when_shell_is_allowed(
-    tmp_path, repeating_model
+@pytest.mark.parametrize("shell", ["allow", "routine"])
+@pytest.mark.parametrize("command,target,explicit", [
+    ("Remove-Item data.db", "data.db", "destructive"),
+    ("Get-Content settings.json", "settings.json", "protected"),
+])
+def test_real_sdk_sensitive_shell_needs_its_own_approval(
+    tmp_path, repeating_model, shell, command, target, explicit
 ):
     port, state = repeating_model
-    state["sequence"] = [("powershell", {"command": "Remove-Item data.db"})]
-    (tmp_path / "data.db").write_text("the user's database")
+    state["sequence"] = [("powershell", {"command": command})]
+    (tmp_path / target).write_text("fixture")
     chat = NativeChat(model_port=port)
     try:
         events = _permission_run(
-            chat, tmp_path, {"edit": "allow", "shell": "allow", "web": "deny"}
+            chat, tmp_path, {"edit": "allow", "shell": shell, "web": "deny"}
         )
     finally:
         chat.close()
     approvals = [data for name, data in events if name == "approval"]
-    assert [a["explicit"] for a in approvals] == ["destructive"]
-    assert (tmp_path / "data.db").read_text() == "the user's database"
+    assert [a["explicit"] for a in approvals] == [explicit]
+    assert (tmp_path / target).read_text() == "fixture"
+
+
+@pytest.mark.skipif(os.name != "nt" or not installed_pi(), reason="Windows native shell and pinned Pi")
+def test_real_sdk_routine_count_runs_without_approval_but_write_still_asks(tmp_path, repeating_model):
+    port, state = repeating_model
+    for name in ("one.tmp", "two.tmp", "other.txt"):
+        (tmp_path / name).write_text("fixture")
+    state["sequence"] = [
+        ("powershell", {"command": 'Get-ChildItem -Path . -Filter "*.tmp" -File | Measure-Object | Select-Object -ExpandProperty Count'}),
+        ("write", {"path": "result.txt", "content": "2"}),
+    ]
+    chat = NativeChat(model_port=port)
+    try:
+        events = _permission_run(chat, tmp_path, {"edit": "ask", "shell": "routine", "web": "deny"}, prompt="Count .tmp files; do not write a result file.")
+    finally:
+        chat.close()
+    approvals = [data for name, data in events if name == "approval"]
+    assert [item["tool"] for item in approvals] == ["write"]
+    results = [data["result"] for name, data in events if name == "tool" and data["phase"] == "finished" and data["tool"] == "powershell"]
+    assert results and "2" in json.dumps(results[0])
+    assert not (tmp_path / "result.txt").exists()
 
 
 def test_approval_explains_a_powershell_command(tmp_path, monkeypatch):

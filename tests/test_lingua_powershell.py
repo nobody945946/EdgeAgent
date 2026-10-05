@@ -163,3 +163,20 @@ def test_windows_aliases() -> None:
         pytest.skip("ls and rm are aliases only on Windows")
     text = powershell.translate("ls -r *.log | rm -WhatIf").text()
     assert "ls 是 Get-ChildItem 的別名" in text and "rm 是 Remove-Item 的別名" in text and "只是模擬" in text
+
+
+def test_native_provider_parameters_are_not_reported_as_binding_errors(tmp_path):
+    script = 'Get-ChildItem -Path . -Filter "*.tmp" -File | Measure-Object | Select-Object -ExpandProperty Count'
+    text = powershell.translate(script, cwd=str(tmp_path)).text()
+    assert "-File：只列檔案" in text
+    assert "參數錯誤" not in text
+    info = powershell.analyze(script, cwd=str(tmp_path))
+    assert info["simple_literals"] is True
+    assert all(not command["binding_errors"] for command in info["all_commands"])
+    for name in ("one.tmp", "two.tmp", "other.txt"):
+        (tmp_path / name).write_text("fixture")
+    assert run(script, cwd=str(tmp_path)).strip() == "2"
+    assert "參數錯誤" in powershell.translate('Get-ChildItem -NotAParameter', cwd=str(tmp_path)).text()
+    if info["windows"]:
+        # File is filesystem-specific, not a universal provider parameter.
+        assert "參數錯誤" in powershell.translate('Get-ChildItem HKLM:\\Software -File', cwd=str(tmp_path)).text()

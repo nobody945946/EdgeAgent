@@ -53,6 +53,26 @@ function Command($c) {
   $kind = $type; if ($targetType) { $kind = $targetType }
   if ($kind -eq 'Cmdlet' -or $kind -eq 'Function') {
     $b = [System.Management.Automation.Language.StaticParameterBinder]::BindCommand($c, $true)
+    $metadata = if ($info.CommandType -eq 'Alias') { $targetCmd } else { $info }
+    $dynamicMetadata = $false
+    # StaticParameterBinder omits provider-specific parameters. Ask the native
+    # cmdlet for metadata using only literal arguments, never execute the AST.
+    if ($kind -eq 'Cmdlet' -and $module -eq 'Microsoft.PowerShell.Management') {
+      $arguments = @(); $literalArguments = $true
+      foreach ($e in @($c.CommandElements | Select-Object -Skip 1)) {
+        if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and -not $e.Argument) {
+          $arguments += '-' + $e.ParameterName
+        } elseif ($e -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+          $arguments += $e.Value
+        } elseif ($e -is [System.Management.Automation.Language.ConstantExpressionAst]) {
+          $arguments += $e.Value
+        } else { $literalArguments = $false; break }
+      }
+      if ($literalArguments) {
+        $native = Get-Command -Name ($module + '\' + $resolved) -ArgumentList $arguments -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($native) { $metadata = $native; $dynamicMetadata = $true }
+      }
+    }
     foreach ($kv in $b.BoundParameters.GetEnumerator()) {
       $p = $kv.Value
       $isSwitch = $false
@@ -68,19 +88,36 @@ function Command($c) {
       }
       if ($p.Value -and -not ($p.Value -is [System.Management.Automation.Language.CommandParameterAst])) { $value = $p.Value.Extent.Text }
       elseif ($p.Value -is [System.Management.Automation.Language.CommandParameterAst] -and $p.Value.Argument) { $value = $p.Value.Argument.Extent.Text }
-      $bound += [pscustomobject]@{ name = [string]$kv.Key; value = $value; switch = $isSwitch; at = $at }
+      $literal = $null
+      if ($p.Value -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $literal = $p.Value.Value }
+      $bound += [pscustomobject]@{ name = [string]$kv.Key; value = $value; literal = $literal; switch = $isSwitch; at = $at }
     }
     foreach ($kv in $b.BindingExceptions.GetEnumerator()) {
       $ex = $kv.Value.BindingException
-      if ($ex.ErrorId -eq 'AmbiguousParameter' -and $resolved -eq 'Get-ChildItem' -and $kv.Key -eq 'r') {
-        $at = -1
-        foreach ($e in $c.CommandElements) {
-          if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq 'r') {
-            $at = $e.Extent.StartOffset; break
-          }
+      if ($kind -eq 'Cmdlet' -and $ex.ErrorId -in @('AmbiguousParameter', 'NamedParameterNotFound')) {
+        $parameters = @($metadata.Parameters.Values | Where-Object { -not $_.IsDynamic -or $dynamicMetadata })
+        $matches = @($parameters | Where-Object { $_.Name -eq $kv.Key -or $_.Aliases -contains $kv.Key })
+        if ($matches.Count -eq 0) {
+          # PowerShell binds static parameter prefixes before provider-specific
+          # dynamic prefixes (e.g. Recurse before the filesystem's ReadOnly).
+          $matches = @($parameters | Where-Object { -not $_.IsDynamic -and $_.Name.StartsWith($kv.Key, [StringComparison]::OrdinalIgnoreCase) })
+          if ($matches.Count -eq 0) { $matches = @($parameters | Where-Object { $_.IsDynamic -and $_.Name.StartsWith($kv.Key, [StringComparison]::OrdinalIgnoreCase) }) }
         }
-        $bound += [pscustomobject]@{ name = 'Recurse'; value = ''; switch = $true; at = $at }
-        continue
+        if ($matches.Count -eq 1) {
+          $parameter = $matches[0]; $elements = @($c.CommandElements)
+          for ($index = 1; $index -lt $elements.Count; $index++) {
+            $e = $elements[$index]
+            if ($e -isnot [System.Management.Automation.Language.CommandParameterAst] -or $e.ParameterName -ne $kv.Key) { continue }
+            $isSwitch = $parameter.ParameterType -eq [System.Management.Automation.SwitchParameter]
+            $valueNode = $e.Argument
+            if (-not $isSwitch -and -not $valueNode -and $index + 1 -lt $elements.Count) { $valueNode = $elements[$index + 1] }
+            $literal = $null
+            if ($valueNode -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $literal = $valueNode.Value }
+            $bound += [pscustomobject]@{ name = $parameter.Name; value = (Text $valueNode); literal = $literal; switch = $isSwitch; at = $e.Extent.StartOffset }
+            break
+          }
+          continue
+        }
       }
       $bindErrors += [pscustomobject]@{ name = [string]$kv.Key; message = [string]$ex.Message }
     }
@@ -135,6 +172,10 @@ $out = [pscustomobject]@{
   errors = @($errors | ForEach-Object { [pscustomobject]@{ message = $_.Message; offset = $_.Extent.StartOffset } })
   statements = $statements; all_commands = $all
   other_blocks = [bool]($ast.BeginBlock -or $ast.ProcessBlock -or $ast.ParamBlock)
+  simple_literals = @($ast.FindAll({ param($n) $n.GetType().Name -notin @(
+    'ScriptBlockAst', 'NamedBlockAst', 'PipelineAst', 'CommandAst',
+    'CommandParameterAst', 'StringConstantExpressionAst', 'ConstantExpressionAst'
+  ) }, $true)).Count -eq 0
 }
 ConvertTo-Json -InputObject $out -Depth 12 -Compress
 """
