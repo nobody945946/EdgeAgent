@@ -89,7 +89,25 @@ const choose = async (selector,value) => {
 const waitJob=async(model=null)=>{for(let index=0;index<600;index++){const state=await evaluate('modelState?.job.state');if(state==='done'&&(!model||await evaluate('modelState.active_model==='+JSON.stringify(model))))return;if(state==='failed')throw Error(await evaluate('modelState.job.error'));await new Promise(resolve=>setTimeout(resolve,1000))}throw Error('Model operation timeout')};
 try {
   await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('Network.enable'); await cdp('Log.clear'); await cdp('Log.enable');
-  if(target.url==='about:blank')await cdp('Page.navigate',{url:'http://127.0.0.1:18087/'});
+    if(target.url==='about:blank')await cdp('Page.navigate',{url:'http://127.0.0.1:18087/'});
+    if(process.argv.includes('--lease-status')) {
+      await cdp('Page.navigate',{url:'http://127.0.0.1:18087/'});
+      await wait('document.readyState==="complete"&&!!modelState?.active_model');
+      await click('#actions-menu>summary');await click('#models-open');
+      await wait('modelDialog.open&&modelState?.mode==="character"');
+      const label=await evaluate('document.querySelector("#model-active").textContent');
+      const state=await evaluate('({active:modelState.active_model,lora:modelState.active_lora,stored:modelState.config.model})');
+      assert(label.includes('Agent 自動共用'),'lease sharing explained');
+      assert(label.includes(state.active)&&state.active!==state.stored,'leased model differs from standalone selection');
+      assert(label.includes('LoRA '+(state.lora||'不使用')),'effective adapter displayed');
+      assert(label.includes('歸還後恢復 '+state.stored),'restoration model displayed');
+      assert(await evaluate('document.querySelector("#model-switch").disabled'),'manual switch disabled during lease');
+      await setViewport({width:390,height:320,deviceScaleFactor:1,mobile:false});
+      assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'lease status fits compact viewport');
+      await writeFile('.test-tmp/edge-agent-lease-status.png',Buffer.from((await cdp('Page.captureScreenshot',{format:'png'})).data,'base64'));
+      assert.equal(errors.length,0,'lease UI browser errors');
+      console.log(JSON.stringify({event:'lease_status_browser',passed:6,total:6,unexpected_errors:errors.length}));
+    } else {
   await cdp('Emulation.setFocusEmulationEnabled',{enabled:true});
   await setViewport({width:1280,height:850,deviceScaleFactor:1,mobile:false});
   await cdp('Page.bringToFront');
@@ -542,4 +560,5 @@ try {
   assert.equal(errors.length,0,'browser errors');
   console.log(JSON.stringify({event:'edge_browser_verification',passed:true,memory_checks:process.env.EDGE_AGENT_TEST_MEMORY?5:1,adapter_checks:process.env.EDGE_AGENT_TEST_ADAPTER_FILE?8:0,viewports:8,unexpected_errors:errors.length,expected_directory_http400:expectedDirectoryStatuses.length,expected_error_logs:expectedErrors.length}));
   console.log('PASS: sidebar, new conversation, conversation switching, project dialog, workspace context, agent toggle, desktop and compact layout; 0 unexpected browser errors');
+    }
 } finally { socket.close(); }

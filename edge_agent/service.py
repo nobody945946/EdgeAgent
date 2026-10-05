@@ -185,6 +185,7 @@ class EdgeAgent:
         self.chat = NativeChat(model_port=GENERAL_PORT, core_dir=self.core_dir)
         self.terminal = NativeTerminal()
         self.active_model = ""
+        self.active_lora = ""
         self.agent_slot: int | None = None
         self.chat_in_progress = False
         self.active_context_size = 0
@@ -278,6 +279,7 @@ class EdgeAgent:
             "models": list_models(self.model_dir),
             "config": dict(self.config),
             "active_model": self.active_model,
+            "active_lora": self.active_lora,
             "capabilities": dict(self.capabilities),
             "recording_status": recording_status(
                 bool(self.config["record_sessions"]), str(self.config["record_folder"])
@@ -539,6 +541,7 @@ class EdgeAgent:
             "agent_busy": self.chat_in_progress,
             "error": self.error,
             "model": self.active_model,
+            "lora": self.active_lora,
             "context_size": self.active_context_size,
             "capabilities": dict(self.capabilities),
         }
@@ -643,7 +646,8 @@ class EdgeAgent:
                 raise ValueError("character configuration required")
             model_path = self._model_path(self._required_string(character, "model"))
             lora_name = self._required_string(character, "lora")
-            lora_path = self._adapter_path(model_metadata(model_path), lora_name)
+            metadata = model_metadata(model_path)
+            lora_path = self._adapter_path(metadata, lora_name)
             context_size = self._bounded_int(character, "context_size", 1_024, 32_768)
             port = self._bounded_int(character, "port", 1_024, 65_535)
             if port in (CONTROL_PORT, GENERAL_PORT):
@@ -655,15 +659,18 @@ class EdgeAgent:
         else:
             raise ValueError(f"unknown EdgeAgent mode: {mode}")
 
-        shared = (
-            mode == "character"
-            and model_path.name == self.config["model"]
-            and (lora_path.name if lora_path else "") == self.config["lora"]
-        )
+        # The lease supplies the effective model and adapter for both clients.
+        # Standalone preferences remain in config and return with the lease.
+        shared = mode == "character"
         role_slots = 2 if mode == "character" and lora_path else 1
         agent_slot = role_slots if shared else (0 if mode == "base" else None)
         if shared:
             context_size = max(context_size, int(self.config["context_size"]))
+            limit = metadata["context_length"]
+            if isinstance(limit, int) and limit > 0:
+                context_size = min(context_size, limit)
+            if context_size < MIN_AGENT_CONTEXT_SIZE:
+                raise ValueError("此模型的 context 少於 8192，無法支援 EdgeAgent")
         # The upstream router owns model processes, loading and hot replacement.
         # Keep one public inference endpoint for the Agent and leased clients.
         args = build_server_args(
@@ -748,34 +755,31 @@ class EdgeAgent:
             time.sleep(0.1)
         self.mode, self.port = mode, GENERAL_PORT
         properties = self._model_request("/props?model=local")
-        if mode == "base" or shared:
-            actual_context = properties.get("default_generation_settings", {}).get(
-                "n_ctx"
+        actual_context = properties.get("default_generation_settings", {}).get("n_ctx")
+        if actual_context != context_size:
+            raise RuntimeError(
+                f"引擎實際 context {actual_context} 與要求的 {context_size} 不符"
             )
-            if actual_context != context_size:
-                raise RuntimeError(
-                    f"引擎實際 context {actual_context} 與要求的 {context_size} 不符"
-                )
         modalities = properties.get("modalities", {})
         self.capabilities = {
             "vision": isinstance(modalities, dict) and modalities.get("vision") is True,
             "audio": isinstance(modalities, dict) and modalities.get("audio") is True,
         }
         self.active_model, self.active_context_size = model_path.name, context_size
+        self.active_lora = lora_path.name if lora_path else ""
         self.agent_slot = agent_slot
         self.owner_pid = owner_pid if mode == "character" else None
         self.owner_dead_since = None
         self.handoff_until = 0.0
-        if mode == "base" or shared:
-            self.chat.configure_context(
-                context_size,
-                model_path.name,
-                self.capabilities,
-                int(self.config["max_output_tokens"]),
-                int(self.config["working_context_size"]),
-            )
-            self.chat.slot_id = agent_slot
-            self.chat.lora_enabled = lora_path is not None
+        self.chat.configure_context(
+            context_size,
+            model_path.name,
+            self.capabilities,
+            int(self.config["max_output_tokens"]),
+            int(self.config["working_context_size"]),
+        )
+        self.chat.slot_id = agent_slot
+        self.chat.lora_enabled = lora_path is not None
 
     def _projector_path(self, filename: str) -> Path:
         path = self._model_path(filename)
@@ -855,6 +859,7 @@ class EdgeAgent:
         process = self.process
         self.process = None
         self.active_model = ""
+        self.active_lora = ""
         self.active_context_size = 0
         self.agent_slot = None
         if process is None or process.poll() is not None:

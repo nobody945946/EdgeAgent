@@ -53,7 +53,7 @@ Context 與單次輸出是兩個設定：context 放入輸入、媒體、歷史�
 
 架構相符只是最低檢查，不保證不同基底相容；載入失敗會嘗試恢復原配置。E4B adapter 不能任意套用 Qwen 等其他基底。
 
-SilentTalk 的角色配置與 Agent adapter 選擇分開，adapter 檔案則在同一 `models`。角色設定由 [SilentTalk 角色模型與 LoRA 說明](https://github.com/nobody945946/SilentTalk/blob/copilot-story-mode/README.md#silenttalk-的角色模型與-lora)維護。
+SilentTalk 租借時，Agent 自動共用角色傳來的基底與 LoRA，不必在兩個介面重複選擇；歸還後恢復 EdgeAgent 原本的模型與 adapter。模型模組會顯示租借期間實際使用的模型、LoRA，以及歸還後的選擇；租借不改寫 EdgeAgent 的持久設定。adapter 檔案在同一 `models`。角色設定由 [SilentTalk 角色模型與 LoRA 說明](https://github.com/nobody945946/SilentTalk/blob/copilot-story-mode/README.md#silenttalk-的角色模型與-lora)維護。
 
 ## 批准、佇列與保存範圍
 
@@ -69,7 +69,7 @@ SilentTalk 的角色配置與 Agent adapter 選擇分開，adapter 檔案則在�
 
 ## 共用推論服務
 
-SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸還後恢復原 Agent 配置。最多載入一個完整模型。租借基底與 LoRA 都和 Agent 相同時，可在租借期間做 Agent 工作；不同時拒絕派工。租借或工作中禁止切換模型。角色 context 預設 32,768，Agent 預設 131,072，分開設定。
+SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸還後恢復原 Agent 配置。最多載入一個完整模型；租借期間 Agent 自動跟隨角色的基底與 LoRA，使用獨立 slot 做工作，不需要修改原本的 Agent 選擇。租借或工作中禁止手動切換模型。角色 context 預設 32,768，Agent 預設 131,072，分開設定；共用時取兩者較大值並限制在租借模型的 context 上限，模型需至少支援 8,192 token。
 
 單獨安裝 EdgeAgent 只準備 Agent 模型；SilentTalk 部署額外準備公開 Gemma 4 E4B，不取得個人 LoRA。角色有 LoRA 時使用兩個推論 slot，區分套用與未套用 cache；其他情況角色使用一個 slot。相同基底與 LoRA 時另加 Agent 專用 slot，避免互相清除 cache。每個 slot 保留兩個用戶端要求的較大 context，不自動縮小使用者設定；記憶體不足時載入會失敗並回報。
 

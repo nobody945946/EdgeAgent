@@ -151,27 +151,48 @@ def test_base_server_is_one_slot_without_an_extra_agent_loop() -> None:
 
 
 @pytest.mark.parametrize(
-    "same_base,same_lora,expected_slots",
+    "same_base,standalone_lora,leased_lora",
     [
-        (True, True, 2),
-        (False, True, 1),
-        (True, False, 2),
+        (True, "", ""),
+        (False, "", ""),
+        (True, "", "adapter.gguf"),
+        (False, "agent.gguf", "role.gguf"),
+        (False, "agent.gguf", ""),
     ],
 )
-def test_character_shared_slot_requires_same_base_and_adapter(
+@pytest.mark.parametrize("model_limit", [8192, 16384, 32768])
+def test_character_lease_shares_model_and_adapter_then_restores_preferences(
     tmp_path,
     monkeypatch,
     same_base,
-    same_lora,
-    expected_slots,
+    standalone_lora,
+    leased_lora,
+    model_limit,
 ):
     manager = service.EdgeAgent(tmp_path)
-    manager.config = {**manager.config, "model": "base.gguf", "context_size": 16384}
+    original = manager._save_config(
+        {
+            **manager.config,
+            "model": "base.gguf",
+            "lora": standalone_lora,
+            "context_size": 16384,
+        }
+    )
+    saved = manager.config_path.read_bytes()
+    expected_context = min(16384, model_limit)
     manager.process = SimpleNamespace(poll=lambda: None)
     monkeypatch.setattr(service, "find_llama_server", lambda: "llama-server")
     monkeypatch.setattr(manager, "_model_path", lambda name: tmp_path / name)
     monkeypatch.setattr(
-        service, "model_metadata", lambda path: {"architecture": "fixture"}
+        service,
+        "model_metadata",
+        lambda path: {
+            "architecture": "fixture",
+            "adapter": False,
+            "split": False,
+            "projector": False,
+            "context_length": model_limit,
+        },
     )
     monkeypatch.setattr(
         manager, "_adapter_path", lambda base, name: tmp_path / name if name else None
@@ -181,16 +202,17 @@ def test_character_shared_slot_requires_same_base_and_adapter(
         manager,
         "_model_request",
         lambda *args, **kwargs: {
-            "default_generation_settings": {"n_ctx": 16384},
+            "default_generation_settings": {"n_ctx": expected_context},
             "modalities": {},
         },
     )
-    manager._start_child(
+    leased_model = "base.gguf" if same_base else "other.gguf"
+    status = manager.switch(
         "character",
         123,
         {
-            "model": "base.gguf" if same_base else "other.gguf",
-            "lora": "" if same_lora else "adapter.gguf",
+            "model": leased_model,
+            "lora": leased_lora,
             "port": 18088,
             "context_size": 8192,
             "gpu_layers": 99,
@@ -198,12 +220,25 @@ def test_character_shared_slot_requires_same_base_and_adapter(
         },
     )
     preset = (tmp_path / ".runtime/models.ini").read_text()
-    assert f"parallel = {expected_slots}" in preset
-    assert (manager.agent_slot is not None) == (same_base and same_lora)
-    if manager.agent_slot is not None:
-        assert manager.chat.slot_id == 1
-        assert manager.chat.context_size == 16384
-        assert "ctx-size = 32768" in preset
+    role_slots = 2 if leased_lora else 1
+    assert f"parallel = {role_slots + 1}" in preset
+    assert manager.agent_slot == manager.chat.slot_id == role_slots
+    assert manager.chat.context_size == expected_context
+    assert f"ctx-size = {expected_context * (role_slots + 1)}" in preset
+    assert manager.chat.lora_enabled == bool(leased_lora)
+    assert status["model"] == leased_model
+    assert status["lora"] == leased_lora
+    assert manager.models_status()["active_lora"] == leased_lora
+    assert manager.config == original
+    assert manager.config_path.read_bytes() == saved
+
+    restored = manager.switch("base", 123)
+    assert restored["model"] == original["model"]
+    assert restored["lora"] == original["lora"]
+    assert manager.agent_slot == manager.chat.slot_id == 0
+    assert manager.chat.lora_enabled == bool(standalone_lora)
+    assert manager.config == original
+    assert manager.config_path.read_bytes() == saved
 
 
 def test_busy_stream_cannot_switch_models_but_does_not_hold_service_lock(tmp_path):

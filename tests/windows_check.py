@@ -261,6 +261,7 @@ def role_probe(core: EdgeAgent) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--browser", action="store_true")
+    parser.add_argument("--lease-sharing", action="store_true")
     parser.add_argument("--interview-models", action="store_true")
     parser.add_argument("--inference-port", type=int, default=18089)
     args = parser.parse_args()
@@ -360,6 +361,77 @@ def main() -> int:
                     )
                 if failures:
                     raise AssertionError(f"{failures} interview model checks failed")
+            if args.lease_sharing:
+                original = dict(core.config)
+                saved = (
+                    core.config_path.read_bytes() if core.config_path.exists() else None
+                )
+                prompts = {
+                    "EDGE_AGENT_ROLE_PROMPT": "Reply with only OK.",
+                    "EDGE_AGENT_READ_PROMPT": "Read probe.py and report the value of fixture_marker.",
+                }
+                previous = {key: os.environ.get(key) for key in prompts}
+                os.environ.update(prompts)
+                try:
+                    status = core.switch(
+                        "character",
+                        os.getpid(),
+                        {
+                            "model": DEFAULT_MODEL,
+                            "lora": "",
+                            "context_size": 8192,
+                            "gpu_layers": 99,
+                            "low_vram": True,
+                            "port": 18088,
+                        },
+                    )
+                    assert DEFAULT_MODEL != original["model"]
+                    assert status["ready"] and status["agent_slot"] == 1
+                    assert status["model"] == DEFAULT_MODEL and status["lora"] == ""
+                    assert core.config == original
+                    if args.browser:
+                        subprocess.run(
+                            [
+                                str(
+                                    CORE_ROOT
+                                    / f".runtime/node/node-v{NODE_VERSION}-win-x64/node.exe"
+                                ),
+                                "tests/browser_check.mjs",
+                                "--lease-status",
+                            ],
+                            cwd=CORE_ROOT,
+                            check=True,
+                            timeout=60,
+                        )
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                        agent = pool.submit(
+                            native_probe, core, workspace, "EDGE_AGENT_READ_PROMPT"
+                        )
+                        role = pool.submit(role_probe, core)
+                        result = {
+                            "event": "automatic_lease_sharing",
+                            "leased_model": core.active_model,
+                            "agent_slot": core.agent_slot,
+                            "agent": agent.result(),
+                            "role": role.result(),
+                        }
+                finally:
+                    core.chat.close()
+                    restored = core.switch("base", os.getpid())
+                    for key, value in previous.items():
+                        if value is None:
+                            os.environ.pop(key, None)
+                        else:
+                            os.environ[key] = value
+                assert restored["ready"] and restored["model"] == original["model"]
+                assert core.config == original
+                assert (
+                    core.config_path.read_bytes() if core.config_path.exists() else None
+                ) == saved
+                result.update(
+                    {"restored_model": restored["model"], "preferences_unchanged": True}
+                )
+                print(json.dumps(result), flush=True)
             for key in ("EDGE_AGENT_WEB_PROMPT", "EDGE_AGENT_SEARCH_PROMPT"):
                 if key in os.environ:
                     print(json.dumps(native_probe(core, workspace, key)), flush=True)
