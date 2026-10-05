@@ -15,12 +15,15 @@ const socket = new WebSocket(target.webSocketDebuggerUrl);
 await new Promise(resolve => socket.addEventListener('open', resolve, {once:true}));
 let serial = 0;
 const pending = new Map(), errors = [], expectedErrors = [], expectedDirectoryStatuses = [], chatModes = [];
-const expectedDirectoryRequests = new Set();
+const expectedDirectoryRequests = new Set(), expectedRecordRequests = new Set(), expectedRecordStatuses = [];
 socket.addEventListener('message', event => {
   const value = JSON.parse(event.data);
   if (value.id) { pending.get(value.id)?.(value); pending.delete(value.id); }
   else if(value.method==='Network.requestWillBeSent'&&value.params.request.url==='http://127.0.0.1:18087/chat') chatModes.push(JSON.parse(value.params.request.postData||'{}').mode);
   else if(value.method==='Network.requestWillBeSent'&&value.params.request.url==='http://127.0.0.1:18087/directories'&&JSON.parse(value.params.request.postData||'{}').path===missingDirectory) expectedDirectoryRequests.add(value.params.requestId);
+  else if(value.method==='Network.requestWillBeSent'&&value.params.request.url==='http://127.0.0.1:18087/records/prepare'&&JSON.parse(value.params.request.postData||'{}').folder===folderFixture) expectedRecordRequests.add(value.params.requestId);
+  else if(value.method==='Network.responseReceived'&&expectedRecordRequests.has(value.params.requestId)) expectedRecordStatuses.push(value.params.response.status);
+  else if(value.method==='Log.entryAdded'&&value.params.entry.source==='network'&&expectedRecordRequests.has(value.params.entry.networkRequestId)) expectedErrors.push(value);
   else if(value.method==='Network.responseReceived'&&expectedDirectoryRequests.has(value.params.requestId)) expectedDirectoryStatuses.push(value.params.response.status);
   else if(value.method==='Log.entryAdded'&&value.params.entry.source==='network'&&expectedDirectoryRequests.has(value.params.entry.networkRequestId)) expectedErrors.push(value);
   else if (value.method === 'Runtime.exceptionThrown' || (value.method === 'Network.loadingFailed' && !value.params.canceled) || (value.method === 'Log.entryAdded' && value.params.entry.level === 'error') || (value.method === 'Runtime.consoleAPICalled' && value.params.type === 'error')) errors.push(value);
@@ -95,6 +98,30 @@ try {
   await wait('!window.__edgeAgentCheckReload&&document.readyState==="complete"&&document.querySelectorAll(".thread").length===1');
   assert(await evaluate('!!document.querySelector("#sidebar")'), 'project sidebar');
   assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'), 'desktop width fits');
+  await mkdir(folderFixture,{recursive:true});
+  const originalRecords=await (await fetch('http://127.0.0.1:18087/records')).json();
+  await click('#actions-menu>summary');await click('#records-open');
+  await wait('document.querySelector("#records-dialog").open&&!document.querySelector("#records-save").disabled');
+  assert.equal(await evaluate('document.querySelector("#records-status").textContent'),originalRecords.status);
+  try{
+    await fill('#records-folder',folderFixture);await click('#records-prepare');
+    await wait('document.querySelector("#records-result").textContent.includes("系統磁碟")');
+    if(!await evaluate('document.querySelector("#records-enabled").checked'))await click('#records-enabled');
+    await click('#records-save');await wait('document.querySelector("#records-status").textContent.startsWith("暫停")');
+    assert.equal((await (await fetch('http://127.0.0.1:18087/records')).json()).record_folder,folderFixture);
+    await setViewport({width:390,height:320,deviceScaleFactor:1,mobile:false});
+    assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'records dialog fits compact viewport');
+    const recordsScreenshot=await cdp('Page.captureScreenshot',{format:'png'});
+    await writeFile('.test-tmp/edge-agent-records.png',Buffer.from(recordsScreenshot.data,'base64'));
+  }finally{
+    await setViewport({width:1280,height:850,deviceScaleFactor:1,mobile:false});
+    await fill('#records-folder',originalRecords.record_folder);
+    if(await evaluate('document.querySelector("#records-enabled").checked')!==originalRecords.record_sessions)await click('#records-enabled');
+    await click('#records-save');await wait('document.querySelector("#records-status").textContent==='+JSON.stringify(originalRecords.status));
+    assert.deepEqual(await (await fetch('http://127.0.0.1:18087/records')).json(),originalRecords,'records configuration restored');
+    await click('#records-close');
+  }
+  console.log('PASS: records dialog, system-disk rejection, save, paused status, compact layout and restoration');
   assert.deepEqual(await evaluate('[...document.querySelector("#mode").options].map(option=>[option.value,option.textContent])'),[['work','工作'],['interview','求知儀式'],['discussion','推演儀式']],'the work, interview and discussion modes exist');
   await click('#actions-menu>summary');
   await click('#models-open');
@@ -511,6 +538,7 @@ try {
   await cdp('Emulation.clearDeviceMetricsOverride');
   if(errors.length) console.error(JSON.stringify(errors));
   assert.deepEqual(expectedDirectoryStatuses,[400],'only the deliberate missing-directory request returns an expected error');
+  assert.deepEqual(expectedRecordStatuses,[400],'system disk registration is rejected');
   assert.equal(errors.length,0,'browser errors');
   console.log(JSON.stringify({event:'edge_browser_verification',passed:true,memory_checks:process.env.EDGE_AGENT_TEST_MEMORY?5:1,adapter_checks:process.env.EDGE_AGENT_TEST_ADAPTER_FILE?8:0,viewports:8,unexpected_errors:errors.length,expected_directory_http400:expectedDirectoryStatuses.length,expected_error_logs:expectedErrors.length}));
   console.log('PASS: sidebar, new conversation, conversation switching, project dialog, workspace context, agent toggle, desktop and compact layout; 0 unexpected browser errors');

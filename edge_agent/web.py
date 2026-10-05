@@ -97,7 +97,7 @@ select{min-height:32px;min-width:0;border:0;border-radius:7px;background:#252525
 .compact-height .folder-head,.compact-height #folder-address-form,.compact-height .folder-actions{padding:6px 10px}
 .compact-height .folder-path,.compact-height #folder-error{max-height:32px}
 @media(prefers-reduced-motion:no-preference){#sidebar{transition:transform .15s ease,visibility .15s}}
-#models-dialog,#permissions-dialog{width:min(700px,calc(100vw - 24px));max-height:calc(var(--app-height) - 24px);padding:0;color:#ececec;background:#222;border:1px solid #444;border-radius:14px;overflow:auto}
+#models-dialog,#permissions-dialog,#records-dialog{width:min(700px,calc(100vw - 24px));max-height:calc(var(--app-height) - 24px);padding:0;color:#ececec;background:#222;border:1px solid #444;border-radius:14px;overflow:auto}
 #permissions-dialog textarea{background:#181818;border:1px solid #555;border-radius:8px;min-height:85px}
 #models-dialog::backdrop{background:#0009}
 .model-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;position:sticky;top:0;background:#222;z-index:1}
@@ -106,8 +106,8 @@ select{min-height:32px;min-width:0;border:0;border-radius:7px;background:#252525
 @media(max-width:480px){.model-grid{grid-template-columns:1fr}.model-row{flex-wrap:wrap}.model-row input{flex-basis:100%}}
 </style>
 </head>
-<body><aside id="sidebar" aria-label="專案與對話"><div class="sidebar-heading"><h2>EdgeAgent</h2><button id="nav-close" aria-label="關閉側欄">×</button></div><button id="new-thread" class="secondary">＋ 新對話</button><button id="open-project" class="secondary">開啟專案</button><div class="nav-title">專案與對話</div><div id="threads"></div><div id="privacy">本機工作 · 對話只在記憶體<br>關閉頁面後不保留對話</div></aside><button id="nav-backdrop" aria-label="關閉側欄" hidden></button><main>
-<header><button id="nav-toggle" aria-label="開啟側欄" aria-controls="sidebar" aria-expanded="false">☰</button><div class="heading"><h1>EdgeAgent</h1><div class="sub">本機編程 Agent · 對話只留在記憶體</div></div><div class="actions"><details id="actions-menu"><summary aria-label="更多操作">⋯</summary><div class="action-menu"><button id="models-open" class="secondary">模型模組</button><button id="permissions-open" class="secondary">權限</button><button id="save" class="secondary">儲存設定</button><button id="reset" class="secondary">新對話</button><button id="shutdown" class="danger">關閉EdgeAgent</button></div></details></div></header>
+<body><aside id="sidebar" aria-label="專案與對話"><div class="sidebar-heading"><h2>EdgeAgent</h2><button id="nav-close" aria-label="關閉側欄">×</button></div><button id="new-thread" class="secondary">＋ 新對話</button><button id="open-project" class="secondary">開啟專案</button><div class="nav-title">專案與對話</div><div id="threads"></div><div id="privacy">本機工作 · 未開啟紀錄時只在記憶體<br>紀錄可寫進你選的加密磁碟</div></aside><button id="nav-backdrop" aria-label="關閉側欄" hidden></button><main>
+<header><button id="nav-toggle" aria-label="開啟側欄" aria-controls="sidebar" aria-expanded="false">☰</button><div class="heading"><h1>EdgeAgent</h1><div class="sub">本機編程 Agent · 紀錄由你選擇</div></div><div class="actions"><details id="actions-menu"><summary aria-label="更多操作">⋯</summary><div class="action-menu"><button id="models-open" class="secondary">模型模組</button><button id="permissions-open" class="secondary">權限</button><button id="records-open" class="secondary">紀錄</button><button id="save" class="secondary">儲存設定</button><button id="reset" class="secondary">新對話</button><button id="shutdown" class="danger">關閉EdgeAgent</button></div></details></div></header>
 <section class="controls">
   <label class="control"><span>Thinking effort</span><select id="effort" aria-label="Thinking effort"><option value="off">關閉</option><option value="low">低</option><option value="medium" selected>中</option><option value="high">高</option></select></label>
   <div class="agent-controls"><label class="toggle"><input id="agent" type="checkbox" checked>啟用 Agent</label></div>
@@ -151,7 +151,25 @@ select{min-height:32px;min-width:0;border:0;border-radius:7px;background:#252525
 <div id="permissions-profiles"></div>
 <button id="permissions-save" type="submit">儲存權限</button><p id="permissions-result" role="status"></p>
 </form></dialog>
+<dialog id="records-dialog" aria-label="紀錄">
+<div class="model-head"><strong>紀錄</strong><button id="records-close" type="button">關閉</button></div>
+<form id="records-form" class="model-body">
+<p>只存文字到你選的加密磁碟（外接硬碟，或 SSD 上的加密容器）。容器必須掛上、解鎖，並有獨立磁碟代號。磁碟無法使用時就暫停，不會改寫到別處。</p>
+<label class="model-check"><input id="records-enabled" type="checkbox">記錄工作對話</label>
+<label>紀錄資料夾<input id="records-folder" type="text" placeholder="例如 E:\\AgentRecords" aria-label="紀錄資料夾"></label>
+<button id="records-prepare" type="button">設為紀錄資料夾</button>
+<button id="records-save" type="submit">儲存紀錄設定</button>
+<p id="records-status" role="status" aria-live="polite"></p><p id="records-result" role="status"></p>
+</form></dialog>
 <script>
+const recordsDialog=document.querySelector('#records-dialog'),recordsResult=document.querySelector('#records-result');
+let recordsTimer=null,recordsLoading=false;
+async function refreshRecords(reset=false){try{const response=await fetch('/records');if(!response.ok)throw Error('讀取紀錄設定失敗');const data=await response.json();if(reset){document.querySelector('#records-enabled').checked=data.record_sessions;document.querySelector('#records-folder').value=data.record_folder}document.querySelector('#records-status').textContent=data.status;return true}catch(error){recordsResult.textContent=error.message;return false}finally{clearTimeout(recordsTimer);if(recordsDialog.open)recordsTimer=setTimeout(()=>refreshRecords(),1000)}}
+document.querySelector('#records-open').onclick=async()=>{recordsDialog.showModal();recordsResult.textContent='';recordsLoading=true;document.querySelector('#records-save').disabled=true;document.querySelector('#records-prepare').disabled=true;const loaded=await refreshRecords(true);recordsLoading=!loaded;document.querySelector('#records-save').disabled=!loaded;document.querySelector('#records-prepare').disabled=!loaded};
+document.querySelector('#records-close').onclick=()=>recordsDialog.close();
+recordsDialog.addEventListener('close',()=>clearTimeout(recordsTimer));
+document.querySelector('#records-prepare').onclick=async()=>{if(recordsLoading)return;try{await modelPost('/records/prepare',{folder:document.querySelector('#records-folder').value.trim()});recordsResult.textContent='已設為紀錄資料夾；儲存並開啟記錄後生效。';await refreshRecords()}catch(error){recordsResult.textContent=error.message}};
+document.querySelector('#records-form').onsubmit=async event=>{event.preventDefault();if(recordsLoading)return;try{await modelPost('/config',{record_sessions:document.querySelector('#records-enabled').checked,record_folder:document.querySelector('#records-folder').value.trim()});recordsResult.textContent='紀錄設定已儲存';await refreshRecords()}catch(error){recordsResult.textContent=error.message}};
 const permissionDialog=document.querySelector('#permissions-dialog');
 let permissionLoading=false;
 function renderPermissions(profiles){const container=document.querySelector('#permissions-profiles');container.replaceChildren();for(const [client,title] of [['ui','網頁'],['discord','Discord']]){const section=document.createElement('fieldset');section.style.minWidth='0';const legend=document.createElement('legend');legend.textContent=title;section.append(legend);const enabled=document.createElement('label');enabled.className='model-check';const check=document.createElement('input');check.type='checkbox';check.id='permission-'+client+'-enabled';check.checked=profiles[client].enabled;enabled.append(check,document.createTextNode('啟用 '+title+' Agent'));section.append(enabled);for(const [category,label] of [['edit','寫檔'],['shell','執行指令'],['web','上網']]){const row=document.createElement('label');row.textContent=label;const select=document.createElement('select');select.id='permission-'+client+'-'+category;for(const [value,text] of [['allow','允許'],['ask','詢問'],['deny','禁止']])select.append(new Option(text,value));select.value=profiles[client][category];row.append(select);section.append(row)}const folders=document.createElement('label');folders.textContent='可用資料夾（每行一個；Discord 至少需要一個）';const area=document.createElement('textarea');area.id='permission-'+client+'-workspaces';area.value=profiles[client].workspaces.join('\n');folders.append(area);section.append(folders);container.append(section)}}

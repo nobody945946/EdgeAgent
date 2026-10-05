@@ -26,6 +26,7 @@ from edge_agent.permissions import (
     validate_permissions,
     workspace_allowed,
 )
+from edge_agent.records import prepare_record_folder, recording_status
 from edge_agent.runtime import (
     CONTROL_PORT,
     CORE_ROOT,
@@ -278,6 +279,9 @@ class EdgeAgent:
             "config": dict(self.config),
             "active_model": self.active_model,
             "capabilities": dict(self.capabilities),
+            "recording_status": recording_status(
+                bool(self.config["record_sessions"]), str(self.config["record_folder"])
+            ),
             "context_size": self.active_context_size,
             "max_output_tokens": self.chat.max_output_tokens
             if self.mode == "base" or self.agent_slot is not None
@@ -927,6 +931,13 @@ class EdgeAgent:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Navigation or closing a browser can disconnect any HTTP response.
+            self.close_connection = True
+
     core: EdgeAgent
 
     def do_GET(self) -> None:
@@ -934,6 +945,18 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, self.core.status())
         elif self.path == "/config":
             self._json(HTTPStatus.OK, self.core.config)
+        elif self.path == "/records":
+            config = self.core.config
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "record_sessions": config["record_sessions"],
+                    "record_folder": config["record_folder"],
+                    "status": recording_status(
+                        bool(config["record_sessions"]), str(config["record_folder"])
+                    ),
+                },
+            )
         elif self.path == "/models":
             self._json(HTTPStatus.OK, self.core.models_status())
         elif self.path in ("/", "/index.html"):
@@ -959,6 +982,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             payload = self._payload()
+            if self.path == "/records/prepare":
+                path = prepare_record_folder(payload.get("folder"))
+                self._json(HTTPStatus.OK, {"folder": str(path)})
+                return
             if self.path == "/models/catalog":
                 self._json(HTTPStatus.OK, hub_catalog(payload.get("repository")))
                 return

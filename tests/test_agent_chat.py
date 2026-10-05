@@ -163,9 +163,11 @@ def test_success_is_reported_only_after_settlement_and_ram_checkpoint(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_sessions_are_kept_only_on_the_records_drive(tmp_path):
+def test_sessions_are_kept_only_on_the_records_drive(tmp_path, monkeypatch):
     """A finished turn is written whole to the records drive, and only when
     the folder holds the setup marker (records.py)."""
+    from edge_agent import records
+    monkeypatch.setattr(records, "_system_drive", lambda: "")
     work, drive = tmp_path / "work", tmp_path / "drive"
     work.mkdir()
     drive.mkdir()
@@ -182,6 +184,9 @@ def test_sessions_are_kept_only_on_the_records_drive(tmp_path):
     list(chat.stream_reply("kept-2", "fixture", working_dir=work))  # recording off
     assert not (drive / "edgeagent" / "kept-2.jsonl").exists()
     assert list(work.iterdir()) == []
+    (drive / records.MARKER).unlink()
+    list(chat.stream_reply("kept-3", "fixture", working_dir=work, record_folder=str(drive)))
+    assert not (drive / "edgeagent" / "kept-3.jsonl").exists()
 
 
 @pytest.mark.parametrize(

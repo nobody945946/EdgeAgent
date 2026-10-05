@@ -6,7 +6,59 @@ from types import SimpleNamespace
 
 import pytest
 
-from edge_agent import api, runtime, service
+from edge_agent import api, records, runtime, service
+
+
+@pytest.mark.parametrize(
+    "exception", [BrokenPipeError, ConnectionResetError, ConnectionAbortedError]
+)
+def test_http_disconnect_ends_connection_without_server_traceback(
+    monkeypatch, exception
+):
+    def disconnected(handler):
+        raise exception("fixture")
+
+    monkeypatch.setattr(service.BaseHTTPRequestHandler, "handle", disconnected)
+    handler = object.__new__(service.Handler)
+    handler.handle()
+    assert handler.close_connection is True
+
+
+def test_http_handler_keeps_unexpected_failures_visible(monkeypatch):
+    def failed(handler):
+        raise RuntimeError("fixture")
+
+    monkeypatch.setattr(service.BaseHTTPRequestHandler, "handle", failed)
+    with pytest.raises(RuntimeError, match="fixture"):
+        object.__new__(service.Handler).handle()
+
+
+def test_records_prepare_and_status_follow_drive_availability(tmp_path, monkeypatch):
+    monkeypatch.setattr(records, "_system_drive", lambda: "")
+    missing = tmp_path / "missing"
+    with pytest.raises(OSError):
+        records.prepare_record_folder(str(missing))
+    assert not missing.exists()
+    assert records.recording_status(False, str(tmp_path)) == "關閉"
+    assert not records.save_session(str(tmp_path), "fixture", [])
+    records.prepare_record_folder(str(tmp_path))
+    assert records.recording_status(True, str(tmp_path)) == "記錄中"
+    assert records.save_session(str(tmp_path), "fixture", [])
+    (tmp_path / records.MARKER).unlink()
+    assert records.recording_status(True, str(tmp_path)).startswith("暫停")
+    assert not records.save_session(str(tmp_path), "missing-marker", [])
+    assert not (tmp_path / "edgeagent" / "missing-marker.jsonl").exists()
+
+
+def test_records_reject_system_disk_even_with_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        records, "_system_drive", lambda: tmp_path.drive.casefold() or "C:"
+    )
+    (tmp_path / records.MARKER).touch()
+    with pytest.raises(ValueError, match="系統磁碟"):
+        records.prepare_record_folder(str(tmp_path))
+    assert not records.save_session(str(tmp_path), "fixture", [])
+    assert not (tmp_path / "edgeagent").exists()
 
 
 def test_live_character_lease_cannot_be_stolen_or_stopped(tmp_path, monkeypatch):
