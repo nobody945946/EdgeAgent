@@ -98,7 +98,7 @@ class RPCFixture(NativeChat):
         self.records = []
         self.fixture_events = events
 
-    def _start(self, session, cwd, effort, agent, read_only, permissions, mcp_servers):
+    def _start(self, session, cwd, effort, agent, read_only, public, permissions, mcp_servers):
         self.started_permissions = permissions
         self._active = session
         self._process = SimpleNamespace(poll=lambda: None)
@@ -1073,7 +1073,7 @@ def test_real_sdk_read_only_task_refuses_changes_without_asking(tmp_path, repeat
     try:
         for name, data in chat.stream_reply(
             "read-only", "數一下有幾個 tmp 檔", agent=True, working_dir=tmp_path,
-            permissions={"edit": "allow", "shell": "allow", "web": "deny"}, read_only=True,
+            permissions={"edit": "allow", "shell": "allow", "web": "deny"}, scope="read",
         ):
             events.append((name, data))
     finally:
@@ -1087,6 +1087,40 @@ def test_real_sdk_read_only_task_refuses_changes_without_asking(tmp_path, repeat
     refused = [m for m in results if "read-only" in json.dumps(m) or "inspection only" in json.dumps(m)]
     assert "This task is read-only" not in json.dumps(results[0])
     assert len(refused) == 3  # the three shell changes; write and edit are not even offered
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_public_lookup_has_the_web_alone_and_never_asks(tmp_path, repeating_model):
+    """A lookup anyone may ask for by voice: only the web tools are offered,
+    files and commands are out of reach, an address the model built is
+    refused instead of asking the owner, and so is web the owner set to ask."""
+    port, state = repeating_model
+    (tmp_path / "private.txt").write_text("PRIVATE-CONTENT-7f3")
+    state["sequence"] = [
+        ("read", {"path": "private.txt"}),
+        ("powershell", {"command": "Get-Content -Path private.txt"}),
+        ("web_fetch", {"url": "https://example.invalid/?q=secret"}),
+    ]
+    chat = NativeChat(model_port=port)
+    events = []
+    try:
+        for rules in ({"edit": "allow", "shell": "allow", "web": "allow"},
+                      {"edit": "allow", "shell": "allow", "web": "ask"}):
+            state["calls"], state["requests"] = 0, []
+            for name, data in chat.stream_reply(
+                "public", "今天台股收盤多少", agent=True, working_dir=tmp_path,
+                permissions=rules, scope="public",
+            ):
+                events.append((name, data))
+            tools = sorted(t["function"]["name"] for t in state["requests"][0].get("tools", []))
+            assert tools == ["web_fetch", "web_research", "web_search"]
+            results = json.dumps([m for m in state["requests"][-1]["messages"] if m["role"] == "tool"])
+            assert "Tool read not found" in results and "Tool powershell not found" in results
+            assert "public lookup" in results
+    finally:
+        chat.close()
+    assert not any(name == "approval" for name, _ in events)
+    assert "PRIVATE-CONTENT-7f3" not in json.dumps(state["requests"])
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")

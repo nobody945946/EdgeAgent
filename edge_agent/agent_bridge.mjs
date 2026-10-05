@@ -70,9 +70,12 @@ const rules = init.permissions ?? { edit: 'ask', shell: 'ask', web: 'allow' };
 const CATEGORY = { edit: 'edit', write: 'edit', powershell: 'shell', bash: 'shell',
   web_search: 'web', web_fetch: 'web', web_research: 'web' };
 const webTools = rules.web === 'deny' ? [] : ['web_research', 'web_search', 'web_fetch'];
+// A public lookup (scope "public"): the web tools alone, nothing of this
+// computer's and nothing that would ask the owner.
+const publicOnly = init.public === true;
 // MCP servers the owner enabled for this client (edge_agent/mcp.py). Their
 // tools are deferred: the model sees tool_search until it looks them up.
-const mcpServers = init.agent ? (init.mcp_servers ?? {}) : {};
+const mcpServers = init.agent && !publicOnly ? (init.mcp_servers ?? {}) : {};
 const mcpPrefixes = Object.keys(mcpServers).map(name => [`mcp__${name.replace(/[^A-Za-z0-9_]/g, '_')}__`, name]);
 // The enabled servers in one short paragraph: their tools are hidden until
 // tool_search finds them, so without it a small model never looks.
@@ -307,6 +310,11 @@ function policy(pi) {
     if (rule === 'allow' && tainted && category !== 'web') rule = 'ask';
     const explicit = CATEGORY[toolName] === 'shell' ? explicitApproval(input?.command)
       : toolName === 'web_fetch' && !seenURLs.has(normalURL(input?.url)) ? 'new_url' : '';
+    // Nobody is asked during a public lookup: what the owner's settings do
+    // not allow outright is refused, and so is any address the model built.
+    if (publicOnly && (explicit || rule !== 'allow')) return { block: true, reason: explicit
+      ? 'A public lookup opens only addresses that a search returned or that were given to it.'
+      : "The owner's permission settings do not allow this without asking, and a public lookup never asks." };
     // In a read-only task every command goes to the host's proof; no standing approval covers it.
     if (!explicit && !provableReads && (rule === 'allow' || turnApproved)) return;
     const choice = await ctx.ui.select(JSON.stringify({ tool: toolName, arguments: input, after_web: tainted, explicit }),
@@ -401,7 +409,7 @@ const mcpExtensions = mcpPrefixes.length ? [sdk.createToolSearchExtension(), sdk
 // With MCP the allowlist would also hide every server tool (their names are
 // known only once the servers connect), so the same set is the default and
 // every other built-in tool is excluded instead.
-const ownTools = [...(init.agent ? (init.read_only ? ['read', 'grep', 'find', 'ls', 'search_history', ...(rules.shell === 'read' ? ['powershell'] : [])]
+const ownTools = publicOnly ? [...webTools] : [...(init.agent ? (init.read_only ? ['read', 'grep', 'find', 'ls', 'search_history', ...(rules.shell === 'read' ? ['powershell'] : [])]
   : ['read', 'grep', 'find', 'ls', 'edit', 'write', 'powershell', 'search_history']) : ['search_history']),
   ...(init.agent && init.python ? ['translate_machine'] : []), ...webTools];
 const BUILTIN_TOOLS = ['read', 'bash', 'powershell', 'edit', 'write', 'grep', 'find', 'ls'];

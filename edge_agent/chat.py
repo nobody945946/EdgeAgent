@@ -22,8 +22,8 @@ from edge_agent.lingua import powershell as lingua_powershell
 from edge_agent.permissions import (
     DEFAULT_PERMISSIONS,
     bridge_rules,
-    read_only_rules,
     routine_shell,
+    scope_rules,
 )
 from edge_agent.records import save_session
 from edge_agent.runtime import (
@@ -403,6 +403,7 @@ class NativeChat:
         effort: str,
         agent: bool,
         read_only: bool,
+        public: bool,
         permissions: dict[str, str],
         mcp_servers: dict[str, dict[str, object]],
     ) -> None:
@@ -421,6 +422,7 @@ class NativeChat:
             effort,
             agent,
             read_only,
+            public,
             tuple(sorted(permissions.items())),
             json.dumps(mcp_servers, sort_keys=True),
         )
@@ -487,6 +489,7 @@ class NativeChat:
                 "thinking_effort": effort,
                 "agent": agent,
                 "read_only": read_only,
+                "public": public,
                 "permissions": permissions,
                 "mcp_servers": mcp_servers,
                 # translate_machine runs edge_agent.lingua with this same Python
@@ -511,14 +514,16 @@ class NativeChat:
         permissions: dict[str, str] | None = None,
         mcp_servers: dict[str, dict[str, object]] | None = None,
         record_folder: str | None = None,
-        read_only: bool = False,
+        scope: str = "change",
     ) -> Iterator[tuple[str, dict[str, object]]]:
         """`mode` (MODES): the first message of a stretch in interview or
         discussion opens its skill; the messages that follow go as they are.
         The interview has read-only tools so nothing is built before a spec.
-        `read_only`: a task the owner asked only to read. Inspection tools,
-        and in the shell only provable reads (read_only_rules); everything
-        else is refused without asking, whatever the model tries."""
+        `scope` (permissions.SCOPES): "read", a task the owner asked only to
+        read: inspection tools, and in the shell only provable reads;
+        "public", a lookup anyone may ask for: the web tools alone. Either
+        way everything else is refused without asking, whatever the model
+        tries."""
         if mode not in MODES:
             raise ValueError("invalid mode")
         if thinking_effort not in THINKING_PROFILES:
@@ -576,11 +581,10 @@ class NativeChat:
                         raise ValueError(
                             "此對話包含目前模型不支援的附件；請換回支援的模型或開啟新對話。"
                         )
-                rules = permissions or bridge_rules(DEFAULT_PERMISSIONS["ui"])
-                if read_only:
-                    rules = read_only_rules(rules)
+                rules = scope_rules(permissions or bridge_rules(DEFAULT_PERMISSIONS["ui"]), scope)
                 self._start(session, cwd, thinking_effort, agent,
-                            mode == "interview" or read_only, rules, mcp_servers or {})
+                            mode == "interview" or scope != "change", scope == "public",
+                            rules, mcp_servers or {})
                 prompt_id = uuid4().hex
                 opens = mode != "work" and session.opened_mode != mode
                 self._send(

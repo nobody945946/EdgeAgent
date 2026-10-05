@@ -7,8 +7,8 @@ from edge_agent.permissions import (
     DEFAULT_PERMISSIONS,
     bridge_rules,
     profile_for,
-    read_only_rules,
     routine_shell,
+    scope_rules,
     validate_permissions,
     workspace_allowed,
 )
@@ -117,10 +117,14 @@ def test_routine_shell_uses_native_syntax_and_workspace_scope(
     assert routine_shell(command, tmp_path) is expected
 
 
-def test_read_only_task_narrows_but_never_widens():
-    assert read_only_rules({"edit": "allow", "shell": "allow", "web": "allow"}) == {
-        "edit": "deny", "shell": "read", "web": "allow"}
-    assert read_only_rules({"edit": "ask", "shell": "routine", "web": "deny"}) == {
+def test_a_task_scope_narrows_but_never_widens():
+    full = {"edit": "allow", "shell": "allow", "web": "allow"}
+    assert scope_rules(full, "change") == full
+    assert scope_rules(full, "read") == {"edit": "deny", "shell": "read", "web": "allow"}
+    assert scope_rules(full, "public") == {"edit": "deny", "shell": "deny", "web": "allow"}
+    assert scope_rules({"edit": "ask", "shell": "routine", "web": "deny"}, "read") == {
         "edit": "deny", "shell": "read", "web": "deny"}
-    assert read_only_rules({"edit": "deny", "shell": "deny", "web": "ask"}) == {
+    assert scope_rules({"edit": "deny", "shell": "deny", "web": "ask"}, "read") == {
         "edit": "deny", "shell": "deny", "web": "ask"}
+    with pytest.raises(ValueError):
+        scope_rules(full, "everything")
