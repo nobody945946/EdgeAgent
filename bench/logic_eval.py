@@ -97,7 +97,7 @@ def all_items() -> list[dict]:
 
 def with_skill(prompt: str, skill: Path | None) -> str:
     """A candidate skill opens the message the way the product opens 求知儀式
-    (chat.interview_opening): the skill text, then the user's words."""
+    (chat.mode_opening): the skill text, then the user's words."""
     if skill is None:
         return prompt
     body = skill.read_text(encoding="utf-8").split("---", 2)[2].strip()
@@ -145,7 +145,7 @@ def status(run: Path, name: str, item_set: str = "main") -> int:
 
 def capture(run: Path) -> None:
     for thinking in THINKING:
-        grill_eval.capture(run, interview=False, thinking=thinking, name=f"pi-request-{thinking}.json")
+        grill_eval.capture(run, mode="work", thinking=thinking, name=f"pi-request-{thinking}.json")
 
 
 ROUND_BUDGET_S = 900  # one answer, tool calls included

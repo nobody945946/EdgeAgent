@@ -180,7 +180,7 @@ document.querySelector('#model-download').onclick=async()=>{try{const job=await 
 window.addEventListener('pagehide',()=>clearTimeout(modelTimer));
 const chat=document.querySelector('#chat'),input=document.querySelector('#input'),send=document.querySelector('#send');
 const effort=document.querySelector('#effort'),agent=document.querySelector('#agent'),cwd=document.querySelector('#cwd'),cwdWrap=document.querySelector('#cwd-wrap');
-const mode=document.createElement('select');mode.id='mode';mode.setAttribute('aria-label','工作模式');mode.title='工作：直接動手。求知儀式：先一輪一輪問清楚你的需求、每題附建議答案，你確認後寫成規格；儀式中只讀不改。';for(const [value,label] of [['work','工作'],['interview','求知儀式']]){const option=document.createElement('option');option.value=value;option.textContent=label;mode.append(option)}document.querySelector('.agent-controls').append(mode);
+const mode=document.createElement('select');mode.id='mode';mode.setAttribute('aria-label','工作模式');mode.title='工作：直接動手。求知儀式：先一輪一輪問清楚你的需求、每題附建議答案，你確認後寫成規格；儀式中只讀不改。推演儀式：討論資料和想法，先查清事實和前提，指出漏洞，不附和、不誤導。';for(const [value,label] of [['work','工作'],['interview','求知儀式'],['discussion','推演儀式']]){const option=document.createElement('option');option.value=value;option.textContent=label;mode.append(option)}document.querySelector('.agent-controls').append(mode);
 const sidebar=document.querySelector('#sidebar'),navToggle=document.querySelector('#nav-toggle'),navMedia=matchMedia('(max-width:760px)');
 function syncOverlayInert(){document.querySelector('main').inert=document.body.classList.contains('nav-open')||(navMedia.matches&&!document.querySelector('#review').hidden)}
 function setNavigation(open,restoreFocus=true){const active=navMedia.matches&&open;document.body.classList.toggle('nav-open',active);sidebar.inert=navMedia.matches&&!active;sidebar.setAttribute('aria-hidden',String(sidebar.inert));syncOverlayInert();document.querySelector('#nav-backdrop').hidden=!active;navToggle.setAttribute('aria-expanded',String(active));if(active)document.querySelector('#nav-close').focus();else if(navMedia.matches&&restoreFocus)navToggle.focus()}
@@ -318,7 +318,7 @@ async function ask(text,attachments=[]){
   if(agent.checked){try{await directoryInfo(cwd.value.trim())}catch(error){restoreInput();add('notice','Workspace 無效：'+error.message+'；請重新開啟資料夾。');return}}
   busy=true;send.disabled=false;send.textContent='＋';send.setAttribute('aria-label','排入下一輪');document.querySelector('#stop').hidden=false;document.querySelector('#stop').disabled=false;document.querySelector('#welcome')?.remove();if(threads.get(session)?.title==='新對話'){threads.get(session).title=text.slice(0,28);renderThreads()}const userNode=add('user',text+(attachments.length?'\n📎 '+attachments.map(file=>file.name).join('、'):''));showMessageFiles(userNode,attachments);const answer=add('assistant','');
   try{
-    const body={session_id:session,text,attachments,thinking_effort:effort.value,agent:agent.checked,interview:mode.value==='interview',working_dir:cwd.value.trim()};
+    const body={session_id:session,text,attachments,thinking_effort:effort.value,agent:agent.checked,mode:mode.value,working_dir:cwd.value.trim()};
     const response=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!response.ok)throw new Error(await response.text());
     await consumeStream(response,(type,payload)=>handleEvent(type,payload,answer));
     clearStatus();if(!answer.textContent)answer.remove();else renderAnswer(answer);

@@ -1166,10 +1166,10 @@ def test_real_sdk_interview_opens_grill_me_once_and_cannot_change_files(
     chat = NativeChat(model_port=port)
     try:
         for text, mode in [
-            ("我想做一個記帳 app", {"interview": True}),
-            ("1 用網頁", {"interview": True}),
+            ("我想做一個記帳 app", {"mode": "interview"}),
+            ("1 用網頁", {"mode": "interview"}),
             ("照規格做", {}),
-            ("再來一個新點子", {"interview": True}),
+            ("再來一個新點子", {"mode": "interview"}),
         ]:
             events = list(chat.stream_reply(
                 "spec", text, agent=True, working_dir=tmp_path, **mode
@@ -1254,3 +1254,18 @@ def test_approval_explains_a_powershell_command(tmp_path, monkeypatch):
     chat = RPCFixture([write, *ending()])
     name, data = next(chat.stream_reply("fixture", "fixture", working_dir=tmp_path))
     assert "explain" not in data and "explain_error" not in data
+
+
+def test_discussion_opens_its_skill_once_and_keeps_work_tools(tmp_path):
+    """推演儀式: the first message of the stretch opens the discussion skill;
+    the next ones go as they are; an unknown mode is refused."""
+    chat = RPCFixture([*ending(), *ending()])
+    list(chat.stream_reply("talk", "主管說大家都因為錢離職", working_dir=tmp_path, mode="discussion"))
+    list(chat.stream_reply("talk", "那你覺得呢", working_dir=tmp_path, mode="discussion"))
+    prompts = [r["message"] for r in chat.records
+               if r.get("type") == "prompt" and not r["message"].startswith("/edge-snapshot")]
+    assert prompts[0].startswith('<skill name="discussion">') and "討論守則" in prompts[0]
+    assert prompts[0].endswith("主管說大家都因為錢離職")
+    assert prompts[1] == "那你覺得呢"
+    with pytest.raises(ValueError, match="invalid mode"):
+        list(chat.stream_reply("talk", "x", working_dir=tmp_path, mode="plan"))

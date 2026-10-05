@@ -52,10 +52,9 @@ def scenarios() -> list[dict]:
 # ---------------------------------------------------------------- capture
 
 
-def capture(out: Path, *, interview: bool = True, thinking: str = "off",
+def capture(out: Path, *, mode: str = "interview", thinking: str = "off",
             name: str = "pi-request.json") -> None:
-    """Pi's first request (interview or work mode, at a thinking level),
-    from the real bridge."""
+    """Pi's first request (a mode, at a thinking level), from the real bridge."""
     sys.path.insert(0, str(ROOT))
     from edge_agent.chat import NativeChat
 
@@ -82,7 +81,7 @@ def capture(out: Path, *, interview: bool = True, thinking: str = "off",
     try:
         with tempfile.TemporaryDirectory() as tmp:
             for _ in chat.stream_reply("capture", PLACEHOLDER, agent=True, working_dir=Path(tmp),
-                                       interview=interview, thinking_effort=thinking):
+                                       mode=mode, thinking_effort=thinking):
                 pass
             text = json.dumps(seen[0], ensure_ascii=False)
             text = text.replace(str(Path(tmp).resolve()), CWD_PLACEHOLDER)

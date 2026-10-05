@@ -30,8 +30,15 @@ from edge_agent.runtime import (
 )
 
 THINKING_PROFILES = {"off": "off", "low": "low", "medium": "medium", "high": "high"}
-# 求知儀式: the grill-me interview (edge_agent/skills/grill-me, MIT).
-INTERVIEW_SKILL = Path(__file__).with_name("skills") / "grill-me" / "SKILL.md"
+# Modes besides plain work open their stretch of conversation with a skill:
+# - interview (求知儀式): the grill-me interview (edge_agent/skills/grill-me,
+#   MIT) with read-only tools, until the user confirms a spec;
+# - discussion (推演儀式): rules for weighing data and ideas without misleading
+#   (edge_agent/skills/discussion; it cut misleading answers from 35% to 20%,
+#   and from 43% to 18% on items it was not written against, bench/logic_eval.py).
+MODES = ("work", "interview", "discussion")
+SKILLS = Path(__file__).with_name("skills")
+MODE_SKILLS = {"interview": SKILLS / "grill-me" / "SKILL.md", "discussion": SKILLS / "discussion" / "SKILL.md"}
 
 
 def explain_approval(details: dict, cwd: Path) -> dict[str, str]:
@@ -48,13 +55,14 @@ def explain_approval(details: dict, cwd: Path) -> dict[str, str]:
         return {"explain_error": f"無法翻譯這個指令：{exc}"}
 
 
-def interview_opening(text: str) -> str:
-    """The first message of an interview: the skill's instructions, then the
-    user's idea. Sent as text rather than Pi's /skill: command, whose block
-    names the skill file's path: small models then try to read that file,
-    outside the workspace, until the repeat guard stops the turn."""
-    body = INTERVIEW_SKILL.read_text(encoding="utf-8").split("---", 2)[2].strip()
-    return f'<skill name="grill-me">\n{body}\n</skill>\n\n{text}'
+def mode_opening(mode: str, text: str) -> str:
+    """The first message of a mode's stretch: the skill's instructions, then
+    the user's words. Sent as text rather than Pi's /skill: command, whose
+    block names the skill file's path: small models then try to read that
+    file, outside the workspace, until the repeat guard stops the turn."""
+    _, front, body = MODE_SKILLS[mode].read_text(encoding="utf-8").split("---", 2)
+    name = next(line.split(":", 1)[1].strip() for line in front.splitlines() if line.startswith("name:"))
+    return f'<skill name="{name}">\n{body.strip()}\n</skill>\n\n{text}'
 APPROVAL_TIMEOUT_SECONDS = 300
 
 
@@ -178,7 +186,7 @@ class ChatSession:
     changes: dict[str, tuple[str, str]] = field(default_factory=dict)
     approvals: dict[str, dict[str, object]] = field(default_factory=dict)
     # In a 求知儀式 stretch: the grill-me skill is already in the history.
-    interviewing: bool = False
+    opened_mode: str = "work"  # the mode whose skill opened the current stretch
 
 
 class NativeChat:
@@ -493,16 +501,17 @@ class NativeChat:
         thinking_effort: str = "off",
         agent: bool = False,
         working_dir: Path | None = None,
-        interview: bool = False,
+        mode: str = "work",
         media: list[dict[str, str]] | None = None,
         permissions: dict[str, str] | None = None,
         mcp_servers: dict[str, dict[str, object]] | None = None,
         record_folder: str | None = None,
     ) -> Iterator[tuple[str, dict[str, object]]]:
-        """`interview` (求知儀式 in the UI): the grill-me interview
-        (edge_agent/skills/grill-me) until the user confirms a spec, with
-        read-only tools so nothing is built before that. The first message of
-        a stretch opens the skill; the answers that follow go as they are."""
+        """`mode` (MODES): the first message of a stretch in interview or
+        discussion opens its skill; the messages that follow go as they are.
+        The interview has read-only tools so nothing is built before a spec."""
+        if mode not in MODES:
+            raise ValueError("invalid mode")
         if thinking_effort not in THINKING_PROFILES:
             raise ValueError("invalid thinking_effort")
         if user_text.strip().split(maxsplit=1)[:1] == ["/edge-snapshot"]:
@@ -559,20 +568,18 @@ class NativeChat:
                             "此對話包含目前模型不支援的附件；請換回支援的模型或開啟新對話。"
                         )
                 rules = permissions or bridge_rules(DEFAULT_PERMISSIONS["ui"])
-                self._start(session, cwd, thinking_effort, agent, interview, rules, mcp_servers or {})
+                self._start(session, cwd, thinking_effort, agent, mode == "interview", rules, mcp_servers or {})
                 prompt_id = uuid4().hex
-                opens_interview = interview and not session.interviewing
+                opens = mode != "work" and session.opened_mode != mode
                 self._send(
                     {
                         "type": "prompt",
-                        "message": interview_opening(user_text)
-                        if opens_interview
-                        else user_text,
+                        "message": mode_opening(mode, user_text) if opens else user_text,
                         "id": prompt_id,
                         "images": media or [],
                     }
                 )
-                session.interviewing = interview
+                session.opened_mode = mode
                 while True:
                     try:
                         event = self._receive(timeout=1)

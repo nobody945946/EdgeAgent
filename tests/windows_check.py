@@ -58,7 +58,7 @@ def native_probe(core: EdgeAgent, workspace: Path, key: str) -> dict[str, object
                     "text": text,
                     "agent": True,
                     "client": "ui" if interview else "discord",
-                    "interview": interview,
+                    "mode": "interview" if interview else "work",
                     "working_dir": str(workspace),
                 }
             ).encode(),

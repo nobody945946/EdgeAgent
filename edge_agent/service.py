@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import uuid4
 
-from edge_agent.chat import THINKING_PROFILES, NativeChat, decode_attachments
+from edge_agent.chat import MODES, THINKING_PROFILES, NativeChat, decode_attachments
 from edge_agent.deploy import download, ensure_projector
 from edge_agent.mcp import servers_for, validate_mcp_servers
 from edge_agent.models import hub_catalog, list_models, model_filename, model_metadata
@@ -1112,9 +1112,9 @@ class Handler(BaseHTTPRequestHandler):
         agent = payload.get("agent", self.core.config["agent"])
         if not isinstance(agent, bool):
             raise TypeError("agent must be a boolean")
-        interview = payload.get("interview", False)
-        if not isinstance(interview, bool):
-            raise TypeError("interview must be a boolean")
+        mode = payload.get("mode", "work")
+        if mode not in MODES:
+            raise ValueError(f"mode must be one of {', '.join(MODES)}")
         client = payload.get("client", "ui")
         profile = profile_for(self.core.config["permissions"], client)
         mcp_servers = servers_for(client, self.core.config["mcp_servers"])
@@ -1157,7 +1157,7 @@ class Handler(BaseHTTPRequestHandler):
                     thinking_effort=thinking_effort,
                     agent=agent,
                     working_dir=working_dir,
-                    interview=interview,
+                    mode=mode,
                     media=media,
                     permissions=bridge_rules(profile),
                     mcp_servers=mcp_servers,

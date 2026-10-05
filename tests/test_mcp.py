@@ -230,7 +230,7 @@ def test_with_mcp_the_read_only_mode_still_cannot_change_anything(tmp_path, repe
     events = []
     try:
         for name, data in chat.stream_reply("mcp", "想做一個下單工具", agent=True, working_dir=tmp_path,
-                                            interview=True, mcp_servers={"fin": server}):
+                                            mode="interview", mcp_servers={"fin": server}):
             events.append((name, data))
             if name == "approval":
                 chat.resolve_approval("mcp", data["call_id"], True, "once")

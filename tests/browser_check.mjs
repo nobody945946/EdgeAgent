@@ -19,7 +19,7 @@ const expectedDirectoryRequests = new Set();
 socket.addEventListener('message', event => {
   const value = JSON.parse(event.data);
   if (value.id) { pending.get(value.id)?.(value); pending.delete(value.id); }
-  else if(value.method==='Network.requestWillBeSent'&&value.params.request.url==='http://127.0.0.1:18087/chat') chatModes.push(JSON.parse(value.params.request.postData||'{}').interview);
+  else if(value.method==='Network.requestWillBeSent'&&value.params.request.url==='http://127.0.0.1:18087/chat') chatModes.push(JSON.parse(value.params.request.postData||'{}').mode);
   else if(value.method==='Network.requestWillBeSent'&&value.params.request.url==='http://127.0.0.1:18087/directories'&&JSON.parse(value.params.request.postData||'{}').path===missingDirectory) expectedDirectoryRequests.add(value.params.requestId);
   else if(value.method==='Network.responseReceived'&&expectedDirectoryRequests.has(value.params.requestId)) expectedDirectoryStatuses.push(value.params.response.status);
   else if(value.method==='Log.entryAdded'&&value.params.entry.source==='network'&&expectedDirectoryRequests.has(value.params.entry.networkRequestId)) expectedErrors.push(value);
@@ -95,7 +95,7 @@ try {
   await wait('!window.__edgeAgentCheckReload&&document.readyState==="complete"&&document.querySelectorAll(".thread").length===1');
   assert(await evaluate('!!document.querySelector("#sidebar")'), 'project sidebar');
   assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'), 'desktop width fits');
-  assert.deepEqual(await evaluate('[...document.querySelector("#mode").options].map(option=>[option.value,option.textContent])'),[['work','工作'],['interview','求知儀式']],'only the current work and interview modes exist');
+  assert.deepEqual(await evaluate('[...document.querySelector("#mode").options].map(option=>[option.value,option.textContent])'),[['work','工作'],['interview','求知儀式'],['discussion','推演儀式']],'the work, interview and discussion modes exist');
   await click('#actions-menu>summary');
   await click('#models-open');
   await wait('document.querySelector("#models-dialog").open&&document.querySelector("#model-select").options.length>0',60000);
@@ -267,7 +267,7 @@ try {
   await fill('#input','做一個記帳小工具');await click('#send');
   await wait('busy');
   for(let index=0;index<100&&chatModes.length===interviewRequestStart;index++)await new Promise(resolve=>setTimeout(resolve,100));
-  assert.deepEqual(chatModes.slice(interviewRequestStart),[true],'the real /chat request carries interview:true');
+  assert.deepEqual(chatModes.slice(interviewRequestStart),['interview'],'the real /chat request carries mode:interview');
   // Wait for the stream to start before exercising cancellation; receiving
   // the HTTP request alone does not mean Pi has opened the session yet.
   await wait('!busy||document.querySelector(".assistant")?.textContent.length>0',90000);
@@ -275,7 +275,7 @@ try {
   await choose('#mode','work');
   await click('#actions-menu>summary');await click('#reset');
   assert.equal(await evaluate('document.querySelectorAll(".user,.assistant,.tool-card").length'),0,'interview history cleared before work checks');
-  console.log('PASS: two current modes and actual interview:true HTTP request; interview history cleared');
+  console.log('PASS: three modes and an actual mode:interview HTTP request; interview history cleared');
   if(process.env.EDGE_AGENT_TEST_WORKSPACE){
     await click('#open-project');
     await wait('document.querySelector("#folder-dialog").open');
