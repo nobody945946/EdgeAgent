@@ -1,8 +1,8 @@
 """Training rows from recorded bench runs (run.py --record), hard-gated.
 
 A job becomes rows only if it passed with no grade problem (hidden tests
-pass, nothing it must not touch was changed, no test tampering) and ended
-normally. Rows are the requests the Agent sent with its tools (the exact
+pass, nothing it must not touch was changed, no test tampering), ended
+normally, and, for a tool task, used the ready-made tool the task is about. Rows are the requests the Agent sent with its tools (the exact
 system prompt, tool definitions and history the model saw; Pi's own summary
 requests carry no tools and are skipped) and the replies to them, in
 train_lora.py's format {"messages", "tools", "train": "all", "train_from"}.
@@ -37,6 +37,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from edge_agent import prompt as agent_prompt  # noqa: E402
+
+sys.path.insert(0, str(ROOT / "bench"))
+from make_tool_tasks import EXPECT_TOOLS  # noqa: E402
 
 EVAL_TASKS = {p.name for p in (ROOT / "bench/tasks").iterdir() if p.is_dir()}
 sys.path.insert(0, "/home/clawd/SilentTalk")
@@ -75,6 +78,11 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
             continue
         if not result["passed"] or result["grade"].get("problems") or result.get("outcome") != "done":
             skip("not a clean pass")
+            continue
+        # A tool task passed without its ready-made tool (make_tool_tasks.EXPECT_TOOLS).
+        expected = EXPECT_TOOLS.get(result["task"].rsplit("-", 1)[0])
+        if expected and not set(expected) & set(result.get("tools") or {}):
+            skip("passed without its ready-made tool")
             continue
         records = sorted((run_dir / "records" / job).glob("*.json"))
         requests = [json.loads(p.read_text(encoding="utf-8")) for p in records]
