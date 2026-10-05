@@ -107,7 +107,7 @@ select{min-height:32px;min-width:0;border:0;border-radius:7px;background:#252525
 @media(max-width:480px){.model-grid{grid-template-columns:1fr}.model-row{flex-wrap:wrap}.model-row input{flex-basis:100%}}
 </style>
 </head>
-<body><aside id="sidebar" aria-label="專案與對話"><div class="sidebar-heading"><h2>EdgeAgent</h2><button id="nav-close" aria-label="關閉側欄">×</button></div><button id="new-thread" class="secondary">＋ 新對話</button><button id="open-project" class="secondary">開啟專案</button><div class="nav-title">專案與對話</div><div id="threads"></div><div id="privacy">本機工作 · 未開啟紀錄時只在記憶體<br>紀錄可寫進你選的加密磁碟</div></aside><button id="nav-backdrop" aria-label="關閉側欄" hidden></button><main>
+<body><aside id="sidebar" aria-label="專案與對話"><div class="sidebar-heading"><h2>EdgeAgent</h2><button id="nav-close" aria-label="關閉側欄">×</button></div><button id="new-thread" class="secondary">＋ 新對話</button><button id="open-project" class="secondary">開啟專案</button><div class="nav-title">專案與對話</div><div id="threads"></div><div id="privacy">本機工作 · 未開啟紀錄時只在記憶體<br>紀錄可寫進你選的資料夾</div></aside><button id="nav-backdrop" aria-label="關閉側欄" hidden></button><main>
 <header><button id="nav-toggle" aria-label="開啟側欄" aria-controls="sidebar" aria-expanded="false">☰</button><div class="heading"><h1>EdgeAgent</h1><div class="sub">本機編程 Agent · 紀錄由你選擇</div></div><div class="actions"><details id="actions-menu"><summary aria-label="更多操作">⋯</summary><div class="action-menu"><button id="export-chat" class="secondary" title="下載目前對話的 TXT，儲存位置由瀏覽器決定">匯出對話 TXT</button><button id="models-open" class="secondary">模型模組</button><button id="permissions-open" class="secondary">權限</button><button id="records-open" class="secondary">自動紀錄</button><button id="save" class="secondary">儲存設定</button><button id="reset" class="secondary">新對話</button><button id="shutdown" class="danger">關閉EdgeAgent</button></div></details></div></header>
 <section class="controls">
   <label class="control"><span>Thinking effort</span><select id="effort" aria-label="Thinking effort"><option value="off">關閉</option><option value="low">低</option><option value="medium" selected>中</option><option value="high">高</option></select></label>
@@ -155,9 +155,9 @@ select{min-height:32px;min-width:0;border:0;border-radius:7px;background:#252525
 <dialog id="records-dialog" aria-label="紀錄">
 <div class="model-head"><strong>紀錄</strong><button id="records-close" type="button">關閉</button></div>
 <form id="records-form" class="model-body">
-<p>只存文字到你選的加密磁碟（外接硬碟，或 SSD 上的加密容器）。容器必須掛上、解鎖，並有獨立磁碟代號。磁碟無法使用時就暫停，不會改寫到別處。</p>
+<p>只存文字到你選的紀錄資料夾，原生 SSD 上的一般目錄也可以，不需要加密容器或獨立分割區。資料夾無法使用或尚未設定時就暫停，不會改寫到別處。</p>
 <label class="model-check"><input id="records-enabled" type="checkbox">記錄工作對話</label>
-<label>紀錄資料夾<input id="records-folder" type="text" placeholder="例如 E:\\AgentRecords" aria-label="紀錄資料夾"></label>
+<label>紀錄資料夾<input id="records-folder" type="text" placeholder="例如 C:\\AgentRecords" aria-label="紀錄資料夾"></label>
 <button id="records-prepare" type="button">設為紀錄資料夾</button>
 <button id="records-save" type="submit">儲存紀錄設定</button>
 <p id="records-status" role="status" aria-live="polite"></p><p id="records-result" role="status"></p>

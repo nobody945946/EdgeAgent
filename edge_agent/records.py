@@ -1,48 +1,36 @@
-"""Agent sessions on the user's encrypted records drive.
+"""Agent sessions in the user's selected records folder.
 
 The user keeps conversations so the Agent can grow from them (SilentTalk's
 AGENTS.md rule 1). A session is written whole after each turn to
 <folder>/edgeagent/<session>.jsonl (Pi's own entries, one per line), only
 when sessions are recorded and the folder holds the setup marker: an
-unplugged or locked drive gets nothing, and nothing is kept elsewhere to be
-written later. The same drive and marker as SilentTalk's transcripts.
+unavailable or unprepared folder gets nothing, and nothing is kept elsewhere
+to be written later. Local SSD folders are allowed. The same folder and
+marker as SilentTalk's transcripts.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
-import sys
 from pathlib import Path
 
 MARKER = ".agent-records"
 
 
-def _system_drive() -> str:
-    return (
-        os.environ.get("SystemDrive", "C:").casefold()
-        if sys.platform == "win32"
-        else ""
-    )
-
-
 def validate_record_folder(folder: str) -> Path:
-    """Resolve before checking the drive, including junctions and symlinks."""
+    """Require an existing folder, resolving junctions and symlinks."""
     if not isinstance(folder, str) or not folder.strip():
-        raise ValueError("請先選擇加密磁碟上的資料夾")
+        raise ValueError("請先選擇紀錄資料夾")
     path = Path(folder).resolve(strict=True)
     if not path.is_dir():
         raise ValueError("紀錄資料夾不存在")
-    system = _system_drive()
-    if system and (path.drive.casefold() == system or len(path.drive) != 2):
-        raise ValueError("請選擇系統磁碟以外、具有獨立磁碟代號的加密磁碟")
     return path
 
 
 def prepare_record_folder(folder: str) -> Path:
-    """Mark an existing folder selected on the user's unlocked encrypted disk."""
+    """Mark the existing folder selected by the user for records."""
     path = validate_record_folder(folder)
     (path / MARKER).touch(exist_ok=True)
     return path
@@ -57,7 +45,7 @@ def recording_status(enabled: bool, folder: str) -> str:
             return "記錄中"
     except (OSError, ValueError, RuntimeError):
         pass
-    return "暫停：磁碟沒接上、容器沒掛上或沒解鎖；請確認紀錄資料夾已設定"
+    return "暫停：紀錄資料夾無法使用或尚未設定；請確認資料夾與標記檔"
 
 
 _SAFE = re.compile(r"^[A-Za-z0-9_-]{1,100}$")

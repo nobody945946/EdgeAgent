@@ -33,8 +33,7 @@ def test_http_handler_keeps_unexpected_failures_visible(monkeypatch):
         object.__new__(service.Handler).handle()
 
 
-def test_records_prepare_and_status_follow_drive_availability(tmp_path, monkeypatch):
-    monkeypatch.setattr(records, "_system_drive", lambda: "")
+def test_records_prepare_and_status_follow_folder_availability(tmp_path):
     missing = tmp_path / "missing"
     with pytest.raises(OSError):
         records.prepare_record_folder(str(missing))
@@ -50,15 +49,31 @@ def test_records_prepare_and_status_follow_drive_availability(tmp_path, monkeypa
     assert not (tmp_path / "edgeagent" / "missing-marker.jsonl").exists()
 
 
-def test_records_reject_system_disk_even_with_marker(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        records, "_system_drive", lambda: tmp_path.drive.casefold() or "C:"
+def test_records_accept_a_local_ssd_folder(tmp_path):
+    assert records.prepare_record_folder(str(tmp_path)) == tmp_path.resolve()
+    assert records.save_session(
+        str(tmp_path), "fixture", [{"type": "fixture", "text": "LOCAL_SSD_FIXTURE"}]
     )
-    (tmp_path / records.MARKER).touch()
-    with pytest.raises(ValueError, match="系統磁碟"):
-        records.prepare_record_folder(str(tmp_path))
-    assert not records.save_session(str(tmp_path), "fixture", [])
-    assert not (tmp_path / "edgeagent").exists()
+    assert "LOCAL_SSD_FIXTURE" in (tmp_path / "edgeagent" / "fixture.jsonl").read_text(
+        encoding="utf-8"
+    )
+    (tmp_path / records.MARKER).unlink()
+    assert not records.save_session(str(tmp_path), "paused", [{"text": "PAUSED_FIXTURE"}])
+    assert records.recording_status(True, str(tmp_path)).startswith("暫停")
+    records.prepare_record_folder(str(tmp_path))
+    assert records.recording_status(True, str(tmp_path)) == "記錄中"
+    assert records.save_session(str(tmp_path), "resumed", [{"text": "RESUMED_FIXTURE"}])
+    assert sorted(path.name for path in (tmp_path / "edgeagent").iterdir()) == [
+        "fixture.jsonl", "resumed.jsonl"
+    ]
+
+
+def test_records_reject_a_file(tmp_path):
+    file = tmp_path / "fixture.txt"
+    file.write_text("fixture", encoding="utf-8")
+    with pytest.raises(ValueError, match="紀錄資料夾"):
+        records.prepare_record_folder(str(file))
+    assert not (tmp_path / records.MARKER).exists()
 
 
 def test_live_character_lease_cannot_be_stolen_or_stopped(tmp_path, monkeypatch):

@@ -164,11 +164,10 @@ def test_success_is_reported_only_after_settlement_and_ram_checkpoint(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_sessions_are_kept_only_on_the_records_drive(tmp_path, monkeypatch):
-    """A finished turn is written whole to the records drive, and only when
+def test_sessions_are_kept_only_in_the_selected_records_folder(tmp_path):
+    """A finished turn is written whole to the selected folder, and only when
     the folder holds the setup marker (records.py)."""
     from edge_agent import records
-    monkeypatch.setattr(records, "_system_drive", lambda: "")
     work, drive = tmp_path / "work", tmp_path / "drive"
     work.mkdir()
     drive.mkdir()
@@ -177,7 +176,7 @@ def test_sessions_are_kept_only_on_the_records_drive(tmp_path, monkeypatch):
              {"type": "agent_end"}, *ending()]
     chat = RPCFixture(reply)
     list(chat.stream_reply("kept-1", "fixture", working_dir=work, record_folder=str(drive)))
-    assert not (drive / "edgeagent").exists()  # no marker: a plain folder, not the drive
+    assert not (drive / "edgeagent").exists()  # no marker: not selected for records
     (drive / ".agent-records").write_text("")
     list(chat.stream_reply("kept-1", "fixture", working_dir=work, record_folder=str(drive)))
     saved = (drive / "edgeagent" / "kept-1.jsonl").read_text(encoding="utf-8").splitlines()
@@ -1436,7 +1435,9 @@ def test_browser_exports_conversations_and_displays_native_tool_errors(
     subprocess.run(["git", "-C", str(workspace), "commit", "-m", "UI fixture"], check=True, capture_output=True)
     downloads = tmp_path / "downloads"
     downloads.mkdir()
-    core = service.EdgeAgent(tmp_path / "core")
+    core_dir = tmp_path / "core"
+    core_dir.mkdir()
+    core = service.EdgeAgent(core_dir)
     core.chat.close()
     core.chat = NativeChat(model_port=port)
     core.active_model = "synthetic UI fixture"

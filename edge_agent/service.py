@@ -58,7 +58,7 @@ DEFAULT_CONFIG: dict[str, object] = {
     "permissions": DEFAULT_PERMISSIONS,
     # MCP servers the owner added (edge_agent/mcp.py); none by default.
     "mcp_servers": {},
-    # Sessions kept on the user's encrypted records drive (records.py).
+    # Sessions kept in the user's selected records folder (records.py).
     "record_sessions": False,
     "record_folder": "",
 }
