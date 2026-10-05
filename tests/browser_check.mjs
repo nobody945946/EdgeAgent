@@ -1,10 +1,11 @@
 // Real Edge CDP interaction checks. No conversation text is persisted.
 import assert from 'node:assert/strict';
-import {mkdir,writeFile,readFile} from 'node:fs/promises';
+import {mkdir,writeFile,readFile,readdir} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import {resolve} from 'node:path';
 const targets = await (await fetch('http://127.0.0.1:9223/json/list')).json();
-const target = targets.find(t => t.type === 'page' && t.url.startsWith('http://127.0.0.1:18087'))
+const appOrigin=new URL(process.env.EDGE_AGENT_BROWSER_URL||'http://127.0.0.1:18087').origin;
+const target = targets.find(t => t.type === 'page' && t.url.startsWith(appOrigin))
   ?? targets.find(t => t.type === 'page' && t.url === 'about:blank');
 const folderFixture=resolve('.test-tmp/folder-picker-fixture');
 const missingDirectory=resolve(folderFixture,'missing');
@@ -15,13 +16,15 @@ const socket = new WebSocket(target.webSocketDebuggerUrl);
 await new Promise(resolve => socket.addEventListener('open', resolve, {once:true}));
 let serial = 0;
 const pending = new Map(), errors = [], expectedErrors = [], expectedDirectoryStatuses = [], chatModes = [];
+const requestUrls=[];
 const expectedDirectoryRequests = new Set(), expectedRecordRequests = new Set(), expectedRecordStatuses = [];
 socket.addEventListener('message', event => {
   const value = JSON.parse(event.data);
+  if(value.method==='Network.requestWillBeSent')requestUrls.push(value.params.request.url);
   if (value.id) { pending.get(value.id)?.(value); pending.delete(value.id); }
-  else if(value.method==='Network.requestWillBeSent'&&value.params.request.url==='http://127.0.0.1:18087/chat') chatModes.push(JSON.parse(value.params.request.postData||'{}').mode);
-  else if(value.method==='Network.requestWillBeSent'&&value.params.request.url==='http://127.0.0.1:18087/directories'&&JSON.parse(value.params.request.postData||'{}').path===missingDirectory) expectedDirectoryRequests.add(value.params.requestId);
-  else if(value.method==='Network.requestWillBeSent'&&value.params.request.url==='http://127.0.0.1:18087/records/prepare'&&JSON.parse(value.params.request.postData||'{}').folder===folderFixture) expectedRecordRequests.add(value.params.requestId);
+  else if(value.method==='Network.requestWillBeSent'&&value.params.request.url===appOrigin+'/chat') chatModes.push(JSON.parse(value.params.request.postData||'{}').mode);
+  else if(value.method==='Network.requestWillBeSent'&&value.params.request.url===appOrigin+'/directories'&&JSON.parse(value.params.request.postData||'{}').path===missingDirectory) expectedDirectoryRequests.add(value.params.requestId);
+  else if(value.method==='Network.requestWillBeSent'&&value.params.request.url===appOrigin+'/records/prepare'&&JSON.parse(value.params.request.postData||'{}').folder===folderFixture) expectedRecordRequests.add(value.params.requestId);
   else if(value.method==='Network.responseReceived'&&expectedRecordRequests.has(value.params.requestId)) expectedRecordStatuses.push(value.params.response.status);
   else if(value.method==='Log.entryAdded'&&value.params.entry.source==='network'&&expectedRecordRequests.has(value.params.entry.networkRequestId)) expectedErrors.push(value);
   else if(value.method==='Network.responseReceived'&&expectedDirectoryRequests.has(value.params.requestId)) expectedDirectoryStatuses.push(value.params.response.status);
@@ -87,11 +90,120 @@ const choose = async (selector,value) => {
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).value`),value);
 };
 const waitJob=async(model=null)=>{for(let index=0;index<600;index++){const state=await evaluate('modelState?.job.state');if(state==='done'&&(!model||await evaluate('modelState.active_model==='+JSON.stringify(model))))return;if(state==='failed')throw Error(await evaluate('modelState.job.error'));await new Promise(resolve=>setTimeout(resolve,1000))}throw Error('Model operation timeout')};
+async function auditLive(){
+  const checks=[];
+  const check=async(name,action)=>{try{await action();checks.push({name,status:'passed'});console.log('PASS: '+name)}catch(error){checks.push({name,status:'failed',reason:error.message});console.log('FAIL: '+name+' — '+error.message)}};
+  const openMenu=async()=>{if(!await evaluate('actionsMenu.open'))await click('#actions-menu>summary')};
+  const openFolder=async path=>{await click('#open-project');await wait('folderDialog.open&&folderList.getAttribute("aria-busy")==="false"');await fill('#folder-address',path);await click('#folder-address-form button');await wait(`!document.querySelector('#folder-use').disabled&&folderPath.dataset.path===${JSON.stringify(path)}`);await click('#folder-use');await wait(`!folderDialog.open&&cwd.value===${JSON.stringify(path)}`)};
+  await setViewport({width:1280,height:850,deviceScaleFactor:1,mobile:false});
+  await cdp('Page.navigate',{url:appOrigin+'/'});await wait('document.readyState==="complete"&&!!modelState?.active_model');
+  const original=await evaluate("fetch('/config').then(r=>r.json())");
+  const workspace=resolve(folderFixture,'live-ui');await mkdir(workspace,{recursive:true});
+  await writeFile(resolve(workspace,'probe.txt'),'UI_AUDIT_FIXTURE_42\n');
+  let auditSession='';
+  try{
+    await check('模型清單與目前租用狀態',async()=>{await openMenu();await click('#models-open');await wait('modelDialog.open&&!modelSelect.disabled');assert(await evaluate('!!document.querySelector("#model-active").textContent&&modelSelect.options.length>0'))});
+    await check('模型重新掃描取得真實清單',async()=>{await click('#model-refresh');await wait('!modelSelect.disabled');assert(await evaluate('modelState.models.length>0'))});
+    await check('租用時切換限制可理解',async()=>{if(await evaluate('modelState.mode==="character"')){assert(await evaluate('document.querySelector("#model-switch").disabled'));assert(await evaluate('document.querySelector("#model-active").textContent.includes("租用中")'))}else assert(await evaluate('!document.querySelector("#model-switch").disabled'))});
+    await check('模型庫查詢實際回傳 GGUF 清單',async()=>{await fill('#model-repository','unsloth/Qwen3.5-4B-GGUF');await click('#model-catalog');await wait('document.querySelector("#model-remote").options.length>0',60000);assert(await evaluate('!document.querySelector("#model-download").disabled'))});
+    await click('#models-close');
+    await check('權限讀取與原值儲存',async()=>{await openMenu();await click('#permissions-open');await wait('!document.querySelector("#permissions-save").disabled');await click('#permissions-save');await wait('document.querySelector("#permissions-result").textContent.includes("已儲存")');assert.deepEqual(await evaluate("fetch('/config').then(r=>r.json()).then(c=>c.permissions)"),original.permissions)});
+    await click('#permissions-close');
+    await check('紀錄設定及實際狀態',async()=>{await openMenu();await click('#records-open');await wait('!document.querySelector("#records-save").disabled');assert(await evaluate('document.querySelector("#records-status").textContent.length>0'))});
+    await click('#records-close');
+    await check('手動對話 TXT 匯出入口',async()=>assert(await evaluate('!!document.querySelector("#export-chat")')));
+    await check('專案資料夾選擇與 Workspace 生效',async()=>{await openFolder(workspace);assert.equal(await evaluate('cwd.value'),workspace)});
+    auditSession=await evaluate('session');
+    await check('非 Git 專案的分支入口',async()=>{await wait('document.querySelector("header h1").textContent==="live-ui"');assert(await evaluate('document.querySelector("#worktree-create").disabled'))});
+    await check('終端真的執行並回傳結果',async()=>{await click('#terminal-toggle');await fill('#terminal-command',"$auditValue=41; Write-Output ($auditValue+1)");await click('#terminal-run');await wait('terminalOutput.textContent.includes("[exit code: 0]")');assert(await evaluate('terminalOutput.textContent.includes("\\n42\\n")'))});
+    await check('終端保留狀態',async()=>{await fill('#terminal-command','Write-Output $auditValue');await click('#terminal-run');await wait('(terminalOutput.textContent.match(/exit code: 0/g)||[]).length===2');assert(await evaluate('terminalOutput.textContent.includes("\\n41\\n")'))});
+    await check('終端停止長操作',async()=>{await fill('#terminal-command','Start-Sleep -Seconds 30');await click('#terminal-run');await wait('!document.querySelector("#terminal-stop").disabled');await click('#terminal-stop');await wait('!document.querySelector("#terminal-run").disabled')});
+    await check('終端清除及收起',async()=>{await click('#terminal-clear');assert.equal(await evaluate('terminalOutput.textContent'),'');await click('#terminal-hide');assert(await evaluate('terminalPane.hidden'))});
+    await check('文件附件加入及移除',async()=>{await cdp('Page.setInterceptFileChooserDialog',{enabled:true});await click('#attach');await click('#attach-document');const doc=await cdp('DOM.getDocument');const node=await cdp('DOM.querySelector',{nodeId:doc.root.nodeId,selector:'#file-input'});await cdp('DOM.setFileInputFiles',{nodeId:node.nodeId,files:[resolve(workspace,'probe.txt')]});await wait('pendingFiles.length===1');await click('.attachment button');assert.equal(await evaluate('pendingFiles.length'),0)});
+    await check('圖片音訊入口對應實際模型能力',async()=>{assert(await evaluate('document.querySelector("#attach-image").disabled===!modelState.capabilities.vision&&document.querySelector("#attach-audio").disabled===!modelState.capabilities.audio'))});
+    await check('三種模式能切換',async()=>{for(const value of ['interview','discussion','work'])await choose('#mode',value)});
+    await check('新對話及切回恢復草稿與 Workspace',async()=>{await fill('#input','UI_AUDIT_UNSENT_DRAFT');const id=await evaluate('session');await click('#new-thread');assert.notEqual(await evaluate('session'),id);const index=await evaluate(`[...threads.keys()].indexOf(${JSON.stringify(id)})+1`);await click('.thread:nth-child('+index+')');assert.equal(await evaluate('input.value'),'UI_AUDIT_UNSENT_DRAFT');assert.equal(await evaluate('cwd.value'),workspace);await fill('#input','')});
+    await check('Agent 讀檔、工具結果與完成狀態',async()=>{await fill('#input','Use the read tool to read probe.txt. Return only its first line. Do not modify files.');await click('#send');await wait('!busy&&completedTurns>0',120000);assert(await evaluate('[...chat.querySelectorAll(".tool-card")].some(card=>card.querySelector("summary").textContent.includes("read")&&card.textContent.includes("UI_AUDIT_FIXTURE_42"))'))});
+    await check('工具紀錄展開顯示參數與結果',async()=>{await click('.tool-card summary');assert(await evaluate('document.querySelector(".tool-card").open&&document.querySelectorAll(".tool-card pre").length>=2'))});
+    await check('修改審閱顯示真實空狀態',async()=>{await click('#review-toggle');assert(await evaluate('!review.hidden&&!document.querySelector("#review-empty").hidden'));await click('#review-close')});
+    await check('一般設定按鈕實際儲存',async()=>{await openMenu();await click('#save');await wait('[...chat.querySelectorAll(".notice")].some(node=>node.textContent.includes("設定已儲存"))');const saved=await evaluate("fetch('/config').then(r=>r.json())");assert.equal(saved.agent,original.agent);assert.equal(saved.thinking_effort,original.thinking_effort)});
+    await check('窄視窗側欄及更多操作可達',async()=>{await setViewport({width:360,height:640,deviceScaleFactor:1,mobile:true});await click('#nav-toggle');assert(await evaluate('document.body.classList.contains("nav-open")'));await click('#nav-close');await openMenu();assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));await click('#actions-menu>summary');await setViewport({width:1280,height:850,deviceScaleFactor:1,mobile:false})});
+    await check('瀏覽器沒有非預期錯誤',async()=>assert.equal(errors.length,0));
+  }finally{
+    if(await evaluate('busy')){await click('#stop');await wait('!busy',30000)}
+    if(auditSession)await evaluate(`modelPost('/chat/reset',{session_id:${JSON.stringify(auditSession)}})`);
+    assert.deepEqual(await evaluate("fetch('/config').then(r=>r.json())"),original,'audit leaves user settings unchanged');
+  }
+  const result={event:'live_ui_audit',passed:checks.filter(item=>item.status==='passed').length,total:checks.length,checks,untested:['模型實際下載及切換（保留正式租用）','麥克風錄音（headless 無真人音訊）','關閉正式服務（保留 SilentTalk）','Agent 寫檔與審閱差異（本輪只有唯讀工作）','工作佇列實際連續執行']};
+  await writeFile('.test-tmp/edge-agent-live-ui-audit.json',JSON.stringify(result,null,2));
+  await writeFile('.test-tmp/edge-agent-live-ui-audit.md',checks.map(item=>`${item.status==='passed'?'PASS':'FAIL'} ${item.name}${item.reason?' — '+item.reason:''}`).join('\n')+'\n未測：'+result.untested.join('；'));
+  console.log(JSON.stringify(result));
+  assert.equal(result.passed,result.total,'all live UI inventory items');
+}
+async function uiRegression(){
+  const checks=[];
+  let workspace=process.env.EDGE_AGENT_TEST_WORKSPACE;const downloads=process.env.EDGE_AGENT_TEST_DOWNLOADS;
+  assert(workspace&&downloads,'isolated workspace and download folder required');
+  await cdp('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:downloads});
+  await setViewport({width:1280,height:850,deviceScaleFactor:1,mobile:false});
+  await cdp('Page.navigate',{url:appOrigin+'/'});await wait('document.readyState==="complete"&&!!modelState?.active_model');
+  const menu=async()=>{if(!await evaluate('actionsMenu.open'))await click('#actions-menu>summary')};
+  await menu();await click('#export-chat');
+  assert(await evaluate('chat.textContent.includes("沒有可匯出的訊息")'),'empty export explains why');
+  assert.deepEqual(await readdir(downloads),[],'empty export makes no file');
+  checks.push('empty export explains why and makes no file');
+  await click('#open-project');await wait('folderDialog.open&&folderList.getAttribute("aria-busy")==="false"');await fill('#folder-address',workspace);await click('#folder-address-form button');await wait(`!document.querySelector('#folder-use').disabled&&folderPath.dataset.path===${JSON.stringify(workspace)}`);await click('#folder-use');await wait(`!folderDialog.open&&cwd.value===${JSON.stringify(workspace)}`);
+  await wait('!worktreeButton.disabled');const originalWorkspace=workspace;await click('#worktree-create');await wait(`cwd.value!==${JSON.stringify(originalWorkspace)}&&!worktreeButton.disabled`);workspace=await evaluate('cwd.value');assert(await evaluate('branchLabel.textContent.includes("edge-agent/")'));checks.push('actual isolated Git worktree through UI');
+  await fill('#input','UI_FIRST_ONLY');await click('#send');
+  await wait('!!document.querySelector(".approval-card button")',30000);await click('.approval-card button:nth-of-type(2)');
+  await wait('!busy&&completedTurns===1',30000);
+  assert(await evaluate('document.querySelector(".tool-error summary").textContent.includes("失敗 · read")'),'native failed read is displayed as failed');
+  checks.push('native tool errors displayed');
+  await click('#review-toggle');assert(await evaluate('reviewFiles.children.length===1&&reviewFiles.textContent.includes("UI_FILE_42")'),'approved write is in review');await click('#review-close');
+  const output=await readFile(resolve(workspace,'created.txt'),'utf8');assert.equal(output,'UI_FILE_42\n','approved tool really wrote file');
+  checks.push('approved write and review match actual file');
+  let names=[];
+  const download=async()=>{const before=await readdir(downloads);await menu();await click('#export-chat');for(let i=0;i<100;i++){names=(await readdir(downloads)).filter(name=>name.endsWith('.txt')&&!before.includes(name));if(names.length)break;await new Promise(resolve=>setTimeout(resolve,100))}assert.equal(names.length,1,'actual TXT download completes');return readFile(resolve(downloads,names[0]))};
+  await fill('#input','UI_UNSENT_DRAFT_SECRET');
+  const first=await download();assert.deepEqual([...first.subarray(0,3)],[239,187,191],'UTF-8 BOM for Windows');
+  checks.push('actual UTF-8 TXT download');
+  const text=first.toString('utf8');assert(text.includes('UI_FIRST_ONLY')&&text.includes('UI_FILE_42')&&text.includes('失敗 · read')&&text.includes('not-here.txt'),'conversation, arguments, results and failures exported');
+  checks.push('messages, tool arguments, results and errors included');
+  assert(text.includes('# UI_MARKDOWN\n繁體第一段\n\n```text\nline_a\nline_b\n```'),'original Markdown and newlines preserved');
+  checks.push('original Markdown, Traditional Chinese and newlines preserved');
+  assert(!text.includes('UI_UNSENT_DRAFT_SECRET'),'unsent draft excluded');
+  checks.push('unsent draft excluded');
+  const id=await evaluate('session');await click('#new-thread');await fill('#input','UI_SECOND_ONLY');await click('#send');await wait('busy');await fill('#input','UI_THIRD_QUEUED');await click('#send');await wait('!busy&&queuePaused&&workQueue.length===1',30000);
+  assert(await evaluate('chat.textContent.includes("錯誤：")&&!!document.querySelector(".assistant")'),'partial reply survives backend output-length error');
+  checks.push('partial response survives backend error');
+  const second=(await download()).toString('utf8');assert(second.includes('UI_SECOND_ONLY')&&!second.includes('UI_FIRST_ONLY')&&!second.includes('UI_FILE_42'),'export includes only selected conversation');
+  assert(!second.includes('UI_THIRD_QUEUED'),'queued but unsent content excluded');
+  checks.push('conversation exports are isolated');
+  assert.equal(chatModes.length,2,'failed turn does not automatically run queued work');await menu();await click('#queue-resume');await wait('!busy&&!queuePaused&&workQueue.length===0',30000);assert(await evaluate('chat.textContent.includes("UI_THIRD_QUEUED")'));checks.push('failed work pauses queue; resume actually runs queued work');
+  const index=await evaluate(`[...threads.keys()].indexOf(${JSON.stringify(id)})+1`);await click('.thread:nth-child('+index+')');
+  const restored=(await download()).toString('utf8');assert(restored.includes('UI_FIRST_ONLY')&&!restored.includes('UI_SECOND_ONLY'),'switching back exports correct conversation');
+  checks.push('switching back exports correct conversation');
+  assert.equal(chatModes.length,3,'export never invokes model or tools');checks.push('export makes no model requests');
+  assert.equal(errors.length,0,'browser errors');checks.push('no unexpected browser errors');
+  await setViewport({width:360,height:640,deviceScaleFactor:1,mobile:false});await menu();
+  assert(await evaluate('document.querySelector("#export-chat").getBoundingClientRect().right<=innerWidth+1'),'export fits compact viewport');
+  checks.push('export reachable in compact viewport');
+  await writeFile('.test-tmp/edge-agent-export-menu.png',Buffer.from((await cdp('Page.captureScreenshot',{format:'png'})).data,'base64'));
+  await setViewport({width:1280,height:850,deviceScaleFactor:1,mobile:false});
+  const acceptDialog=event=>{if(JSON.parse(event.data).method==='Page.javascriptDialogOpening')void cdp('Page.handleJavaScriptDialog',{accept:true})};socket.addEventListener('message',acceptDialog);
+  await menu();await click('#shutdown');await wait('input.disabled&&chat.textContent.includes("EdgeAgent 已關閉")');socket.removeEventListener('message',acceptDialog);
+  const afterShutdown=requestUrls.length;await new Promise(resolve=>setTimeout(resolve,3500));assert.equal(requestUrls.length,afterShutdown,'shutdown stops polling a stopped service');assert.equal(errors.length,0);checks.push('actual shutdown and no further polling');
+  console.log(JSON.stringify({event:'ui_export_regression',passed:checks.length,total:checks.length,checks,downloads:3,unexpected_errors:errors.length,model_requests:chatModes.length,fixture_model:true}));
+}
 try {
   await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('Network.enable'); await cdp('Log.clear'); await cdp('Log.enable');
-    if(target.url==='about:blank')await cdp('Page.navigate',{url:'http://127.0.0.1:18087/'});
-    if(process.argv.includes('--lease-status')) {
-      await cdp('Page.navigate',{url:'http://127.0.0.1:18087/'});
+    if(target.url==='about:blank')await cdp('Page.navigate',{url:appOrigin+'/'});
+    if(process.argv.includes('--ui-regression')) {
+      await uiRegression();
+    } else if(process.argv.includes('--audit-live')) {
+      await auditLive();
+    } else if(process.argv.includes('--lease-status')) {
+      await cdp('Page.navigate',{url:appOrigin+'/'});
       await wait('document.readyState==="complete"&&!!modelState?.active_model');
       await click('#actions-menu>summary');await click('#models-open');
       await wait('modelDialog.open&&modelState?.mode==="character"');
@@ -117,7 +229,7 @@ try {
   assert(await evaluate('!!document.querySelector("#sidebar")'), 'project sidebar');
   assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'), 'desktop width fits');
   await mkdir(folderFixture,{recursive:true});
-  const originalRecords=await (await fetch('http://127.0.0.1:18087/records')).json();
+  const originalRecords=await (await fetch(appOrigin+'/records')).json();
   await click('#actions-menu>summary');await click('#records-open');
   await wait('document.querySelector("#records-dialog").open&&!document.querySelector("#records-save").disabled');
   assert.equal(await evaluate('document.querySelector("#records-status").textContent'),originalRecords.status);
@@ -126,7 +238,7 @@ try {
     await wait('document.querySelector("#records-result").textContent.includes("系統磁碟")');
     if(!await evaluate('document.querySelector("#records-enabled").checked'))await click('#records-enabled');
     await click('#records-save');await wait('document.querySelector("#records-status").textContent.startsWith("暫停")');
-    assert.equal((await (await fetch('http://127.0.0.1:18087/records')).json()).record_folder,folderFixture);
+    assert.equal((await (await fetch(appOrigin+'/records')).json()).record_folder,folderFixture);
     await setViewport({width:390,height:320,deviceScaleFactor:1,mobile:false});
     assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'records dialog fits compact viewport');
     const recordsScreenshot=await cdp('Page.captureScreenshot',{format:'png'});
@@ -136,7 +248,7 @@ try {
     await fill('#records-folder',originalRecords.record_folder);
     if(await evaluate('document.querySelector("#records-enabled").checked')!==originalRecords.record_sessions)await click('#records-enabled');
     await click('#records-save');await wait('document.querySelector("#records-status").textContent==='+JSON.stringify(originalRecords.status));
-    assert.deepEqual(await (await fetch('http://127.0.0.1:18087/records')).json(),originalRecords,'records configuration restored');
+    assert.deepEqual(await (await fetch(appOrigin+'/records')).json(),originalRecords,'records configuration restored');
     await click('#records-close');
   }
   console.log('PASS: records dialog, system-disk rejection, save, paused status, compact layout and restoration');
@@ -201,7 +313,7 @@ try {
     await fill('#model-context',String(original.context_size));await click('#model-switch');
     await wait('modelState?.job.state==="running"||modelState?.active_model==='+JSON.stringify(original.model));await waitJob(original.model);
     assert.deepEqual(await evaluate('({...modelState.config})'),original,'original Agent configuration restored');
-    assert((await (await fetch('http://127.0.0.1:18087/status')).json()).ready,'original Agent ready');
+    assert((await (await fetch(appOrigin+'/status')).json()).ready,'original Agent ready');
     await setViewport({width:390,height:320,deviceScaleFactor:1,mobile:false});
     await click('#model-lora');
     await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
@@ -288,7 +400,7 @@ try {
   await click('.thread');
   assert(await evaluate('document.querySelectorAll(".thread")[0].classList.contains("active")'), 'thread switching');
   await click('#open-project');
-  await wait('document.querySelector("#folder-dialog").open&&document.querySelectorAll(".folder-item").length>0');
+  await wait('document.querySelector("#folder-dialog").open&&folderList.getAttribute("aria-busy")==="false"&&document.querySelectorAll(".folder-item").length>0');
   await setViewport({width:1280,height:600,deviceScaleFactor:1,mobile:false});
   assert(await evaluate(`(()=>{const dialog=document.querySelector('#folder-dialog').getBoundingClientRect(),button=document.querySelector('#folder-use').getBoundingClientRect();return button.bottom<=dialog.bottom&&button.bottom<=innerHeight+1})()`), 'folder confirmation stays visible in a short window');
   await setViewport({width:1280,height:850,deviceScaleFactor:1,mobile:false});
@@ -336,7 +448,7 @@ try {
   console.log('PASS: three modes and an actual mode:interview HTTP request; interview history cleared');
   if(process.env.EDGE_AGENT_TEST_WORKSPACE){
     await click('#open-project');
-    await wait('document.querySelector("#folder-dialog").open');
+    await wait('folderDialog.open&&folderList.getAttribute("aria-busy")==="false"');
     await fill('#folder-address',process.env.EDGE_AGENT_TEST_WORKSPACE);
     await click('#folder-address-form button');
     await wait(`document.querySelector('#folder-path').dataset.path===${JSON.stringify(process.env.EDGE_AGENT_TEST_WORKSPACE)}`);
@@ -465,11 +577,11 @@ try {
       let cleanupFailure=null;
       try{if(await evaluate('!!recording'))await evaluate('stopRecording(false)')}catch(error){cleanupFailure=error;console.error({event:'recording_cleanup_failed'})}
       try{
-        if((await (await fetch('http://127.0.0.1:18087/models')).json()).active_model!==original.model){
+        if((await (await fetch(appOrigin+'/models')).json()).active_model!==original.model){
           const keys=['model','lora','mmproj','context_size','max_output_tokens','gpu_layers','low_vram'];
-          const response=await fetch('http://127.0.0.1:18087/models/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(keys.map(key=>[key,original[key]])))});
+          const response=await fetch(appOrigin+'/models/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(keys.map(key=>[key,original[key]])))});
           assert(response.ok,'cleanup restore accepted');
-          for(let i=0;i<600;i++){const state=await (await fetch('http://127.0.0.1:18087/models')).json();if(state.job.state==='done'&&state.active_model===original.model)break;if(state.job.state==='failed')throw Error('cleanup restore failed');assert(i<599,'cleanup restore timeout');await new Promise(resolve=>setTimeout(resolve,1000))}
+          for(let i=0;i<600;i++){const state=await (await fetch(appOrigin+'/models')).json();if(state.job.state==='done'&&state.active_model===original.model)break;if(state.job.state==='failed')throw Error('cleanup restore failed');assert(i<599,'cleanup restore timeout');await new Promise(resolve=>setTimeout(resolve,1000))}
         }
         await evaluate('window.__edgeAgentCheckReload=true');await cdp('Page.reload');
         await wait('!window.__edgeAgentCheckReload&&document.readyState==="complete"&&!!modelState?.active_model');

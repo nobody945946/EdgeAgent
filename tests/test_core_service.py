@@ -66,10 +66,13 @@ def test_live_character_lease_cannot_be_stolen_or_stopped(tmp_path, monkeypatch)
     manager.mode = "character"
     manager.owner_pid = 123
     monkeypatch.setattr(service, "_pid_alive", lambda pid: True)
+    cancellations = []
+    monkeypatch.setattr(manager.chat, "cancel_all", lambda: cancellations.append(True))
     with pytest.raises(PermissionError):
         manager.switch("base")
     with pytest.raises(PermissionError):
         manager.stop_service()
+    assert cancellations == []
     with pytest.raises(PermissionError):
         manager.switch("character", 456)
 

@@ -697,6 +697,7 @@ class NativeChat:
                                 "tool": event.get("toolName"),
                                 "call_id": call_id,
                                 "result": event.get("result", {}),
+                                "error": bool(event.get("isError")),
                             },
                         )
                         changed = previews.pop(call_id, None)

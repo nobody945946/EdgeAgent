@@ -465,6 +465,7 @@ def test_cancelled_silent_transport_cannot_hold_service_forever(tmp_path, monkey
 @pytest.fixture
 def repeating_model():
     import threading
+    import time
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     state = {
@@ -481,6 +482,7 @@ def repeating_model():
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             state.setdefault("requests", []).append(request)
             state["calls"] += 1
+            time.sleep(state.get("delays", {}).get(state["calls"], 0))
             # A "sequence" of (tool, input) pairs is played once, then answered.
             sequence = state.get("sequence")
             if sequence is not None and state["calls"] > len(sequence):
@@ -506,7 +508,7 @@ def repeating_model():
                 ]
                 if not state.get("answer")
                 and state["calls"] < state.get("answer_after", float("inf"))
-                else [({"role": "assistant", "content": "fixture"}, None), ({}, "stop")]
+                else [({"role": "assistant", "content": state.get("text", "fixture")}, None), ({}, state.get("finish_reasons", {}).get(state["calls"], "stop"))]
             )
             for delta, stop in chunks:
                 record = {
@@ -1302,3 +1304,96 @@ def test_discussion_opens_its_skill_once_and_keeps_work_tools(tmp_path):
     assert prompts[1] == "那你覺得呢"
     with pytest.raises(ValueError, match="invalid mode"):
         list(chat.stream_reply("talk", "x", working_dir=tmp_path, mode="plan"))
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or not installed_pi() or os.environ.get("EDGE_AGENT_UI_REGRESSION") != "1",
+    reason="opt-in real Edge and pinned Pi UI regression",
+)
+def test_browser_exports_conversations_and_displays_native_tool_errors(
+    tmp_path, repeating_model, monkeypatch
+):
+    import subprocess
+    import threading
+
+    from edge_agent import service
+    from edge_agent.runtime import CORE_ROOT, NODE_VERSION
+    from tests.windows_check import launch_edge
+
+    port, state = repeating_model
+    state.update(
+        sequence=[
+            ("write", {"path": "created.txt", "content": "UI_FILE_42\n"}),
+            ("read", {"path": "not-here.txt"}),
+        ],
+        text="# UI_MARKDOWN\n繁體第一段\n\n```text\nline_a\nline_b\n```",
+        finish_reasons={4: "length"},
+        delays={4: 1.5},
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    for args in [
+        ["init", "-b", "copilot-story-mode"],
+        ["config", "user.name", "UI Fixture"],
+        ["config", "user.email", "fixture@example.invalid"],
+    ]:
+        subprocess.run(["git", "-C", str(workspace), *args], check=True, capture_output=True)
+    (workspace / "probe.py").write_text("fixture_value = 42\n")
+    subprocess.run(["git", "-C", str(workspace), "add", "probe.py"], check=True)
+    subprocess.run(["git", "-C", str(workspace), "commit", "-m", "UI fixture"], check=True, capture_output=True)
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    core = service.EdgeAgent(tmp_path / "core")
+    core.chat.close()
+    core.chat = NativeChat(model_port=port)
+    core.active_model = "synthetic UI fixture"
+    core.agent_slot = 0
+    # Only model readiness is synthetic; HTTP, SDK, tools and files are real.
+    monkeypatch.setattr(core, "status", lambda: {"ready": True})
+    handler = type("UIFixtureHandler", (service.Handler,), {"core": core})
+    server = service.ExclusiveHTTPServer(("127.0.0.1", 0), handler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    edge = None
+    try:
+        edge = launch_edge(tmp_path / "edge-profile")
+        environment = {
+            **os.environ,
+            "EDGE_AGENT_BROWSER_URL": f"http://127.0.0.1:{server.server_port}",
+            "EDGE_AGENT_TEST_WORKSPACE": str(workspace),
+            "EDGE_AGENT_TEST_DOWNLOADS": str(downloads),
+        }
+        subprocess.run(
+            [
+                str(CORE_ROOT / f".runtime/node/node-v{NODE_VERSION}-win-x64/node.exe"),
+                "tests/browser_check.mjs",
+                "--ui-regression",
+            ],
+            cwd=CORE_ROOT,
+            env=environment,
+            check=True,
+            timeout=120,
+        )
+        failed_tools = [
+            message
+            for request in state["requests"]
+            for message in request["messages"]
+            if message["role"] == "tool" and "not-here.txt" in json.dumps(message)
+        ]
+        assert failed_tools
+        assert len(list(downloads.glob("*.txt"))) == 3
+        assert not list(workspace.glob("*.jsonl"))
+        assert not (workspace / "created.txt").exists()
+    finally:
+        core.chat.close()
+        core.terminal.close_all()
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+        if edge is not None:
+            subprocess.run(
+                ["taskkill", "/PID", str(edge.pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+                timeout=15,
+            )

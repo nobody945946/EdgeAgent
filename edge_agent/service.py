@@ -914,7 +914,6 @@ class EdgeAgent:
             return self.status()
 
     def stop_service(self) -> dict[str, object]:
-        self.chat.cancel_all()
         with self.lock:
             if (
                 self.mode == "character"
