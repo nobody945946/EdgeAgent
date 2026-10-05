@@ -39,6 +39,55 @@ def vram() -> int:
     return int(result.stdout.strip())
 
 
+def launch_edge(profile: Path) -> subprocess.Popen:
+    """A hidden Edge with its own throwaway profile and CDP on 9223; the caller
+    closes it by this PID and the profile goes with the temporary directory."""
+    from edge_agent.service import _listening_pid
+
+    if _listening_pid(9223) is not None:
+        raise RuntimeError("CDP port 9223 is occupied")
+    candidates = [
+        Path(os.environ.get(name, "")) / "Microsoft/Edge/Application/msedge.exe"
+        for name in ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA")
+        if os.environ.get(name)
+    ]
+    executable = next((path for path in candidates if path.is_file()), None)
+    if executable is None:
+        raise RuntimeError("Microsoft Edge (msedge.exe) not found")
+    edge = subprocess.Popen(
+        [
+            str(executable),
+            "--headless=new",
+            "--remote-debugging-port=9223",
+            f"--user-data-dir={profile}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-extensions",
+            "about:blank",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(
+                "http://127.0.0.1:9223/json/version", timeout=1
+            ):
+                return edge
+        except OSError:
+            if edge.poll() is not None:
+                break
+            time.sleep(0.2)
+    subprocess.run(
+        ["taskkill", "/PID", str(edge.pid), "/T", "/F"],
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+    raise RuntimeError("dedicated Edge CDP did not become ready")
+
+
 def native_probe(core: EdgeAgent, workspace: Path, key: str) -> dict[str, object]:
     text = os.environ[key]
     interview = key == "EDGE_AGENT_INTERVIEW_PROMPT"
@@ -143,7 +192,9 @@ def native_probe(core: EdgeAgent, workspace: Path, key: str) -> dict[str, object
         if (
             terminal != "done"
             or errors
-            or not any(option.issubset({item["tool"] for item in tools}) for option in expected)
+            or not any(
+                option.issubset({item["tool"] for item in tools}) for option in expected
+            )
             or any(item["http_error"] for item in tools)
         ):
             raise AssertionError(f"{key}: task or required tools failed")
@@ -252,42 +303,11 @@ def main() -> int:
         server = ExclusiveHTTPServer(("127.0.0.1", CONTROL_PORT), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        edge_pid = None
+        edge = None
         try:
             core.switch("base")
             if args.browser:
-                edge_pid = _listening_pid(9223)
-                if edge_pid is None:
-                    raise RuntimeError(
-                        "launch the dedicated hidden Edge profile before this runner"
-                    )
-                identity = subprocess.run(
-                    [
-                        "powershell.exe",
-                        "-NoProfile",
-                        "-Command",
-                        f"(Get-CimInstance Win32_Process -Filter 'ProcessId={edge_pid}').CommandLine",
-                    ],
-                    capture_output=True,
-                    check=True,
-                    timeout=10,
-                ).stdout.decode(errors="replace")
-                if "integration-edge-profile" not in identity:
-                    edge_pid = None
-                    raise RuntimeError(
-                        "CDP profile is not owned by this integration test"
-                    )
-                deadline = time.monotonic() + 30
-                while time.monotonic() < deadline:
-                    try:
-                        with urllib.request.urlopen(
-                            "http://127.0.0.1:9223/json/version", timeout=1
-                        ):
-                            break
-                    except OSError:
-                        time.sleep(0.2)
-                else:
-                    raise RuntimeError("dedicated Edge CDP did not become ready")
+                edge = launch_edge(root / "integration-edge-profile")
                 subprocess.run(
                     [
                         str(
@@ -392,13 +412,14 @@ def main() -> int:
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
-            if edge_pid is not None:
+            if edge is not None:
                 subprocess.run(
-                    ["taskkill", "/PID", str(edge_pid), "/T", "/F"],
+                    ["taskkill", "/PID", str(edge.pid), "/T", "/F"],
                     capture_output=True,
                     check=False,
                     timeout=15,
                 )
+                edge.wait(timeout=15)
             # Windows may retain a departing child's cwd briefly after wait().
             for attempt in range(30):
                 try:

@@ -112,4 +112,4 @@ SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸�
 
 `tests/browser_check.mjs` 使用真實 Edge／CDP 驗證 UI，不保存使用者對話。修改應在既有 owner 重寫、同步呼叫端與測試，刪除被取代的路徑；不讓 UI 補償引擎缺陷，也不增加第二套部署或模型專用流程。
 
-`python -m tests.windows_check --inference-port 18090` 可使用暫存設定啟動真正服務、驗證清理，避開已被其他程式占用的推論埠。測試指示只透過環境變數傳入記憶體：`EDGE_AGENT_WEB_PROMPT` 要求搜尋及讀網頁，`EDGE_AGENT_SEARCH_PROMPT` 要求 grep/find；`EDGE_AGENT_ROLE_PROMPT` 配合 `EDGE_AGENT_READ_PROMPT` 測量 8K／16K／32K 共用 slot 的並行交談與讀檔。runner 確認工具及完成事件，只輸出事件和數字。`--browser` 另需預先啟動 CDP 9223 的專用 Edge，profile 名稱為 `integration-edge-profile`；結束只關閉該 profile 的 PID。
+`python -m tests.windows_check --inference-port 18090` 可使用暫存設定啟動真正服務、驗證清理，避開已被其他程式占用的推論埠。測試指示只透過環境變數傳入記憶體：`EDGE_AGENT_WEB_PROMPT` 要求搜尋及讀網頁，`EDGE_AGENT_SEARCH_PROMPT` 要求 grep/find；`EDGE_AGENT_ROLE_PROMPT` 配合 `EDGE_AGENT_READ_PROMPT` 測量 8K／16K／32K 共用 slot 的並行交談與讀檔。runner 確認工具及完成事件，只輸出事件和數字。`--browser` 會自己用暫存 profile 開一個隱藏的 Edge（CDP 9223，該埠被占用就拒跑），跑 `tests/browser_check.mjs`，結束時用自己的 PID 關掉它，profile 隨暫存目錄刪除。
