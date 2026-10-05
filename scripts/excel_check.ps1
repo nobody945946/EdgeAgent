@@ -14,7 +14,8 @@ if ($excel) {
     $excel.Visible = $false; $excel.DisplayAlerts = $false
     $book = $excel.Workbooks.Add(); $sheet = $book.Worksheets.Item(1)
     $sheet.Range('A1').Formula = '=VLOOKUP(1,{1,"a";3,"b"},3,FALSE)'
-    $sheet.Range('A2').Formula2 = '=XLOOKUP(4,{1;3;5},{"a";"b";"c"})'
+    # Formula2 exists from Excel 365; an older Excel takes Formula (and shows #NAME? if it has no XLOOKUP).
+    try { $sheet.Range('A2').Formula2 = '=XLOOKUP(4,{1;3;5},{"a";"b";"c"})' } catch { $sheet.Range('A2').Formula = '=XLOOKUP(4,{1;3;5},{"a";"b";"c"})' }
     $excel.Calculate()
     $result.vlookup_past_table = [string]$sheet.Range('A1').Text
     $result.xlookup_default = [string]$sheet.Range('A2').Text
