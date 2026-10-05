@@ -793,3 +793,26 @@ def test_catalog_search_reads_chinese_and_english():
     assert photos[0] == "rename_photos_by_date"
     assert encoding[0] == "convert_text_encoding"
     assert "run_checks" in checks
+
+
+def test_organize_into_the_folders_the_user_named(tmp_path):
+    """The user's own folder names: 影音 takes video and audio, documents take
+    PDFs and slides, the rest goes to 其他; names may come as one string."""
+    from edge_agent.toolbox import REGISTRY
+
+    d = tmp_path / "下載"
+    d.mkdir()
+    for name in ("a.jpg", "b.mp4", "c.m4a", "d.pdf", "e.pptx", "f.zip", "g.ttf", "setup.exe", "noext"):
+        (d / name).write_bytes(b"x")
+    tool = REGISTRY["organize_folder"]
+    params = {"folder": "下載", "folders": ["圖片、文件", "壓縮檔", "影音", "其他"]}
+    before = sorted(p.name for p in d.iterdir())
+    assert "影音" in tool.preview(params, tmp_path) and sorted(p.name for p in d.iterdir()) == before
+    tool.run(params, tmp_path)
+    where = {p.name: p.parent.name for p in d.rglob("*") if p.is_file()}
+    assert where == {"a.jpg": "圖片", "b.mp4": "影音", "c.m4a": "影音", "d.pdf": "文件", "e.pptx": "文件",
+                     "f.zip": "壓縮檔", "g.ttf": "其他", "setup.exe": "其他", "noext": "其他"}
+    # Without an "other" folder, what fits nothing stays and is reported.
+    (d / "h.ttf").write_bytes(b"x")
+    out = tool.run({"folder": "下載", "folders": ["圖片"]}, tmp_path)
+    assert (d / "h.ttf").is_file() and "沒有適合" in out

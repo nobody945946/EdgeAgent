@@ -207,22 +207,70 @@ CATEGORIES: dict[str, str] = {
 OTHER = "其他"
 EXT_CATEGORY = {ext: cat for cat, exts in CATEGORIES.items() for ext in exts.split()}
 CATEGORY_NAMES = {*CATEGORIES, OTHER}
+# Folder names people ask for, matched to the standard kinds by the words in
+# them ("影音" takes both video and audio; spreadsheets, slides and PDFs go to
+# a documents folder when there is none of their own). What fits no named
+# folder goes to the one meaning "other", or stays where it is.
+NAMED_KINDS: dict[str, tuple[str, ...]] = {
+    "圖片": ("圖片", "照片", "相片", "影像", "圖檔", "image", "photo", "picture", "pic"),
+    "影片": ("影片", "影音", "視訊", "錄影", "電影", "video", "movie"),
+    "音樂": ("音樂", "影音", "音訊", "聲音", "錄音", "歌", "audio", "music", "sound"),
+    "文件": ("文件", "文書", "文字", "doc"),
+    "試算表": ("試算表", "表格", "excel", "sheet"),
+    "簡報": ("簡報", "投影片", "ppt", "slide"),
+    "PDF": ("pdf",),
+    "壓縮檔": ("壓縮", "zip", "archive"),
+    "安裝程式": ("安裝", "installer", "setup"),
+    "程式碼": ("程式碼", "原始碼", "code", "source"),
+}
+FALLBACK_KIND = {"試算表": "文件", "簡報": "文件", "PDF": "文件"}
+OTHER_WORDS = ("其他", "其它", "雜項", "其餘", "other", "misc")
+
+
+def named_folders(value: list[str]) -> list[str]:
+    """The folder names asked for; a small model may pass them as one string."""
+    names: list[str] = []
+    for item in value:
+        for name in re.split(r"[,、，;；/|]+", item):
+            name = name.strip().strip("「」\"'")
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
+def kind_folders(names: list[str]) -> tuple[dict[str, str], str | None]:
+    """Standard kind -> the asked-for folder it goes to, and the "other" folder."""
+    def find(words: tuple[str, ...]) -> str | None:
+        return next((n for n in names if any(w in n.casefold() for w in words)), None)
+
+    other = find(OTHER_WORDS)
+    mapping: dict[str, str] = {}
+    for kind, words in NAMED_KINDS.items():
+        found = find(words) or (find(NAMED_KINDS[FALLBACK_KIND[kind]]) if kind in FALLBACK_KIND else None)
+        if found and found != other:
+            mapping[kind] = found
+    return mapping, other
+
+
 PARTIAL_SUFFIXES = {".crdownload", ".part", ".partial", ".tmp", ".download", ".opdownload"}
 NO_EXT = "沒有副檔名"
 
 
-def _category_dir(name: str, by: str) -> bool:
+def _category_dir(name: str, by: str, named: list[str] | None = None) -> bool:
     """A folder this mode itself creates, so its files are already sorted."""
     if by == "type":
-        return name in CATEGORY_NAMES
+        return name in (named or CATEGORY_NAMES)
     if by == "month":
         return re.fullmatch(r"\d{4}-\d{2}", name) is not None
     return name == NO_EXT or (name.isascii() and name.isalnum() and name == name.upper()
                               and not name.isdigit())
 
 
-def _bucket(path: Path, by: str) -> str:
+def _bucket(path: Path, by: str, named: tuple[dict[str, str], str | None] | None = None) -> str | None:
     ext = path.suffix[1:].casefold()
+    if by == "type" and named is not None:
+        mapping, other = named
+        return mapping.get(EXT_CATEGORY.get(ext, OTHER)) or other
     if by == "type":
         return EXT_CATEGORY.get(ext, OTHER)
     if by == "extension":
@@ -257,11 +305,13 @@ def _organize_plan(params: dict, root: Path) -> tuple[Path, MovePlan]:
     recursive = params["include_subfolders"]
     plan = MovePlan()
     pruned: list[str] = []
+    names = named_folders(params["folders"] or []) if by == "type" else []
+    named = kind_folders(names) if names else None
 
     def prune(path: Path) -> bool:
         if prune_hidden(path):
             return True
-        if _category_dir(path.name, by):
+        if _category_dir(path.name, by, names):
             pruned.append(path.name)
             return True
         return False
@@ -274,10 +324,14 @@ def _organize_plan(params: dict, root: Path) -> tuple[Path, MovePlan]:
             plan.skipped.append(f"- {shown(root, path)}：{reason}")
             continue
         try:
-            target_dir = folder / _bucket(path, by)
+            bucket = _bucket(path, by, named)
         except OSError as exc:
             plan.skipped.append(f"- {shown(root, path)}：{oserror_text(exc)}")
             continue
+        if bucket is None:
+            plan.skipped.append(f"- {shown(root, path)}：指定的資料夾裡沒有適合它的（沒有「其他」）")
+            continue
+        target_dir = folder / bucket
         if key(path.parent) == key(target_dir):
             continue
         plan.moves.append((path, free_name(target_dir / path.name, taken)))
@@ -358,6 +412,9 @@ register(Tool(
                                   "extension：按副檔名（JPG、PDF…）；month：按修改月份（2024-05）"},
             "include_subfolders": {"type": "boolean", "default": False,
                                    "description": "true 就連子資料夾裡的檔案也搬到上層的分類資料夾；預設只整理最上層"},
+            "folders": {"type": "array", "items": {"type": "string"},
+                        "description": "使用者指定的分類資料夾名稱，照他說的寫，例如 [\"圖片\", \"文件\", \"影音\", \"其他\"]；"
+                                       "每個檔案放進最符合它類型的那一個。使用者沒指定名稱就不要給"},
         },
         "required": ["folder"],
     },

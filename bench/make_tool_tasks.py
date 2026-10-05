@@ -124,10 +124,25 @@ STEMS = ("報價單", "旅遊", "IMG_2231", "會議錄音", "成績", "說明書
          "screenshot", "演唱會", "履歷", "收據", "podcast", "壁紙", "課表", "驅動程式", "季報", "相簿")
 
 
+# The folder names people ask for, and which of the pools each one takes.
+NAMED_SETS = (
+    {"圖片": ("圖片",), "影音": ("影片", "音樂"), "文件": ("文件", "試算表", "PDF"), "壓縮檔": ("壓縮檔",), "其他": ("安裝程式",)},
+    {"照片": ("圖片",), "影片": ("影片",), "音樂": ("音樂",), "文書": ("文件", "試算表", "PDF"), "其它": ("壓縮檔", "安裝程式")},
+    {"圖片": ("圖片",), "文件": ("文件", "試算表", "PDF"), "安裝檔": ("安裝程式",), "其他": ("影片", "音樂", "壓縮檔")},
+)
+
+
 def gen_organize(rng: random.Random) -> Task:
     folder = rng.choice(FOLDERS)
-    t = Task("tool", "change", f"使用者的「{folder}」資料夾很亂，檔案都混在一起（圖片、影片、文件、安裝檔、壓縮檔…）。"
-                               "他想讓這些檔案依種類分到不同的子資料夾，不能弄丟任何檔案。", [folder])
+    named = rng.choice(NAMED_SETS) if rng.random() < 0.5 else None
+    if named:
+        t = Task("tool", "change", f"使用者的「{folder}」資料夾很亂，他要把檔案依種類分到這幾個子資料夾：{'、'.join(named)}"
+                                   "（資料夾名稱照他說的），不能弄丟任何檔案。", [folder, *named])
+        home = {pool: name for name, pools in named.items() for pool in pools}
+    else:
+        t = Task("tool", "change", f"使用者的「{folder}」資料夾很亂，檔案都混在一起（圖片、影片、文件、安裝檔、壓縮檔…）。"
+                                   "他想讓這些檔案依種類分到不同的子資料夾，不能弄丟任何檔案。", [folder])
+        home = None
     names = set()
     for _ in range(rng.randint(9, 16)):
         kind = rng.choice(list(TYPE_POOLS))
@@ -136,19 +151,25 @@ def gen_organize(rng: random.Random) -> Task:
             continue
         names.add(name)
         t.files[f"{folder}/{name}"] = name.encode() + bytes(rng.randint(10, 400))
+    cats = {ext: k for k, exts in TYPE_POOLS.items() for ext in exts}
     t.check = f'''
     import collections
-    cats = {json.dumps({ext: k for k, exts in TYPE_POOLS.items() for ext in exts}, ensure_ascii=False)}
+    cats = {json.dumps(cats, ensure_ascii=False)}
+    home = {home!r}
     where = collections.defaultdict(set)
     for p in (O / {folder!r}).iterdir():
         found = [q for q in W.rglob(p.name) if q.read_bytes() == p.read_bytes()]
         need(len(found) == 1, "lost or duplicated " + p.name)
         if found:
             need(found[0].parent != W / {folder!r}, "not sorted: " + p.name)
-            where[cats[p.suffix[1:].lower()]].add(found[0].parent)
+            kind = cats[p.suffix[1:].lower()]
+            if home:
+                need(found[0].parent == W / {folder!r} / home[kind], "not in the folder asked for: " + p.name)
+            where[kind].add(found[0].parent)
     need(all(len(v) == 1 for v in where.values()), "one kind spread over folders")
-    homes = [next(iter(v)) for v in where.values()]
-    need(len(set(homes)) == len(homes), "different kinds share a folder")
+    if not home:
+        homes = [next(iter(v)) for v in where.values()]
+        need(len(set(homes)) == len(homes), "different kinds share a folder")
     '''
     return t
 
