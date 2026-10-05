@@ -42,8 +42,10 @@ function Command($c) {
     $resolved = $info.Name
     $module = [string]$info.ModuleName
     if ($info.CommandType -eq 'Alias') {
-      $resolved = [string]$info.ResolvedCommandName
-      if ($info.ResolvedCommand) { $targetType = [string]$info.ResolvedCommand.CommandType; $module = [string]$info.ResolvedCommand.ModuleName }
+      $target = if ($info.ResolvedCommandName) { [string]$info.ResolvedCommandName } else { [string]$info.Definition }
+      $resolved = $target
+      $targetCmd = if ($info.ResolvedCommand) { $info.ResolvedCommand } else { Get-Command -Name $target -ErrorAction SilentlyContinue | Select-Object -First 1 }
+      if ($targetCmd) { $targetType = [string]$targetCmd.CommandType; $module = [string]$targetCmd.ModuleName }
     }
     if ($info.CommandType -eq 'Application') { $source = [string]$info.Source }
   }
@@ -69,7 +71,18 @@ function Command($c) {
       $bound += [pscustomobject]@{ name = [string]$kv.Key; value = $value; switch = $isSwitch; at = $at }
     }
     foreach ($kv in $b.BindingExceptions.GetEnumerator()) {
-      $bindErrors += [pscustomobject]@{ name = [string]$kv.Key; message = [string]$kv.Value.BindingException.Message }
+      $ex = $kv.Value.BindingException
+      if ($ex.ErrorId -eq 'AmbiguousParameter' -and $resolved -eq 'Get-ChildItem' -and $kv.Key -eq 'r') {
+        $at = -1
+        foreach ($e in $c.CommandElements) {
+          if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq 'r') {
+            $at = $e.Extent.StartOffset; break
+          }
+        }
+        $bound += [pscustomobject]@{ name = 'Recurse'; value = ''; switch = $true; at = $at }
+        continue
+      }
+      $bindErrors += [pscustomobject]@{ name = [string]$kv.Key; message = [string]$ex.Message }
     }
   }
   $redirections = @(foreach ($r in $c.Redirections) {
