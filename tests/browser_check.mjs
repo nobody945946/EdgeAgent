@@ -295,6 +295,7 @@ try {
   await click('#actions-menu>summary');
   await click('#models-open');
   await wait('document.querySelector("#models-dialog").open&&document.querySelector("#model-select").options.length>0',60000);
+  assert(await evaluate('(()=>{const help=[...document.querySelectorAll("#models-dialog p")].find(p=>p.textContent.includes("附帶給 E4B"));const names=[...help.querySelectorAll("code")].map(e=>e.textContent);return help.textContent.includes("Agent 用")&&help.textContent.includes("機魂用")&&help.textContent.includes("自己的 GGUF LoRA")&&names.length===2&&names.every(name=>name.endsWith(".gguf")&&!name.includes("@@"))&&names[0]!==names[1]})()'),'adapter help identifies both bundled adapters');
   assert(await evaluate('[...document.querySelector("#model-select").options].every(option=>!option.value.includes("lora"))'),'adapters excluded from model picker');
   assert(await evaluate('!!document.querySelector("#model-active").textContent'),'active model displayed');
   assert(await evaluate('Number(document.querySelector("#model-output").value)===modelState.config.max_output_tokens&&document.querySelector("#model-active").textContent.includes("輸出上限 "+modelState.max_output_tokens)'),'separate configured and effective output budgets displayed');

@@ -6,7 +6,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from edge_agent import api, records, runtime, service
+from edge_agent import api, records, runtime, service, web
+
+
+def test_model_help_uses_both_runtime_adapter_names():
+    assert f"<code>{runtime.AGENT_ADAPTER}</code>" in web.NATIVE_CHAT_HTML
+    assert f"<code>{runtime.CHARACTER_ADAPTER}</code>" in web.NATIVE_CHAT_HTML
+    assert "@@AGENT_ADAPTER@@" not in web.NATIVE_CHAT_HTML
+    assert "@@CHARACTER_ADAPTER@@" not in web.NATIVE_CHAT_HTML
 
 
 @pytest.mark.parametrize(
@@ -249,7 +256,7 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
     assert manager.chat.context_size == status["context_size"] == agent_window
     agent = standalone_lora if same_base else ""
     loaded = list(dict.fromkeys(name for name in (leased_lora, agent) if name))
-    assert (f"lora = {','.join(str(tmp_path / name) for name in loaded)}" in preset) == bool(loaded)
+    assert (f"lora = {','.join((tmp_path / name).as_posix() for name in loaded)}" in preset) == bool(loaded)
     assert ("lora-init-without-apply = true" in preset) == bool(loaded)
     assert manager.chat.lora_id == (loaded.index(agent) if agent else None)
     assert status["model"] == leased_model

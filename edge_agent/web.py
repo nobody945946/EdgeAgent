@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from html import escape
+
+from edge_agent.runtime import AGENT_ADAPTER, CHARACTER_ADAPTER
+
 NATIVE_CHAT_HTML = r"""<!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -130,7 +134,7 @@ select{min-height:32px;min-width:0;border:0;border-radius:7px;background:#252525
 <label>LoRA（選用）<select id="model-lora" aria-label="相容 LoRA"><option value="">不使用</option></select></label>
 <label>圖片／音訊配件<select id="model-mmproj" aria-label="多模態配件"><option value="">預設配件（內建模型自動下載）</option></select></label>
 <p>其他模型請選同一來源、相同基底的 mmproj；圖片和音訊選項依載入後的實際能力啟用。</p>
-<p>附帶給 E4B 使用的 Agent adapter（agent-fw1.q8_0.gguf），部署時會複製到 models；選 E4B 和這個 adapter 後套用。也可以把自己的 GGUF LoRA 放入 models，重新掃描，並選擇訓練時使用的相同基底模型。</p>
+<p>附帶給 E4B 使用的兩個 adapter，部署時會複製到 models：Agent 用 <code>@@AGENT_ADAPTER@@</code>，機魂用 <code>@@CHARACTER_ADAPTER@@</code>。這裡選 E4B 和 Agent 的 adapter 後套用；機魂的 adapter 由 SilentTalk 自動選擇。也可以把自己的 GGUF LoRA 放入 models，重新掃描，並選擇訓練時使用的相同基底模型。</p>
 <div class="model-grid"><label>Context（token）<input id="model-context" type="number" min="8192" max="262144" step="1024"></label><label>GPU 層數（-1 自動分配，0 使用 CPU）<input id="model-gpu" type="number" min="-1" max="999"></label></div>
 <label>日常工作記憶目標（token）<input id="model-working" type="number" min="8192" max="262144" step="1024"></label>
 <p>超過工作目標會滾動摘要，相關舊對話從 RAM 檢索。Context 是引擎容量；工作目標不會縮小它或減少已配置的 KV。工作目標至少為輸出上限的兩倍，至多為 Context；摘要會保留完整的訊息邊界，因此可能暫時超過目標。結束服務會清除對話。</p>
@@ -366,3 +370,7 @@ document.querySelector('#form').addEventListener('submit',event=>{event.preventD
 input.addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing&&event.keyCode!==229&&!matchMedia('(pointer:coarse)').matches){event.preventDefault();document.querySelector('#form').requestSubmit()}});
 document.querySelector('#reset').addEventListener('click',newThread);
 </script></body></html>"""
+
+NATIVE_CHAT_HTML = NATIVE_CHAT_HTML.replace(
+    "@@AGENT_ADAPTER@@", escape(AGENT_ADAPTER)
+).replace("@@CHARACTER_ADAPTER@@", escape(CHARACTER_ADAPTER))
