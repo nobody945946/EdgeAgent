@@ -17,7 +17,6 @@ candidates. Eval tasks (bench/tasks, held-out task folders) are refused.
 from __future__ import annotations
 
 import argparse
-import ast
 import hashlib
 import json
 import shutil
@@ -39,23 +38,18 @@ from edge_agent import coder  # noqa: E402
 TRAINING_ROOT = (ROOT / ".runtime/agentdata/tasks").resolve()
 
 
-def original_function(task_dir: Path, task: dict) -> str | None:
-    """The function as the repository wrote it (the task's solution file)."""
+def original_function(task_dir: Path, task: dict) -> tuple[str, str] | None:
+    """The broken function's qualified name and the repository's own version
+    of it: the definition named in the spec whose text the task changed (a
+    module may hold several methods of that name)."""
     spec = task["spec"]
-    path = task_dir / "solution" / spec["file"]
-    broken = task_dir / "workspace" / spec["file"]
-    try:
-        text, changed = path.read_text(encoding="utf-8"), broken.read_text(encoding="utf-8")
-    except OSError:
+    fixed = {d.name: d for d in coder.definitions(task_dir / "solution", [spec["file"]])}
+    broken = {d.name: d for d in coder.definitions(task_dir / "workspace", [spec["file"]])}
+    changed = [name for name, d in fixed.items()
+               if d.short == spec["function"] and name in broken and broken[name].source != d.source]
+    if len(changed) != 1:
         return None
-    lines = text.splitlines()
-    for node in ast.walk(ast.parse(text)):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == spec["function"]:
-            start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
-            source = "\n".join(lines[start - 1:node.end_lineno])
-            if textwrap.dedent(source) not in textwrap.dedent(changed) or spec["kind"] == "implement":
-                return textwrap.dedent(source)
-    return None
+    return changed[0], textwrap.dedent(fixed[changed[0]].source)
 
 
 # Sandbox side: reproduce with the coder, write both requests, check the answer.
@@ -67,7 +61,7 @@ job = json.loads(os.environ["BENCH_ROWS"])
 root = Path("/work")
 setup = coder.reproduce(root, job["prompt"])
 out = {"goal": setup.goal, "listed": [f"{d.file}:{d.name}" for d, _ in setup.listed]}
-target = [d for d in setup.defs if d.file == job["file"] and d.short == job["function"]]
+target = [d for d in setup.defs if d.file == job["file"] and d.name == job["name"]]
 if setup.goal and target:
     chosen = target[:1]
     out["choose"] = coder.choose_prompt(job["prompt"], setup.first.output, setup.tests, setup.listed) if setup.listed else ""
@@ -87,14 +81,15 @@ def rows_for(task_dir: Path, work: Path) -> tuple[list[dict], str]:
     task = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
     if not task.get("prompt"):
         return [], "no request yet"
-    answer = original_function(task_dir, task)
-    if answer is None:
+    found = original_function(task_dir, task)
+    if found is None:
         return [], "no original function"
+    qualname, answer = found
     job = task_dir.name
     workspace, original = work / "ws" / job, work / "orig" / job
     run.prepare(task_dir, task, workspace, original)
-    payload = {"prompt": task["prompt"], "file": task["spec"]["file"],
-               "function": task["spec"]["function"], "answer": answer}
+    payload = {"prompt": task["prompt"], "file": task["spec"]["file"], "name": qualname,
+               "answer": answer}
     name = "ecr-" + hashlib.sha1(job.encode()).hexdigest()[:12]
     command = run.sandbox(name, [(workspace, "/work", "rw"), *run.code_mounts()],
                           {"BENCH_ROWS": json.dumps(payload, ensure_ascii=False)},
@@ -118,9 +113,7 @@ def rows_for(task_dir: Path, work: Path) -> tuple[list[dict], str]:
     rows = [{"messages": coder.messages(out["repair"]) + [
         {"role": "assistant", "content": f"```python\n{answer.rstrip()}\n```"}],
         "train": "last", "source": {**source, "step": "repair"}}]
-    wanted = f"{task['spec']['file']}:"
-    numbers = [n for n, item in enumerate(out["listed"], 1)
-               if item.startswith(wanted) and item.rsplit(".", 1)[-1].split(":")[-1] == task["spec"]["function"]]
+    numbers = [n for n, item in enumerate(out["listed"], 1) if item == f"{task['spec']['file']}:{qualname}"]
     if out.get("choose") and numbers:
         rows.append({"messages": coder.messages(out["choose"]) + [
             {"role": "assistant", "content": json.dumps({"edit": numbers[:1]})}],
