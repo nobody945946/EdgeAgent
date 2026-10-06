@@ -17,6 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from edge_agent.runtime import (
+    AGENT_ADAPTER,
     CORE_ROOT,
     DEFAULT_MODEL,
     NODE_VERSION,
@@ -35,6 +36,8 @@ QWEN_MODEL_URL = (
     "e87f176479d0855a907a41277aca2f8ee7a09523/" + QWEN_MODEL
 )
 QWEN_MODEL_SHA = "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
+# Adapters that ship with the code (edge_agent/adapters), by filename.
+ADAPTERS = {AGENT_ADAPTER: "85b224ecec76572e2fb153b10d4b7d16f015bf69f0e6a63731a774c54e21566e"}
 PROJECTOR_ASSETS = {
     DEFAULT_MODEL: (
         "gemma4",
@@ -332,13 +335,30 @@ def install_agent_runtime(root: Path) -> None:
     receipt.write_text(digest, encoding="ascii")
 
 
+def install_adapters(root: Path) -> None:
+    """Copy the adapters that ship with the code into models/, checked by
+    hash, so the model page and SilentTalk's lease find them by name."""
+    for name, digest in ADAPTERS.items():
+        source = Path(__file__).with_name("adapters") / name
+        target = root / "models" / name
+        if verified(target, digest):
+            continue
+        if sha256(source) != digest:
+            raise RuntimeError(f"bundled adapter {name} does not match its hash")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        partial = target.with_name(target.name + ".partial")
+        shutil.copyfile(source, partial)
+        partial.replace(target)
+
+
 def install(root: Path = CORE_ROOT, backend: str = "auto") -> dict[str, str]:
     root = root.resolve()
     cache = root / ".runtime/downloads"
     cache.mkdir(parents=True, exist_ok=True)
-    # The machine spirit's public base, for the Agent and SilentTalk alike;
-    # adapters remain user-owned. Other models come from the model page.
+    # The machine spirit's public base, for the Agent and SilentTalk alike,
+    # and the Agent's adapter for it. Other models come from the model page.
     download(MODEL_URL, root / "models" / DEFAULT_MODEL, MODEL_SHA)
+    install_adapters(root)
     install_agent_runtime(root)
     selected = "cuda" if backend == "auto" and has_nvidia() else backend
     if selected == "auto":

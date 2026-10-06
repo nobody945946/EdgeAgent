@@ -43,9 +43,11 @@ Context 與單次輸出是兩個設定：context 放入輸入、媒體、歷史�
 
 切換會卸載舊模型再載入新模型，失敗時嘗試恢復原配置。Agent 正在工作或 SilentTalk 正在租借時拒絕切換。較大 context 會增加 KV cache／顯存需求；工具格式可辨識不代表模型有足夠編程能力。模型名稱保持實際來源，不另造模型專用 UI 或環境。
 
-## 個人 LoRA（選用）
+## LoRA
 
-產品只提供框架支援，不附帶、自動下載、自動配對或預設啟用個人 adapter。
+**Agent 的 adapter（附帶）**：`agent-fw1.q8_0.gguf` 是給預設 E4B 的 Agent adapter：27B 老師在這個框架裡解題、程式驗收過的紀錄訓練出來，在考場和不套的 E4B 配對比較贏（2026-10-06）。它放在 `edge_agent/adapters`，部署時驗證雜湊後複製到 `models`。單獨用 EdgeAgent 時在「模型模組」選 E4B，再選「LoRA（選用）」裡的它、套用；SilentTalk 租借時會自動帶上（見下）。
+
+**自己的 adapter**：
 
 1. 準備訓練時使用的相同基底與 llama.cpp 可載入的 GGUF LoRA。
 2. 把 adapter 放入 `models`，在「模型模組」重新掃描，選基底，再選「LoRA（選用）」。
@@ -77,7 +79,7 @@ SilentTalk 租借時，Agent 自動共用角色傳來的基底與 LoRA，不必�
 
 SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸還後恢復原 Agent 配置。最多載入一個完整模型；租借期間 Agent 自動跟隨角色的基底與 LoRA，使用獨立 slot 做工作，不需要修改原本的 Agent 選擇。租借或工作中禁止手動切換模型。所有 slot 共用一塊 context（`--kv-unified`），大小就是 EdgeAgent 的 context 設定（不超過模型上限）；角色只說它要多少（預設 32,768，有 LoRA 時兩個 slot 各一份），剩下的是 Agent 的視窗。GPU／CPU 分配一律由 EdgeAgent 的設定決定。剩下不到 8,192 時 Agent 不共用，租借期間暫停。
 
-安裝時準備公開的 Gemma 4 E4B（Agent 和 SilentTalk 共用），不取得個人 LoRA。角色有 LoRA 時使用兩個推論 slot，區分套用與未套用 cache；其他情況角色使用一個 slot。另加 Agent 專用 slot，避免互相清除 cache。記憶體不足時載入會失敗並回報。
+安裝時準備公開的 Gemma 4 E4B（Agent 和 SilentTalk 共用）和附帶的 Agent adapter（複製，不下載）。角色有 LoRA 時使用兩個推論 slot，區分套用與未套用 cache；其他情況角色使用一個 slot。另加 Agent 專用 slot，避免互相清除 cache。記憶體不足時載入會失敗並回報。
 
 | 操作 | 指令 |
 |---|---|

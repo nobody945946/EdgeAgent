@@ -20,6 +20,10 @@ GENERAL_PORT = 18_089
 DEFAULT_MODEL = "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf"
 # Also shipped, for the owner to choose (writes code better, measured).
 QWEN_MODEL = "Qwen3.5-4B-Q4_K_M.gguf"
+# The Agent's adapter for DEFAULT_MODEL, trained on the 27B teacher's checked
+# runs inside this framework (bench/; beat the plain base paired, 2026-10-06).
+# It ships in edge_agent/adapters and deploy copies it into models/.
+AGENT_ADAPTER = "agent-fw1.q8_0.gguf"
 # Saved prompt states kept in RAM, and checkpoints per slot (sliding-window
 # and recurrent models need them to reuse a prompt). Upstream defaults are
 # 8 GiB and 32: more than the laptop's whole RAM.
