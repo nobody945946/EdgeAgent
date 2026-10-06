@@ -45,7 +45,7 @@ Context 與單次輸出是兩個設定：context 放入輸入、媒體、歷史�
 
 ## LoRA
 
-**Agent 的 adapter（附帶）**：`agent-fw1.q8_0.gguf` 是給預設 E4B 的 Agent adapter：27B 老師在這個框架裡解題、程式驗收過的紀錄訓練出來，在考場和不套的 E4B 配對比較贏（2026-10-06）。它放在 `edge_agent/adapters`，部署時驗證雜湊後複製到 `models`。單獨用 EdgeAgent 時在「模型模組」選 E4B，再選「LoRA（選用）」裡的它、套用；SilentTalk 租借時會自動帶上（見下）。
+**附帶的 adapter**：`machine-spirit-v1.q8_0.gguf` 給預設 E4B，Agent 和機魂共用一個：Agent 的工具工作（27B 老師在這個框架裡解題、程式驗收過的紀錄）和機魂的台詞與聊天工作判斷（SilentTalk 的角色資料）一起訓練。機魂台詞在 80 組沒訓練過的場景盲評贏不套的 E4B 77 組，聊天工作判斷 40/40（2026-10-06）。它放在 `edge_agent/adapters`，部署時驗證雜湊後複製到 `models`。單獨用 EdgeAgent 時在「模型模組」選 E4B，再選「LoRA（選用）」裡的它、套用；SilentTalk 租借時會自動帶上（見下）。
 
 **自己的 adapter**：
 
