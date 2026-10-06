@@ -26,11 +26,15 @@ import json
 import random
 import re
 import struct
+import sys
 import textwrap
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import run  # noqa: E402  (the sandbox images are run.py's)
 
 ROOT = Path(__file__).resolve().parents[1]
 TASKS = ROOT / ".runtime/agentdata/tool-tasks"
@@ -85,7 +89,7 @@ class Task:
         check = (CHECK_HEAD + HELD_OUT_CHECK.format(held=set(HELD_OUT_TOOLS))
                  + textwrap.dedent(self.check).lstrip() + "done()\n")
         (d / "check.py").write_text(check, encoding="utf-8")
-        task = {"kind": f"train-{self.kind}", "scope": self.scope, "image": "edgeagent-train:1",
+        task = {"kind": f"train-{self.kind}", "scope": self.scope, "image": run.TRAIN_IMAGE,
                 "check": ["python", "/task/check.py"], "prompt": "",
                 "spec": {"situation": self.situation, "must_mention": self.must},
                 "timeout_s": 900, **self.extra}

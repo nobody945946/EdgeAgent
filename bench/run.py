@@ -41,6 +41,7 @@ from mine_repo import REPOS  # noqa: E402
 BENCH = ROOT / "bench"
 STATE = ROOT / ".runtime/bench"
 IMAGE = "edgeagent-bench:1"
+TRAIN_IMAGE = "edgeagent-train:1"
 VRAM_EXIT = 3  # gave up waiting for free VRAM
 SERVER = Path(os.environ.get(
     "BENCH_LLAMA_SERVER",
@@ -117,6 +118,13 @@ def build_image() -> None:
     for name in ("pi-runtime.json", "pi-runtime-lock.json"):
         shutil.copyfile(ROOT / "edge_agent" / name, context / name)
     subprocess.run(["docker", "build", "-t", IMAGE, str(context)], check=True)
+    # The training tasks' sandbox (make_tool_tasks.py): the same, plus a few
+    # common test dependencies.
+    train_context = STATE / "image-train"
+    train_context.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(BENCH / "Dockerfile.train", train_context / "Dockerfile")
+    subprocess.run(["docker", "build", "--build-arg", f"BASE={IMAGE}", "-t", TRAIN_IMAGE,
+                    str(train_context)], check=True)
     for name, repo in REPOS.items():
         repo_context = STATE / f"image-{name}"
         repo_context.mkdir(parents=True, exist_ok=True)
