@@ -110,5 +110,19 @@
    "step_limit": 100
   },
   "lora": "trace-v1.q8_0.gguf"
+ },
+ "e4b-product-ms1": {
+  "_note": "The product with machine-spirit-v1: one adapter trained on the machine spirit's chats (written by the laptop's agent, lines kept by the app's rules) and the Agent's tool work (agent-rows-fw2). Paired against fw-v3-lora (agent-fw1).",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 98304,
+  "max_output_tokens": 8192,
+  "working_context_size": 98304,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "machine-spirit-v1.q8_0.gguf"
  }
 }
