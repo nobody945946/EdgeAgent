@@ -95,6 +95,20 @@ try {
     Invoke-LightProfile 'RestoreLight' | Out-Null
     Assert (!(Read-State).SearchSession -and $script:fakeServices.WSearch.StartMode -eq 'Auto' -and $script:fakeServices.WSearch.State -eq 'Running') 'Profile restore left Search paused'
     Assert ((Read-State).Registry.Count -eq 5) 'Core baseline not captured before the first Light apply'
+    # New controls must capture their originals without replacing an older profile.
+    $oldVisualSnapshot=(Read-State).Light.Visual | ConvertTo-Json -Compress
+    $lightRegistry+=@{Path=$fixtureRegistry;Name='NonzeroTarget';Value=1}
+    New-ItemProperty -LiteralPath $fixtureRegistry -Name NonzeroTarget -PropertyType DWord -Value 0 | Out-Null
+    $script:fakeVisual+=@([pscustomobject]@{Name='MenuFade';Value=1})
+    Invoke-LightProfile 'ApplyLight' | Out-Null
+    Assert ((Get-ItemPropertyValue -LiteralPath $fixtureRegistry -Name NonzeroTarget) -eq 1 -and @($script:fakeVisual | Where-Object Value -ne 0).Count -eq 0) 'Extended controls did not apply their target values'
+    Assert (((Read-State).Light.Visual | Where-Object Name -ne 'MenuFade' | ConvertTo-Json -Compress) -eq $oldVisualSnapshot) 'Profile extension overwrote existing visual originals'
+    $extendedSnapshot=[IO.File]::ReadAllText($snapshotPath)
+    Invoke-LightProfile 'ApplyLight' | Out-Null
+    Assert ([IO.File]::ReadAllText($snapshotPath) -eq $extendedSnapshot) 'Repeated extended apply replaced originals'
+    Invoke-LightProfile 'RestoreLight' | Out-Null
+    Assert ((Get-ItemPropertyValue -LiteralPath $fixtureRegistry -Name NonzeroTarget) -eq 0) 'Nonzero target did not restore its original value'
+    Assert (@($script:fakeVisual | Where-Object {$_.Name -eq 'MenuFade' -and $_.Value -eq 1}).Count -eq 1) 'New visual control did not restore its original value'
     $serviceBefore=Read-ServiceState @('DiagTrack','ASUSSystemAnalysis','ASUSSystemDiagnosis','RetailDemo') | ConvertTo-Json -Depth 5 -Compress
     Invoke-ServiceProfile 'PlanServices' | Out-Null
     Assert (!(Read-State).ServiceProfile) 'Read-only service plan changed the snapshot'

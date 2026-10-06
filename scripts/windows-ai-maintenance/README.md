@@ -23,7 +23,7 @@
 
 Microsoft 的[服務功能說明](https://learn.microsoft.com/en-us/windows/iot/iot-enterprise/optimize/services)列出 DiagTrack 的診斷用途與 RetailDemo 的展示用途；文件面向 IoT，這裡只用來核對功能，停用選擇依本機用途和依賴決定。
 
-## 新增輕量化部署腳本：已驗證，尚未永久套用
+## 輕量化與視覺效果：2026-10-06 已永久套用
 
 `deploy.cmd` 是 `maintain.ps1` 的一鍵入口；雙擊會要求 Windows UAC 提升權限。輔助 PowerShell 使用隱藏視窗，結束即退出，入口回傳真正的子程序 exit code。
 使用同一個 Windows 帳號提升權限，不能輸入另一個管理員帳號來修改不同的 HKCU。
@@ -31,26 +31,30 @@ Microsoft 的[服務功能說明](https://learn.microsoft.com/en-us/windows/iot/
 
 | 指令 | 行為 |
 |---|---|
-| `deploy.cmd` 或 `deploy.cmd ApplyLight` | Edge 關閉 Startup Boost／背景模式、Chrome 關閉背景模式；DiagTrack 停止並停用；六項動畫與透明效果關閉 |
+| `deploy.cmd` 或 `deploy.cmd ApplyLight` | Edge／Chrome 背景政策、DiagTrack；16 項原生視覺控制全部關閉，透明關閉，Explorer 設定最佳效能、關工作列動畫／選取框透明／圖示陰影／縮圖 |
 | `deploy.cmd PlanLight` | 只讀檢視目前設定與部署範圍，不提升權限 |
 | `deploy.cmd RestoreLight` | 還原新增設定的原值、registry type、存在狀態、服務啟動方式及執行狀態；若有 Search 暫停工作階段，也一併恢復 |
 | `deploy.cmd BeginAI` | 暫時將 Windows Search 改為 Manual 並停止；保存當次原設定 |
 | `deploy.cmd EndAI` | 完整恢復該次 Search 原設定，包含 delayed automatic start；工作中斷後也可執行 |
 
-原值存在既有 `original-state.json`，不另建立第二份維護流程。重複 ApplyLight 不覆寫最初原值；部分部署失敗會嘗試恢復原設定並回報錯誤。
+原值存在既有 `original-state.json`，不另建立第二份維護流程。重複 ApplyLight 不覆寫最初原值；舊快照升級只補尚未接管的項目原值。部分部署失敗會嘗試恢復原設定並回報錯誤。
 `RestoreLight` 恢復這次新增部署之前的設定；既有 `Restore` 則恢復全部維護項目，包含先前 WLAN 調整，因此會短暫重啟 Wi-Fi。
 
-此版本保留 SysMain、Windows Update、Defender、pagefile、memory compression、DWM 與字型平滑。
+此版本保留 SysMain、Windows Update、Defender、pagefile、memory compression、DWM。使用者要求關閉視效，因此也關字型平滑；舊程式文字可能變粗糙，使用 DirectWrite 或自畫介面的 app 不一定遵守系統效果設定。
 沒有安裝 Mem Reduct、移除系統套件或自動關閉開啟中的瀏覽器。
 本機沒有 Copilot、Cortana、Widgets 的對應 Appx 套件，不需修改；Windows 11 Home 不在 Microsoft Widgets 管理政策的支援版本清單中。
 
-驗證：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verify.ps1`，45 checks passed。
+驗證：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verify.ps1`，60 checks passed。
 真實 Win32 動畫 API 關閉／還原測試已恢復原值；服務操作使用隔離替身，registry 使用測試專用暫存 key，測完已刪除。
 已測既有 DWORD／ExpandString 的原值與 type、原本不存在的值、重複套用／還原、注入失敗回復、Search 工作階段、延遲自動啟動與含空白路徑的一鍵入口參數。
 
 2026-10-03 本機取樣：SysMain 工作集 6.8 MiB、WSearch 29.1 MiB、DiagTrack 29.4 MiB；wuauserv 已為 Manual／Stopped。
 工作集包含共用頁面，不能把這些數字視為實測釋放 RAM；備用快取已包含在 Available RAM 中，不能再加一次。
-整套 Light profile 尚未永久套用；DiagTrack 已由上面的 Services profile 停用。尚無隔離的 RAM／VRAM 效能 A/B 淨增量。
+21:38:59 部署 ApplyLight exit 0，重新查 16 項原生控制全部 0，EnableTransparency／TaskbarAnimations／ListviewAlphaSelect／ListviewShadow 全 0、IconsOnly=1、VisualFXSetting=2。Discord 六程序保留。Explorer 設定已保存，部分既有介面需重開後才讀新值；沒有中斷檔案操作來強制重啟 Explorer。
+
+套用前後短時間取樣：Available RAM 1385→1274 MiB、DWM 59.1→59.3 MiB、Explorer 128.1→121.5 MiB、獨立 GPU used 都是 0/free3962 MiB。其他應用工作集同時變動，不是隔離 A/B，未證明新增 RAM／VRAM 淨增量，不宣稱此次解決模型載入。
+
+控制採用 [SystemParametersInfoW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-systemparametersinfow)，包含全域 UI effects、動畫／淡出／陰影／漸層／滑過效果、字型平滑及拖曳時顯示視窗內容。後兩項依文件使用 uiParam，其餘布林 setter 使用 pvParam。Explorer 對應設定依 [Microsoft VDI 文件](https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/remote-desktop-services-vdi-optimize-configuration)核對。[DWM 從 Windows 8 起常駐](https://learn.microsoft.com/en-us/windows/win32/w8cookbook/desktop-window-manager-is-always-on)，不靠終止它來省資源。
 
 參考：[Windows 快取與可用記憶體](https://learn.microsoft.com/en-us/windows-server/administration/performance-tuning/subsystem/cache-memory-management/)、[Search 索引負載退避](https://learn.microsoft.com/en-us/troubleshoot/windows-client/shell-experience/windows-search-performance-issues)、[更新與使用時間](https://learn.microsoft.com/en-us/windows/deployment/update/waas-restart)、[Widgets 支援版本](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-newsandinterests)、[Mem Reduct 原始碼](https://github.com/henrypp/memreduct/blob/master/src/main.c)。
 

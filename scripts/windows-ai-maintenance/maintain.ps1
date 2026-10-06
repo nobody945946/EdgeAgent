@@ -152,6 +152,9 @@ public static class WindowsAiVisual {
     public static void Write(uint action, int value) {
         if (!SetBool(action,0,new IntPtr(value),3)) throw new Win32Exception();
     }
+    public static void WriteParameter(uint action, int value) {
+        if (!SetBool(action,(uint)value,IntPtr.Zero,3)) throw new Win32Exception();
+    }
     public static int ReadAnimation() {
         var value=new AnimationInfo {Size=8};
         if (!Animation(0x48,8,ref value,0)) throw new Win32Exception();
@@ -173,7 +176,17 @@ $visualOptions=@(
     @{Name='MenuAnimation';Get=0x1002;Set=0x1003},
     @{Name='ComboBoxAnimation';Get=0x1004;Set=0x1005},
     @{Name='ListBoxSmoothScrolling';Get=0x1006;Set=0x1007},
-    @{Name='TooltipAnimation';Get=0x1016;Set=0x1017}
+    @{Name='TooltipAnimation';Get=0x1016;Set=0x1017},
+    @{Name='MenuFade';Get=0x1012;Set=0x1013},
+    @{Name='SelectionFade';Get=0x1014;Set=0x1015},
+    @{Name='TooltipFade';Get=0x1018;Set=0x1019},
+    @{Name='CursorShadow';Get=0x101A;Set=0x101B},
+    @{Name='DropShadow';Get=0x1024;Set=0x1025},
+    @{Name='GradientCaptions';Get=0x1008;Set=0x1009},
+    @{Name='HotTracking';Get=0x100E;Set=0x100F},
+    @{Name='FontSmoothing';Get=0x004A;Set=0x004B;UiParameter=$true},
+    @{Name='DragFullWindows';Get=0x0026;Set=0x0025;UiParameter=$true},
+    @{Name='UIEffects';Get=0x103E;Set=0x103F}
 )
 function Read-Visual {
     Initialize-VisualApi
@@ -188,29 +201,50 @@ function Write-Visual($values) {
         else {
             $option=$visualOptions | Where-Object Name -eq $item.Name
             if (!$option) {throw 'Unknown visual setting in snapshot'}
-            [WindowsAiVisual]::Write($option.Set,[int]$item.Value)
+            if ($option.UiParameter) {[WindowsAiVisual]::WriteParameter($option.Set,[int]$item.Value)}
+            else {[WindowsAiVisual]::Write($option.Set,[int]$item.Value)}
         }
     }
     [WindowsAiVisual]::Refresh()
 }
 $lightRegistry=@($registry | Where-Object {$_.Path -eq 'HKCU:\Software\Policies\Microsoft\Edge'}) + @(
     @{Path='HKCU:\Software\Policies\Google\Chrome';Name='BackgroundModeEnabled';Value=0},
-    @{Path='HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize';Name='EnableTransparency';Value=0}
+    @{Path='HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize';Name='EnableTransparency';Value=0},
+    @{Path='HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects';Name='VisualFXSetting';Value=2},
+    @{Path='HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced';Name='TaskbarAnimations';Value=0},
+    @{Path='HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced';Name='ListviewAlphaSelect';Value=0},
+    @{Path='HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced';Name='ListviewShadow';Value=0},
+    @{Path='HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced';Name='IconsOnly';Value=1}
 )
+function Initialize-LightState($state) {
+    if (!$state.Light) {
+        $state | Add-Member -NotePropertyName Light -NotePropertyValue ([pscustomobject]@{Registry=@();Visual=@();Services=(Read-ServiceState @('DiagTrack'))})
+    }
+    $changed=$false
+    foreach ($item in $lightRegistry) {
+        if (!@($state.Light.Registry | Where-Object {$_.Path -eq $item.Path -and $_.Name -eq $item.Name}).Count) {
+            $state.Light.Registry=@($state.Light.Registry)+@(Read-Registry $item)
+            $changed=$true
+        }
+    }
+    foreach ($item in (Read-Visual)) {
+        if (!@($state.Light.Visual | Where-Object Name -eq $item.Name).Count) {
+            $state.Light.Visual=@($state.Light.Visual)+@($item)
+            $changed=$true
+        }
+    }
+    if ($changed) {Save-State $state}
+}
 function Invoke-LightProfile($mode) {
     if ($mode -eq 'PlanLight') {
-        [pscustomobject]@{System=(Measure-System);Registry=@($lightRegistry | ForEach-Object {Read-Registry $_});Visual=(Read-Visual);Services=(Read-ServiceState @('SysMain','WSearch','DiagTrack','wuauserv'));RelevantPackages=@(Get-AppxPackage | Where-Object {$_.Name -match '^(Microsoft\.Copilot|Microsoft\.549981C3F5F10|MicrosoftWindows\.Client\.WebExperience)$'} | Select-Object -ExpandProperty Name);ApplyChanges=@('Browser background/startup boost policies','DiagTrack Disabled/Stopped','Animations off, font smoothing unchanged','Transparency off');Excluded=@('SysMain','Windows Update','Mem Reduct','Package uninstall');SearchSession='BeginAI/EndAI is optional and restores the original Search service configuration'} | ConvertTo-Json -Depth 7
+        [pscustomobject]@{System=(Measure-System);Registry=@($lightRegistry | ForEach-Object {Read-Registry $_});Visual=(Read-Visual);Services=(Read-ServiceState @('SysMain','WSearch','DiagTrack','wuauserv'));RelevantPackages=@(Get-AppxPackage | Where-Object {$_.Name -match '^(Microsoft\.Copilot|Microsoft\.549981C3F5F10|MicrosoftWindows\.Client\.WebExperience)$'} | Select-Object -ExpandProperty Name);ApplyChanges=@('Browser background/startup boost policies','DiagTrack Disabled/Stopped','Animations, fades, shadows, font smoothing, full-window dragging and UI effects off','Transparency off; Explorer best-performance settings');Excluded=@('SysMain','Windows Update','DWM','Mem Reduct','Package uninstall');SearchSession='BeginAI/EndAI is optional and restores the original Search service configuration'} | ConvertTo-Json -Depth 7
         return
     }
     Assert-Administrator
     $state=Read-State
     if ($mode -eq 'ApplyLight') {
         Initialize-CoreState $state
-        if (!$state.Light) {
-            $light=[pscustomobject]@{Registry=@($lightRegistry | ForEach-Object {Read-Registry $_});Visual=(Read-Visual);Services=(Read-ServiceState @('DiagTrack'))}
-            $state | Add-Member -NotePropertyName Light -NotePropertyValue $light
-            Save-State $state
-        }
+        Initialize-LightState $state
         try {
             $dependent=@((Get-Service -Name DiagTrack).DependentServices | Where-Object Status -eq 'Running')
             if ($dependent.Count) {throw 'DiagTrack has running dependent services; refusing to force-stop them'}
