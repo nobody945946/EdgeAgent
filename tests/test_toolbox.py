@@ -645,7 +645,10 @@ def git(repo: Path, *args: str) -> None:
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="no git here")
-def test_git_overview(tmp_path: Path) -> None:
+def test_git_overview(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The workspace is no repository even when the test folder sits inside one
+    # (the laptop's --basetemp is under the EdgeAgent checkout).
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init")

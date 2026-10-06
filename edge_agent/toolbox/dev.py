@@ -385,8 +385,9 @@ def pytest_summary(output: str) -> list[str]:
     failed = re.findall(r"^(FAILED|ERROR) (\S+)(?: - (.*))?$", output, re.M)
     if failed:
         result.append(f"沒過的測試 {len(failed)} 個：")
-        result += cap([f"- {'失敗' if kind == 'FAILED' else '錯誤'} {test}" + (f"：{why[:200]}" if why else "")
-                       for kind, test, why in failed], 25)
+        # Windows' pytest writes tests\test_b.py; the summary reads the same everywhere.
+        result += cap([f"- {'失敗' if kind == 'FAILED' else '錯誤'} {test.replace(chr(92), '/')}"
+                       + (f"：{why[:200]}" if why else "") for kind, test, why in failed], 25)
     if "No module named pytest" in output:
         result.append("這個 Python 沒有安裝 pytest。")
     return result

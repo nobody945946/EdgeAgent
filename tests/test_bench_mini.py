@@ -9,6 +9,9 @@ from pathlib import Path
 
 import pytest
 
+# The mini harness runs only in the bench's Linux sandbox (bash, /testbed).
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the mini harness runs in the Linux sandbox")
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
 
 import mini_runner  # noqa: E402
