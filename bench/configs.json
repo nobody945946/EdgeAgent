@@ -183,5 +183,19 @@
   "vram_slot_mib": 2000,
   "search_tools": true,
   "lora": "agent-fw1.q8_0.gguf"
+ },
+ "e4b-product-agent-lora2": {
+  "_note": "e4b-product with the second Agent adapter (agent-fw2: tool, scope and MCP tasks re-recorded in the final framework, plus repo tasks).",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 98304,
+  "max_output_tokens": 8192,
+  "working_context_size": 98304,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "agent-fw2.q8_0.gguf"
  }
 }
