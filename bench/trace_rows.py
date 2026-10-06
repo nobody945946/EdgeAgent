@@ -8,9 +8,11 @@ harness), hard-gated:
   license follows derived models);
 - the trajectory resolved its task (resolved == 1) and ends by submitting;
 - its repository is none of the held-out evaluation repositories
-  (make_tasks.HELD_OUT), so the bench never tests what was trained;
-- rendered with the student's chat template it fits --max-tokens (longer
-  rows are dropped, never cut).
+  (make_tasks.HELD_OUT) nor of the external benchmark (--exclude-repos, a
+  JSON list such as SWE-bench Verified's), so no test is something trained;
+- SilentTalk's train_lora.py can train it (its tokenize_row, the owner of
+  what a trainable row is) within --max-tokens (longer rows are dropped,
+  never cut).
 
 Rows are train_lora.py's format: {"messages", "tools", "train": "all"}.
 
@@ -31,6 +33,8 @@ from pathlib import Path
 BENCH = Path(__file__).resolve().parent
 sys.path.insert(0, str(BENCH))
 from make_tasks import HELD_OUT  # noqa: E402
+
+TRAINER = Path("/home/clawd/SilentTalk/scripts/dev")
 
 OPEN_TEACHERS = re.compile(r"^(Qwen|DeepSeek|GLM)", re.IGNORECASE)
 SUBMIT = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
@@ -68,12 +72,17 @@ def main() -> int:
     parser.add_argument("--tokenizer", required=True)
     parser.add_argument("--max-tokens", type=int, default=32768)
     parser.add_argument("--languages", default="python", help="comma list, or 'all'")
+    parser.add_argument("--exclude-repos", type=Path, help="JSON list of owner/name repositories never to train on")
     args = parser.parse_args()
     import pyarrow.parquet as pq
     from transformers import AutoTokenizer
 
+    sys.path.insert(0, str(TRAINER))
+    import train_lora
+
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
     languages = None if args.languages == "all" else set(args.languages.split(","))
+    excluded = {r.lower() for r in json.loads(args.exclude_repos.read_text())} if args.exclude_repos else set()
     why: Counter = Counter()
     kept = 0
     seen: set[str] = set()
@@ -93,7 +102,7 @@ def main() -> int:
                 if languages and row["language"] not in languages:
                     why["language"] += 1
                     continue
-                if held_out(row["repo"]):
+                if held_out(row["repo"]) or row["repo"].lower() in excluded:
                     why["held-out repository"] += 1
                     continue
                 messages = wire(row["messages"])
@@ -106,9 +115,10 @@ def main() -> int:
                     continue
                 tools = [json.loads(t) for t in row["tools"]]
                 try:
-                    length = len(tokenizer.apply_chat_template(messages, tools=tools, tokenize=True))
-                except Exception:  # noqa: BLE001 - a row the template cannot render is no row
-                    why["template"] += 1
+                    length = len(train_lora.tokenize_row(tokenizer, {"messages": messages, "tools": tools,
+                                                                      "train": "all"})["input_ids"])
+                except ValueError:  # the trainer cannot mark the turns: no row
+                    why["not trainable"] += 1
                     continue
                 if length > args.max_tokens:
                     why["too long"] += 1
@@ -122,7 +132,8 @@ def main() -> int:
             print(f"{path.name}: {kept} kept so far; {dict(why)}", flush=True)
     stamp = {"producer": "edgeagent-trace-rows", "version": hashlib.sha256(
         (BENCH / "mini_templates.json").read_bytes()).hexdigest()[:16],
-        "folders": [str(f) for f in args.folders], "max_tokens": args.max_tokens}
+        "folders": [str(f) for f in args.folders], "max_tokens": args.max_tokens,
+        "excluded_repos": sorted(excluded)}
     args.out.with_name(args.out.name + ".version").write_text(json.dumps(stamp), encoding="utf-8")
     print(f"{kept} rows -> {args.out}; skipped {dict(why)}")
     return 0
