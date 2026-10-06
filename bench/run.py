@@ -82,9 +82,6 @@ def code_mounts(bridge: Path | None = None,
     mounts = [(product, "/opt/edgeagent/edge_agent", "ro"),
               (BENCH / "relay.py", "/opt/bench/relay.py", "ro"),
               (BENCH / "agent_runner.py", "/opt/bench/agent_runner.py", "ro"),
-              (BENCH / "coder_runner.py", "/opt/bench/coder_runner.py", "ro"),
-              (BENCH / "mini_runner.py", "/opt/bench/mini_runner.py", "ro"),
-              (BENCH / "mini_templates.json", "/opt/bench/mini_templates.json", "ro"),
               # Stand-in MCP servers (stock data, a drone) for tasks that enable them.
               (BENCH / "mcp_eval", "/opt/bench/mcp", "ro")]
     if bridge is not None:
@@ -148,8 +145,7 @@ class Server:
         # product loads one: applied to every request.
         args = build_server_args(
             str(SERVER), model, port=port, context_size=config["context_size"],
-            threads=config.get("threads", 8), gpu_layers=config.get("gpu_layers", 99),
-            low_vram=config.get("low_vram", True),
+            threads=8, gpu_layers=99, low_vram=config.get("low_vram", True),
             lora_path=(MODELS / config["lora"]).resolve() if config.get("lora") else None,
         )
         # Bench-only: the dev box is shared and teachers are larger than its
@@ -215,20 +211,10 @@ class Server:
 TASK_ROOT = BENCH / "tasks"
 
 
-def load_tasks(pattern: str, per_repo: int = 0) -> list[Path]:
-    """Tasks matching `pattern`; with `per_repo`, at most that many of each
-    repository, always the same ones (by a hash of the task name)."""
+def load_tasks(pattern: str) -> list[Path]:
     found = sorted(p.parent for p in TASK_ROOT.glob("*/task.json"))
     patterns = pattern.split(",")
-    found = [p for p in found if any(fnmatch.fnmatch(p.name, x) for x in patterns)]
-    if per_repo <= 0:
-        return found
-    picked: dict[str, list[Path]] = {}
-    for path in sorted(found, key=lambda p: hashlib.sha256(p.name.encode()).hexdigest()):
-        repo = json.loads((path / "task.json").read_text(encoding="utf-8")).get("repo") or path.name
-        if len(picked.setdefault(repo, [])) < per_repo:
-            picked[repo].append(path)
-    return sorted(p for paths in picked.values() for p in paths)
+    return [p for p in found if any(fnmatch.fnmatch(p.name, x) for x in patterns)]
 
 
 def prepare(task_dir: Path, task: dict, workspace: Path, original: Path) -> None:
@@ -367,22 +353,15 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
             # A task may set its own (an MCP task: no files, no shell, no web).
             "permissions": task.get("permissions", config.get("permissions")),
             "mcp_servers": task.get("mcp_servers"),
-            "coder": config.get("coder"), "mini": config.get("mini"),
             "timeout_s": timeout}
-    # runner "coder": the host-driven coder (edge_agent.coder); "mini": the
-    # mini-swe-agent harness of the open trajectories (workspace also at
-    # /testbed, as recorded). Same tasks, sandbox and grader as the Agent.
-    runner = {"coder": "/opt/bench/coder_runner.py",
-              "mini": "/opt/bench/mini_runner.py"}.get(config.get("runner", ""), "/opt/bench/agent_runner.py")
-    testbed = [(workspace, "/testbed", "rw")] if config.get("runner") == "mini" else []
     name = f"eab-{config_name}-{job}".replace("_", "-")[:120]
     mounts, env, hosts = web_fixture(task_dir, task)
-    command = sandbox(name, [(workspace, "/work", "rw"), *testbed, (sock_dir, "/sock", "ro"),
+    command = sandbox(name, [(workspace, "/work", "rw"), (sock_dir, "/sock", "ro"),
                              *code_mounts(bridge, product), *mounts],
                       {"BENCH_SPEC": json.dumps(spec, ensure_ascii=False), **env},
                       ["sh", "-c", "python /opt/bench/web_fixture.py /web > /tmp/web.log 2>&1 & "
-                       f"sleep 1; exec python {runner}"] if hosts
-                      else ["python", runner],
+                       "sleep 1; exec python /opt/bench/agent_runner.py"] if hosts
+                      else ["python", "/opt/bench/agent_runner.py"],
                       image=task.get("image", IMAGE), hosts=hosts)
     started = time.monotonic()
     try:
@@ -467,8 +446,6 @@ def main() -> None:
     parser.add_argument("--config")
     parser.add_argument("--tasks", default="*")
     parser.add_argument("--repeats", type=int, default=3)
-    parser.add_argument("--per-repo", type=int, default=0,
-                        help="at most this many tasks of each repository (the same ones every run)")
     parser.add_argument("--parallel", type=int, default=4)
     parser.add_argument("--port", type=int, default=18189)
     parser.add_argument("--vram-wait", type=float, default=0,
@@ -480,8 +457,8 @@ def main() -> None:
     parser.add_argument("--product", type=Path, default=ROOT / "edge_agent",
                         help="edge_agent package to test (e.g. a development worktree)")
     parser.add_argument("--task-root", type=Path,
-                        help="task directory (default bench/tasks; training tasks live in "
-                             ".runtime/agentdata/tasks)")
+                        help="task directory (default bench/tasks; the tool training tasks live in "
+                             ".runtime/agentdata/tool-tasks)")
     args = parser.parse_args()
     if args.task_root:
         global TASK_ROOT
@@ -507,7 +484,7 @@ def main() -> None:
         for line in results.read_text(encoding="utf-8").splitlines():
             row = json.loads(line)
             done.add((row["task"], row["rep"]))
-    jobs = [(t, r) for t in load_tasks(args.tasks, args.per_repo) for r in range(args.repeats)
+    jobs = [(t, r) for t in load_tasks(args.tasks) for r in range(args.repeats)
             if (t.name, r) not in done]
     print(f"{len(jobs)} jobs, {len(done)} already done", flush=True)
     if not jobs:

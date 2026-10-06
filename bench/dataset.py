@@ -11,8 +11,8 @@ requests with the same tools is one row (its last request plus the reply),
 trained only on the replies written in that stretch, under the tools the
 model saw when it wrote them.
 
-Eval tasks (bench/tasks) never become training rows: only runs over
-.runtime/agentdata/tasks are accepted.
+Eval tasks (bench/tasks) never become training rows: only runs over the
+tool training tasks (.runtime/agentdata/tool-tasks) are accepted.
 
 One output holds one product version: per task scope (who asked), every
 row's system prompt must be the same and the current product's

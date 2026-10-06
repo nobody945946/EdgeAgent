@@ -1,5 +1,5 @@
-# Training-task sandbox: the bench sandbox plus test dependencies of the
-# open-source repositories that training tasks are cut from. /work and
+# Training-task sandbox (the tool tasks of make_tool_tasks.py): the bench
+# sandbox plus a few common test dependencies. /work and
 # /work/src are importable, so any repository copied to /work runs its tests
 # without installation.
 ARG BASE

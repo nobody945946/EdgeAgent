@@ -1,162 +1,4 @@
 {
- "qwen35-4b": {
-  "_note": "The laptop's current Agent defaults (Qwen3.5-4B, 128K, 8K output, 32K working target, thinking off, q8 KV); offline Pi without rg/fd, as deployed.",
-  "model": "Qwen3.5-4B-Q4_K_M.gguf",
-  "vision": true,
-  "context_size": 131072,
-  "max_output_tokens": 8192,
-  "working_context_size": 32768,
-  "effort": "off",
-  "low_vram": true,
-  "vram_base_mib": 4000,
-  "vram_slot_mib": 2400,
-  "search_tools": false
- },
- "qwen35-4b-search": {
-  "_note": "qwen35-4b plus rg/fd so Pi grep/find work offline.",
-  "model": "Qwen3.5-4B-Q4_K_M.gguf",
-  "vision": true,
-  "context_size": 131072,
-  "max_output_tokens": 8192,
-  "working_context_size": 32768,
-  "effort": "off",
-  "low_vram": true,
-  "vram_base_mib": 4000,
-  "vram_slot_mib": 2400,
-  "search_tools": true
- },
- "qwen35-4b-search-think": {
-  "_note": "qwen35-4b-search with thinking on (Qwen thinking is on/off; effort medium).",
-  "model": "Qwen3.5-4B-Q4_K_M.gguf",
-  "vision": true,
-  "context_size": 131072,
-  "max_output_tokens": 8192,
-  "working_context_size": 32768,
-  "effort": "medium",
-  "low_vram": true,
-  "vram_base_mib": 4000,
-  "vram_slot_mib": 2400,
-  "search_tools": true
- },
- "qwen35-4b-q6-search": {
-  "_note": "Same model at Q6_K (3.5 GB; a few layers on CPU on the laptop).",
-  "model": "Qwen3.5-4B-Q6_K.gguf",
-  "vision": true,
-  "context_size": 131072,
-  "max_output_tokens": 8192,
-  "working_context_size": 32768,
-  "effort": "off",
-  "low_vram": true,
-  "vram_base_mib": 4800,
-  "vram_slot_mib": 2400,
-  "search_tools": true,
-  "time_scale": 1.25
- },
- "qwen35-9b-iq3-search": {
-  "_note": "Qwen3.5-9B at UD-IQ3_XXS (4.0 GB; about 1 GB on CPU on the laptop).",
-  "model": "Qwen3.5-9B-UD-IQ3_XXS.gguf",
-  "vision": true,
-  "context_size": 131072,
-  "max_output_tokens": 8192,
-  "working_context_size": 32768,
-  "effort": "off",
-  "low_vram": true,
-  "vram_base_mib": 5600,
-  "vram_slot_mib": 2400,
-  "search_tools": true,
-  "time_scale": 2
- },
- "qwen35-4b-search-scripted": {
-  "_note": "qwen35-4b-search plus one system-prompt line: compute with scripts, verify before reporting.",
-  "model": "Qwen3.5-4B-Q4_K_M.gguf",
-  "vision": true,
-  "context_size": 131072,
-  "max_output_tokens": 8192,
-  "working_context_size": 32768,
-  "effort": "off",
-  "low_vram": true,
-  "vram_base_mib": 4000,
-  "vram_slot_mib": 2400,
-  "search_tools": true,
-  "system_prompt_append": [
-   "Use tools to compute: count, compare, deduplicate, search and convert file contents by writing and running a script (PowerShell or Python) and reading its output; never estimate by reading files yourself. Before reporting, verify the actual result (list or open the outputs, rerun the relevant check) and report only what you verified."
-  ]
- },
- "gemma-e4b-search": {
-  "_note": "The character base (Gemma 4 E4B QAT Q4_K_XL, laptop default for SilentTalk) as the agent: candidate base for a dual-use LoRA.",
-  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
-  "vision": true,
-  "context_size": 131072,
-  "max_output_tokens": 8192,
-  "working_context_size": 32768,
-  "effort": "off",
-  "low_vram": true,
-  "vram_base_mib": 6000,
-  "vram_slot_mib": 2400,
-  "search_tools": true
- },
- "teacher-35b-a3b": {
-  "_note": "Teacher candidate for Agent trajectories: Qwen3.6-35B-A3B Q4_K_XL, experts on CPU (fits beside other GPU tenants). Dev box only; never a laptop model.",
-  "model": "../teacher/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
-  "vision": false,
-  "context_size": 131072,
-  "max_output_tokens": 8192,
-  "working_context_size": 32768,
-  "effort": "off",
-  "low_vram": true,
-  "vram_base_mib": 5000,
-  "vram_slot_mib": 1500,
-  "search_tools": true,
-  "extra_args": [
-   "--n-cpu-moe",
-   "40"
-  ]
- },
- "teacher-27b": {
-  "_note": "Teacher for Agent trajectories: Qwen3.6-27B IQ3_XXS dense, all on GPU, 64K per slot (the student works at a 32K target). Dev box only; never a laptop model.",
-  "model": "../teacher/Qwen3.6-27B-UD-IQ3_XXS.gguf",
-  "vision": false,
-  "context_size": 65536,
-  "max_output_tokens": 8192,
-  "working_context_size": 32768,
-  "effort": "off",
-  "low_vram": true,
-  "vram_base_mib": 13500,
-  "vram_slot_mib": 2100,
-  "search_tools": true
- },
- "gemma-e4b-noweb": {
-  "_note": "gemma-e4b-search without the web tools (permissions web: deny): does the longer tool list cost E4B its coding?",
-  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
-  "vision": true,
-  "context_size": 131072,
-  "max_output_tokens": 8192,
-  "working_context_size": 32768,
-  "effort": "off",
-  "low_vram": true,
-  "vram_base_mib": 6000,
-  "vram_slot_mib": 2400,
-  "search_tools": true,
-  "permissions": {
-   "edit": "ask",
-   "shell": "ask",
-   "web": "deny"
-  }
- },
- "gemma-e4b-bf16": {
-  "_note": "gemma-e4b-search with the original unquantized weights (BF16, dev box only; does not fit the laptop): how much does 4-bit cost E4B? time_scale = its slowdown on the bench GPU, so the budget does not decide.",
-  "model": "gemma-4-E4B-it-BF16.gguf",
-  "vision": true,
-  "context_size": 131072,
-  "max_output_tokens": 8192,
-  "working_context_size": 32768,
-  "effort": "off",
-  "low_vram": true,
-  "vram_base_mib": 17000,
-  "vram_slot_mib": 2400,
-  "search_tools": true,
-  "time_scale": 2
- },
  "e4b-product": {
   "_note": "The laptop product as agreed 2026-10-05: E4B QAT Q4_K_XL, the Agent's share of the one 128K pool (131072 minus the character's 32768), history kept to the whole window, thinking off, rg/fd shipped.",
   "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
@@ -198,65 +40,18 @@
   "search_tools": true,
   "lora": "agent-fw2.q8_0.gguf"
  },
- "e4b-coder": {
-  "_note": "The host-driven coder (edge_agent.coder) on the laptop product's E4B: the program reproduces, localizes, splices and runs tests; E4B picks the functions and writes them. 4 samples x 3 rounds.",
-  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
-  "vision": true,
-  "context_size": 98304,
-  "max_output_tokens": 8192,
-  "working_context_size": 98304,
-  "effort": "off",
-  "low_vram": true,
-  "vram_base_mib": 6000,
-  "vram_slot_mib": 2000,
-  "search_tools": true,
-  "runner": "coder",
-  "coder": {
-   "samples": 4,
-   "rounds": 3,
-   "temperature": 0.8
-  }
- },
- "e4b-coder-cpu": {
-  "_note": "e4b-coder on the CPU only (gpu_layers 0): a smoke run that never takes the shared GPU.",
-  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+ "teacher-27b": {
+  "_note": "Teacher for Agent trajectories: Qwen3.6-27B IQ3_XXS dense, all on GPU, 64K per slot (the student works at a 32K target). Dev box only; never a laptop model.",
+  "model": "../teacher/Qwen3.6-27B-UD-IQ3_XXS.gguf",
   "vision": false,
-  "context_size": 32768,
+  "context_size": 65536,
   "max_output_tokens": 8192,
   "working_context_size": 32768,
   "effort": "off",
   "low_vram": true,
-  "vram_base_mib": 0,
-  "vram_slot_mib": 0,
-  "search_tools": true,
-  "runner": "coder",
-  "coder": {
-   "samples": 4,
-   "rounds": 3,
-   "temperature": 0.8
-  },
-  "gpu_layers": 0,
-  "threads": 16
- },
- "e4b-coder-lora1": {
-  "_note": "e4b-coder with the coder-v1 adapter (trained on bench/coder_rows.py rows: the training tasks' own answers).",
-  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
-  "vision": true,
-  "context_size": 98304,
-  "max_output_tokens": 8192,
-  "working_context_size": 98304,
-  "effort": "off",
-  "low_vram": true,
-  "vram_base_mib": 6000,
-  "vram_slot_mib": 2000,
-  "search_tools": true,
-  "runner": "coder",
-  "coder": {
-   "samples": 4,
-   "rounds": 3,
-   "temperature": 0.8
-  },
-  "lora": "coder-v1.q8_0.gguf"
+  "vram_base_mib": 13500,
+  "vram_slot_mib": 2100,
+  "search_tools": true
  },
  "e4b-mini": {
   "_note": "E4B in the mini-swe-agent harness (one bash tool, bench/mini_templates.json), the harness of the open trajectories; step limit 100.",
@@ -295,26 +90,5 @@
    "top_p": 0.95,
    "step_limit": 100
   }
- },
- "e4b-mini-cpu": {
-  "_note": "e4b-mini on the CPU only: a smoke run that never takes the shared GPU.",
-  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
-  "vision": false,
-  "context_size": 32768,
-  "max_output_tokens": 8192,
-  "working_context_size": 32768,
-  "effort": "off",
-  "low_vram": true,
-  "vram_base_mib": 0,
-  "vram_slot_mib": 0,
-  "search_tools": true,
-  "runner": "mini",
-  "mini": {
-   "temperature": 0.6,
-   "top_p": 0.95,
-   "step_limit": 40
-  },
-  "gpu_layers": 0,
-  "threads": 16
  }
 }
