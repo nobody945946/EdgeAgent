@@ -121,6 +121,9 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001 - a crash is a result here
         outcome, notice = "error", f"{type(exc).__name__}: {exc}"[:300]
     relay.terminate()
+    # The whole submission (a patch), where the caller wants it (SWE-bench).
+    if os.environ.get("MINI_SUBMISSION") and submitted is not None:
+        Path(os.environ["MINI_SUBMISSION"]).write_text(submitted, encoding="utf-8")
     print(json.dumps({
         "outcome": outcome, "reason": "", "notice": notice, "seconds": round(time.monotonic() - started, 1),
         "approvals": 0, "turns": steps, "tools": tools, "tool_errors": {}, "usage": usage,
