@@ -13,8 +13,15 @@ written later by an open-weight teacher from the stored spec (`describe`).
     python bench/make_tasks.py cut --repos boltons,parse --per-repo 120
     python bench/make_tasks.py cut --repos attrs,toolz --tasks-dir .runtime/agentdata/eval-tasks
 
-Held-out tasks (repositories no training task is cut from) go to their own
---tasks-dir; `run.py --task-root` reads either.
+Held-out tasks go to their own --tasks-dir; `run.py --task-root` reads
+either. HELD_OUT repositories are never cut into the training folder, and no
+repository with training tasks is cut into another folder: what the model is
+tested on, it never trained on.
+
+A repository whose own suite already fails a few tests still gives tasks:
+those failures are its baseline, a candidate counts only the tests it newly
+breaks, and a candidate whose failing test files hold a baseline failure is
+dropped (the task's check runs those files whole).
 """
 
 from __future__ import annotations
@@ -37,6 +44,11 @@ ROOT = BENCH.parent
 DATA = ROOT / ".runtime/agentdata"
 REPOS = DATA / "repos"
 TASKS = DATA / "tasks"
+# Unfamiliar repositories for evaluation only (.runtime/agentdata/eval-tasks).
+HELD_OUT = {"attrs", "click", "humanize", "python-sortedcontainers", "python-tabulate", "toolz",
+            "wcwidth", "sqlparse", "pyparsing", "xmltodict", "jmespath", "pathspec", "python-semver",
+            "tomli", "markdown", "isodate", "unidiff", "inflection", "bidict", "pydash", "jsonpointer",
+            "funcy", "munch", "texttable"}
 IMAGE = "edgeagent-train:1"
 SKIP_DIRS = {"tests", "test", "docs", "doc", "examples", "benchmarks", "scripts", "misc",
              "tools", ".github", "build", "dist"}
@@ -185,14 +197,21 @@ def run_tests(repo: Path, rel: str, text: str | None, timeout: int = 300) -> dic
 def cut(names: list[str], per_repo: int, seed: int, workers: int, tasks: Path) -> None:
     rng = random.Random(seed)
     tasks.mkdir(parents=True, exist_ok=True)
+    training = tasks.resolve() == TASKS.resolve()
     for name in names:
+        trained = any(TASKS.glob(f"{name}-*/task.json"))
+        if training and name in HELD_OUT or not training and trained:
+            raise SystemExit(f"{name}: {'held out for evaluation' if training else 'has training tasks'}"
+                             f", not cut into {tasks}")
         repo = REPOS / name
         base = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True,
                               text=True, check=True).stdout.strip()
         clean = run_tests(repo, "", None)
-        if clean["failed"] or clean["errors"]:
-            print(f"{name}: tests not clean ({clean['summary']}), skipped")
+        if clean["errors"] or len(clean["failed"]) > 10:
+            print(f"{name}: tests not clean ({clean['summary']}), skipped", flush=True)
             continue
+        baseline = set(clean["failed"])
+        broken_files = {test.split("::")[0] for test in baseline}
         pool = candidates(repo, rng)
         wanted = {"bugfix": per_repo * 2 // 3, "implement": per_repo - per_repo * 2 // 3}
         made = {"bugfix": 0, "implement": 0}
@@ -210,7 +229,9 @@ def cut(names: list[str], per_repo: int, seed: int, workers: int, tasks: Path) -
                 for candidate, result in executor.map(check, batch):
                     kind = candidate["kind"]
                     limit = 10 if kind == "bugfix" else 15
-                    if made[kind] >= wanted[kind] or result["errors"] or not 1 <= len(result["failed"]) <= limit:
+                    result["failed"] = [t for t in result["failed"] if t not in baseline]
+                    if made[kind] >= wanted[kind] or result["errors"] or not 1 <= len(result["failed"]) <= limit \
+                            or {t.split("::")[0] for t in result["failed"]} & broken_files:
                         continue
                     made[kind] += 1
                     write_task(name, base, candidate, result, tests, repo, tasks)
