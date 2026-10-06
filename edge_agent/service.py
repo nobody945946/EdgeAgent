@@ -187,6 +187,7 @@ class EdgeAgent:
         self.terminal = NativeTerminal()
         self.active_model = ""
         self.active_lora = ""
+        self.active_character_lora = ""
         self.agent_slot: int | None = None
         self.chat_in_progress = False
         self.active_context_size = 0
@@ -543,6 +544,7 @@ class EdgeAgent:
             "error": self.error,
             "model": self.active_model,
             "lora": self.active_lora,
+            "character_lora": self.active_character_lora,
             "context_size": self.active_context_size,
             "capabilities": dict(self.capabilities),
         }
@@ -627,7 +629,8 @@ class EdgeAgent:
             metadata = model_metadata(model_path)
             if metadata["adapter"] or metadata["split"] or metadata["projector"]:
                 raise ValueError("selected file is not a standalone model")
-            lora_path = self._adapter_path(metadata, str(self.config["lora"]))
+            agent_lora = self._adapter_path(metadata, str(self.config["lora"]))
+            character_lora = None
             projector_path = (
                 self._projector_path(str(self.config["mmproj"]))
                 if self.config["mmproj"]
@@ -640,7 +643,11 @@ class EdgeAgent:
             model_path = self._model_path(self._required_string(character, "model"))
             lora_name = self._required_string(character, "lora")
             metadata = model_metadata(model_path)
-            lora_path = self._adapter_path(metadata, lora_name)
+            # The character's adapter is the lease's; the Agent keeps its own
+            # (chosen for its model), when that model is the leased one.
+            character_lora = self._adapter_path(metadata, lora_name)
+            agent_lora = (self._adapter_path(metadata, str(self.config["lora"]))
+                          if self.config["model"] == model_path.name else None)
             # How much of the shared window the character's turns need.
             character_context = self._bounded_int(character, "context_size", 1_024, 32_768)
             port = self._bounded_int(character, "port", 1_024, 65_535)
@@ -664,7 +671,10 @@ class EdgeAgent:
         if isinstance(limit, int) and limit > 0:
             context_size = min(context_size, limit)
             character_context = min(character_context, limit)
-        role_slots = 2 if mode == "character" and lora_path else 1
+        role_slots = 2 if mode == "character" and character_lora else 1
+        # The character's adapter first (index 0, as the lease's client
+        # names it), then the Agent's; one file serving both is loaded once.
+        loras = list(dict.fromkeys(path for path in (character_lora, agent_lora) if path))
         reserved = role_slots * character_context
         context_size = max(context_size, reserved)
         agent_context = context_size - reserved
@@ -682,7 +692,7 @@ class EdgeAgent:
             threads=max(2, min(6, (os.cpu_count() or 4) // 2)),
             gpu_layers=int(self.config["gpu_layers"]),
             low_vram=bool(self.config["low_vram"]),
-            lora_path=lora_path,
+            lora_paths=loras,
             projector_path=projector_path,
             slots=role_slots + (1 if shared else 0),
         )
@@ -767,7 +777,8 @@ class EdgeAgent:
         }
         # The Agent's window: the whole pool, or what a lease leaves it.
         self.active_model, self.active_context_size = model_path.name, agent_context
-        self.active_lora = lora_path.name if lora_path else ""
+        self.active_lora = agent_lora.name if agent_lora else ""
+        self.active_character_lora = character_lora.name if character_lora else ""
         self.agent_slot = agent_slot
         self.owner_pid = owner_pid if mode == "character" else None
         self.owner_dead_since = None
@@ -780,7 +791,7 @@ class EdgeAgent:
             int(self.config["working_context_size"]),
         )
         self.chat.slot_id = agent_slot
-        self.chat.lora_enabled = lora_path is not None
+        self.chat.lora_id = loras.index(agent_lora) if agent_lora else None
 
     def _projector_path(self, filename: str) -> Path:
         path = self._model_path(filename)
@@ -861,6 +872,7 @@ class EdgeAgent:
         self.process = None
         self.active_model = ""
         self.active_lora = ""
+        self.active_character_lora = ""
         self.active_context_size = 0
         self.agent_slot = None
         if process is None or process.poll() is not None:

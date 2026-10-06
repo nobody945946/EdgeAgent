@@ -244,7 +244,8 @@ class NativeChat:
         # List the enabled MCP servers in the system prompt, so a small model
         # knows tool_search has something to find (measured by the bench mcp-* tasks).
         self.mcp_overview = True
-        self.lora_enabled = False
+        # The index of the Agent's adapter on the server (None: no adapter).
+        self.lora_id: int | None = None
         self.capabilities = {"vision": False, "audio": False}
         self._sessions: dict[str, ChatSession] = {}
         self._sessions_lock = threading.RLock()
@@ -449,7 +450,7 @@ class NativeChat:
             self.model,
             self.slot_id,
             self.mcp_overview,
-            self.lora_enabled,
+            self.lora_id,
             self.context_size,
             self.max_output_tokens,
             self.working_context_size,
@@ -517,7 +518,7 @@ class NativeChat:
                 "model_name": self.model,
                 "slot_id": self.slot_id,
                 "mcp_overview": self.mcp_overview,
-                "lora_enabled": self.lora_enabled,
+                "lora_id": self.lora_id,
                 "capabilities": self.capabilities,
                 "context_size": self.context_size,
                 "max_output_tokens": self.max_output_tokens,

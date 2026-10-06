@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 # E4B's own limit. On the laptop (4 GB GPU, 8 GB RAM) --fit keeps it by
@@ -60,7 +61,7 @@ def build_server_args(
     threads: int,
     gpu_layers: int,
     low_vram: bool,
-    lora_path: Path | None = None,
+    lora_paths: Sequence[Path] = (),
     projector_path: Path | None = None,
     slots: int = 1,
 ) -> list[str]:
@@ -105,8 +106,10 @@ def build_server_args(
         # Explicit GPU layers own the split; remaining layers run on CPU.
         # Do not allow upstream's default fitter to alter a manual placement.
         args += ["--fit", "off"]
-    if lora_path is not None:
-        args += ["--lora", str(lora_path)]
+    if lora_paths:
+        # Loaded but applied to no request unless it names the adapter: the
+        # Agent's and the character's each name their own (by its index).
+        args += ["--lora", ",".join(str(path) for path in lora_paths), "--lora-init-without-apply"]
     if projector_path is not None:
         args += ["--mmproj", str(projector_path)]
         if low_vram:

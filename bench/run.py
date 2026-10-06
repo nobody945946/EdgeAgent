@@ -154,7 +154,7 @@ class Server:
         args = build_server_args(
             str(SERVER), model, port=port, context_size=config["context_size"],
             threads=8, gpu_layers=99, low_vram=config.get("low_vram", True),
-            lora_path=(MODELS / config["lora"]).resolve() if config.get("lora") else None,
+            lora_paths=[(MODELS / config["lora"]).resolve()] if config.get("lora") else (),
         )
         # Bench-only: the dev box is shared and teachers are larger than its
         # 16 GiB lock limit, so the model is not locked in RAM here.

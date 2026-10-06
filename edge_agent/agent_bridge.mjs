@@ -329,7 +329,8 @@ function policy(pi) {
   pi.on('before_provider_request', (event, ctx) => {
     const payload = { ...event.payload, cache_prompt: true, ...(init.agent ? { temperature: 0.2 } : {}) };
     if (Number.isInteger(init.slot_id)) payload.id_slot = init.slot_id;
-    if (init.lora_enabled) payload.lora = [{ id: 0, scale: 1.0 }];
+    // Name only the Agent's adapter: the server applies none it is not told to.
+    if (Number.isInteger(init.lora_id)) payload.lora = [{ id: init.lora_id, scale: 1.0 }];
     // Gemma's chat template consumes enable_thinking directly. Keep it aligned
     // with Pi's effort so an off turn never opens a hidden reasoning channel.
     payload.chat_template_kwargs = { ...payload.chat_template_kwargs,

@@ -198,6 +198,8 @@ def _lease_fixture(manager, monkeypatch, tmp_path, model_limit, reported):
         (True, "", ""),
         (False, "", ""),
         (True, "", "adapter.gguf"),
+        (True, "agent.gguf", "role.gguf"),
+        (True, "same.gguf", "same.gguf"),
         (False, "agent.gguf", "role.gguf"),
         (False, "agent.gguf", ""),
     ],
@@ -213,7 +215,9 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
 ):
     """One pool for both clients: EdgeAgent's own size (up to the model's
     limit), the character's part reserved, the rest the Agent's window; the
-    server is placed by EdgeAgent (--fit), locked in RAM, its cache bounded."""
+    server is placed by EdgeAgent (--fit), locked in RAM, its cache bounded.
+    The character's adapter is the lease's (index 0); the Agent keeps its own
+    when its model is the leased one, and each request names only its own."""
     manager = service.EdgeAgent(tmp_path)
     original = manager._save_config(
         {
@@ -242,10 +246,14 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
         assert line in preset
     assert manager.agent_slot == manager.chat.slot_id == role_slots
     assert manager.chat.context_size == status["context_size"] == agent_window
-    assert manager.chat.lora_enabled == bool(leased_lora)
+    agent = standalone_lora if same_base else ""
+    loaded = list(dict.fromkeys(name for name in (leased_lora, agent) if name))
+    assert (f"lora = {','.join(str(tmp_path / name) for name in loaded)}" in preset) == bool(loaded)
+    assert ("lora-init-without-apply = true" in preset) == bool(loaded)
+    assert manager.chat.lora_id == (loaded.index(agent) if agent else None)
     assert status["model"] == leased_model
-    assert status["lora"] == leased_lora
-    assert manager.models_status()["active_lora"] == leased_lora
+    assert status["lora"] == agent and status["character_lora"] == leased_lora
+    assert manager.models_status()["active_lora"] == agent
     assert manager.config == original
     assert manager.config_path.read_bytes() == saved
 
@@ -253,7 +261,7 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
     assert restored["model"] == original["model"]
     assert restored["lora"] == original["lora"]
     assert manager.agent_slot == manager.chat.slot_id == 0
-    assert manager.chat.lora_enabled == bool(standalone_lora)
+    assert manager.chat.lora_id == (0 if standalone_lora else None)
     assert manager.config == original
     assert manager.config_path.read_bytes() == saved
 
@@ -359,7 +367,7 @@ def test_character_server_gets_two_slots_and_lora() -> None:
         threads=4,
         gpu_layers=99,
         low_vram=True,
-        lora_path=Path("character.gguf"),
+        lora_paths=[Path("character.gguf"), Path("agent.gguf")],
         slots=2,
     )
 
@@ -371,7 +379,9 @@ def test_character_server_gets_two_slots_and_lora() -> None:
     assert _value_after(args, "--load-mode") == "mlock"
     assert _value_after(args, "--cache-ram") == "256"
     assert _value_after(args, "--ctx-checkpoints") == "2"
-    assert _value_after(args, "--lora") == "character.gguf"
+    # Both adapters loaded, none applied unless a request names it.
+    assert _value_after(args, "--lora") == "character.gguf,agent.gguf"
+    assert "--lora-init-without-apply" in args
     assert "--tools" not in args
 
 
