@@ -1,7 +1,8 @@
 """SWE-bench in the mini-swe-agent harness, graded by the official harness.
 
-For an external, comparable number: each instance runs in its own official
-image (swebench/sweb.eval.x86_64.*) with no network, the model reached
+For an external, comparable number: each instance (SWE-bench/SWE-bench_Verified
+rows, which name their image, eval script and log parser) runs in its own
+official image with no network, the model reached
 through the bench relay, bench/mini_runner.py as the agent (/testbed is the
 repository, as in the images and the recordings). The submitted patch (or,
 without a submission, the diff of tracked files) is a prediction;
@@ -31,10 +32,6 @@ CONDA_PATH = ("/opt/miniconda3/envs/testbed/bin:/opt/miniconda3/bin:/usr/local/s
               "/usr/sbin:/usr/bin:/sbin:/bin")
 
 
-def image(instance_id: str) -> str:
-    return "swebench/sweb.eval.x86_64." + instance_id.replace("__", "_1776_").lower() + ":latest"
-
-
 def run_instance(item: dict, config: dict, run_dir: Path, sock_dir: Path, timeout: int) -> dict:
     instance = item["instance_id"]
     out = run_dir / "out" / instance
@@ -47,18 +44,22 @@ def run_instance(item: dict, config: dict, run_dir: Path, sock_dir: Path, timeou
     script = ("PY=$(command -v /opt/miniconda3/bin/python3 python3 | head -1); "
               "$PY /opt/bench/mini_runner.py > /out/result.json 2> /out/stderr.txt; "
               "cd /testbed && git -c core.fileMode=false diff > /out/tracked.diff")
+    # The image's root (its files are root's); of the capabilities only
+    # DAC_OVERRIDE, to write /out and reach the relay's socket, both the host
+    # user's. No network.
     command = ["docker", "run", "--rm", "--name", name, "--network", "none", "--cap-drop", "ALL",
-               "--security-opt", "no-new-privileges", "--pids-limit", "512", "--memory", "8g",
+               "--cap-add", "DAC_OVERRIDE", "--security-opt", "no-new-privileges", "--pids-limit", "512", "--memory", "8g",
                "--cpus", "4", "-w", "/testbed",
                "-v", f"{sock_dir}:/sock:ro", "-v", f"{out}:/out:rw",
                "-v", f"{BENCH / 'relay.py'}:/opt/bench/relay.py:ro",
                "-v", f"{BENCH / 'mini_runner.py'}:/opt/bench/mini_runner.py:ro",
                "-v", f"{BENCH / 'mini_templates.json'}:/opt/bench/mini_templates.json:ro",
                "-e", f"BENCH_SPEC={json.dumps(spec, ensure_ascii=False)}", "-e", "MINI_SUBMISSION=/out/submission.txt",
-               "-e", f"PATH={CONDA_PATH}", image(instance), "bash", "-c", script]
+               "-e", f"PATH={CONDA_PATH}", item["image"], "bash", "-c", script]
     started = time.monotonic()
     try:
-        subprocess.run(command, capture_output=True, text=True, timeout=timeout + 300)
+        done = subprocess.run(command, capture_output=True, text=True, timeout=timeout + 300)
+        (out / "docker.txt").write_text(f"exit {done.returncode}\n{done.stderr[-4000:]}", encoding="utf-8")
     except subprocess.TimeoutExpired:
         subprocess.run(["docker", "kill", name], capture_output=True)
     result = run.last_json((out / "result.json").read_text(encoding="utf-8", errors="replace")) \
@@ -76,15 +77,15 @@ def run_instance(item: dict, config: dict, run_dir: Path, sock_dir: Path, timeou
             "submitted": bool(submission), "patch_lines": patch.count("\n"), "model_patch": patch}
 
 
-def evaluate(run_dir: Path, rows: list[dict], tag: str) -> dict:
+def evaluate(run_dir: Path, rows: list[dict], tag: str, instances: Path) -> dict:
     predictions = run_dir / "predictions.jsonl"
     with predictions.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps({"instance_id": row["instance_id"], "model_name_or_path": tag,
                                      "model_patch": row["model_patch"]}) + "\n")
     subprocess.run([str(SWE / "venv/bin/python"), "-m", "swebench.harness.run_evaluation",
-                    "--dataset_name", "princeton-nlp/SWE-bench_Verified", "--predictions_path", str(predictions),
-                    "--run_id", tag, "--max_workers", "4", "--namespace", "swebench",
+                    "--dataset_name", str(instances.resolve()), "--predictions_path", str(predictions),
+                    "--run_id", tag, "--max_workers", "4",
                     "--instance_ids", *[row["instance_id"] for row in rows]],
                    cwd=run_dir, check=False)
     reports = sorted(run_dir.glob(f"{tag}.{tag}.json")) or sorted(run_dir.glob("*.json"))
@@ -127,7 +128,7 @@ def main() -> None:
         finally:
             server.close()
     rows = [json.loads(line) for line in results.read_text().splitlines()]
-    summary = evaluate(run_dir, rows, args.tag)
+    summary = evaluate(run_dir, rows, args.tag, args.instances)
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     print(f"resolved {summary['resolved']}/{summary['total']}", flush=True)
 
