@@ -65,6 +65,65 @@ def submitted(messages: list[dict]) -> bool:
                              for call in last.get("tool_calls") or []))
 
 
+def convert(job: tuple[Path, Path, str, int, list[str] | None, list[str]]) -> tuple[list[str], dict]:
+    """One parquet file -> its rows (JSON lines) and the reasons it skipped
+    the others. Runs in a worker process."""
+    path, tokenizer_dir, trainer, max_tokens, languages, excluded = job
+    import pyarrow.parquet as pq
+    from transformers import AutoTokenizer
+
+    sys.path.insert(0, trainer)
+    import train_lora
+
+    tokenizer = _TOKENIZERS.get(str(tokenizer_dir)) or _TOKENIZERS.setdefault(
+        str(tokenizer_dir), AutoTokenizer.from_pretrained(str(tokenizer_dir)))
+    why: Counter = Counter()
+    lines = []
+    table = pq.read_table(path, columns=["instance_id", "repo", "language", "messages", "tools",
+                                         "resolved", "metadata"])
+    for row in table.to_pylist():
+        teacher = ((row.get("metadata") or {}).get("teacher_model") or {}).get("name") or ""
+        if not OPEN_TEACHERS.match(teacher):
+            why[f"teacher {teacher or '?'}"] += 1
+            continue
+        if row["resolved"] != 1:
+            why["not resolved"] += 1
+            continue
+        if languages and row["language"] not in languages:
+            why["language"] += 1
+            continue
+        if held_out(row["repo"]) or row["repo"].lower() in excluded:
+            why["held-out repository"] += 1
+            continue
+        messages = wire(row["messages"])
+        if not submitted(messages):
+            why["did not submit"] += 1
+            continue
+        # Code runs about 3-4 characters a token: far beyond the limit in
+        # characters is beyond it in tokens; only the rest is tokenized.
+        if sum(len(m["content"]) + sum(len(c["function"]["arguments"]) for c in m.get("tool_calls") or [])
+               for m in messages) > max_tokens * 6:
+            why["too long"] += 1
+            continue
+        tools = [json.loads(t) for t in row["tools"]]
+        try:
+            length = len(train_lora.tokenize_row(tokenizer, {"messages": messages, "tools": tools,
+                                                              "train": "all"})["input_ids"])
+        except ValueError:  # the trainer cannot mark the turns: no row
+            why["not trainable"] += 1
+            continue
+        if length > max_tokens:
+            why["too long"] += 1
+            continue
+        lines.append(json.dumps({"messages": messages, "tools": tools, "train": "all",
+                                 "source": {"instance": row["instance_id"], "repo": row["repo"],
+                                            "teacher": teacher, "tokens": length}}, ensure_ascii=False))
+    return lines, dict(why)
+
+
+_TOKENIZERS: dict = {}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("folders", nargs="+", type=Path)
@@ -73,67 +132,34 @@ def main() -> int:
     parser.add_argument("--max-tokens", type=int, default=32768)
     parser.add_argument("--languages", default="python", help="comma list, or 'all'")
     parser.add_argument("--exclude-repos", type=Path, help="JSON list of owner/name repositories never to train on")
+    parser.add_argument("--workers", type=int, default=12)
     args = parser.parse_args()
-    import pyarrow.parquet as pq
-    from transformers import AutoTokenizer
+    from multiprocessing import Pool
 
-    sys.path.insert(0, str(TRAINER))
-    import train_lora
-
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
-    languages = None if args.languages == "all" else set(args.languages.split(","))
-    excluded = {r.lower() for r in json.loads(args.exclude_repos.read_text())} if args.exclude_repos else set()
+    languages = None if args.languages == "all" else sorted(args.languages.split(","))
+    excluded = sorted(r.lower() for r in json.loads(args.exclude_repos.read_text())) if args.exclude_repos else []
+    files = sorted(p for folder in args.folders for p in folder.rglob("*.parquet"))
+    jobs = [(path, Path(args.tokenizer), str(TRAINER), args.max_tokens, languages, excluded) for path in files]
     why: Counter = Counter()
-    kept = 0
     seen: set[str] = set()
+    kept = 0
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    with args.out.open("w", encoding="utf-8") as handle:
-        for path in sorted(p for folder in args.folders for p in folder.rglob("*.parquet")):
-            table = pq.read_table(path, columns=["instance_id", "repo", "language", "messages", "tools",
-                                                 "resolved", "metadata"])
-            for row in table.to_pylist():
-                teacher = ((row.get("metadata") or {}).get("teacher_model") or {}).get("name") or ""
-                if not OPEN_TEACHERS.match(teacher):
-                    why[f"teacher {teacher or '?'}"] += 1
-                    continue
-                if row["resolved"] != 1:
-                    why["not resolved"] += 1
-                    continue
-                if languages and row["language"] not in languages:
-                    why["language"] += 1
-                    continue
-                if held_out(row["repo"]) or row["repo"].lower() in excluded:
-                    why["held-out repository"] += 1
-                    continue
-                messages = wire(row["messages"])
-                if not submitted(messages):
-                    why["did not submit"] += 1
-                    continue
-                key = hashlib.sha256(json.dumps(messages, sort_keys=True).encode()).hexdigest()
+    with args.out.open("w", encoding="utf-8") as handle, Pool(args.workers) as pool:
+        for path, (lines, reasons) in zip(files, pool.imap(convert, jobs), strict=True):
+            why.update(reasons)
+            for line in lines:
+                key = hashlib.sha256(json.dumps(json.loads(line)["messages"], sort_keys=True).encode()).hexdigest()
                 if key in seen:
                     why["duplicate"] += 1
                     continue
-                tools = [json.loads(t) for t in row["tools"]]
-                try:
-                    length = len(train_lora.tokenize_row(tokenizer, {"messages": messages, "tools": tools,
-                                                                      "train": "all"})["input_ids"])
-                except ValueError:  # the trainer cannot mark the turns: no row
-                    why["not trainable"] += 1
-                    continue
-                if length > args.max_tokens:
-                    why["too long"] += 1
-                    continue
                 seen.add(key)
-                handle.write(json.dumps({"messages": messages, "tools": tools, "train": "all",
-                                         "source": {"instance": row["instance_id"], "repo": row["repo"],
-                                                    "teacher": teacher, "tokens": length}},
-                                        ensure_ascii=False) + "\n")
+                handle.write(line + "\n")
                 kept += 1
-            print(f"{path.name}: {kept} kept so far; {dict(why)}", flush=True)
+            print(f"{path.parent.name}/{path.name}: {kept} kept so far", flush=True)
     stamp = {"producer": "edgeagent-trace-rows", "version": hashlib.sha256(
         (BENCH / "mini_templates.json").read_bytes()).hexdigest()[:16],
         "folders": [str(f) for f in args.folders], "max_tokens": args.max_tokens,
-        "excluded_repos": sorted(excluded)}
+        "excluded_repos": excluded}
     args.out.with_name(args.out.name + ".version").write_text(json.dumps(stamp), encoding="utf-8")
     print(f"{kept} rows -> {args.out}; skipped {dict(why)}")
     return 0
