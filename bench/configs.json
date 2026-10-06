@@ -90,5 +90,25 @@
    "top_p": 0.95,
    "step_limit": 100
   }
+ },
+ "e4b-mini-trace1": {
+  "_note": "e4b-mini with trace-v1: a LoRA on open mini-swe-agent trajectories (bench/trace_rows.py, 6000 sampled, one epoch).",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": false,
+  "context_size": 98304,
+  "max_output_tokens": 8192,
+  "working_context_size": 98304,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "runner": "mini",
+  "mini": {
+   "temperature": 0.6,
+   "top_p": 0.95,
+   "step_limit": 100
+  },
+  "lora": "trace-v1.q8_0.gguf"
  }
 }

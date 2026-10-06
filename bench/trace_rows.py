@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import random
 import re
 from collections import Counter
 from pathlib import Path
@@ -59,6 +60,7 @@ def main() -> int:
     parser.add_argument("--exclude-repos", type=Path, required=True,
                         help="JSON list of owner/name repositories never to train on (the benchmark's)")
     parser.add_argument("--languages", default="python", help="comma list, or 'all'")
+    parser.add_argument("--sample", type=int, default=0, help="keep this many rows at random (seed 0); 0: all")
     args = parser.parse_args()
     import pyarrow.parquet as pq
 
@@ -66,43 +68,47 @@ def main() -> int:
     excluded = {r.lower() for r in json.loads(args.exclude_repos.read_text())}
     why: Counter = Counter()
     seen: set[str] = set()
-    kept = 0
+    rows: list[str] = []
+    for path in sorted(p for folder in args.folders for p in folder.rglob("*.parquet")):
+        table = pq.read_table(path, columns=["instance_id", "repo", "language", "messages", "tools",
+                                             "resolved", "metadata"])
+        for row in table.to_pylist():
+            teacher = ((row.get("metadata") or {}).get("teacher_model") or {}).get("name") or ""
+            if not OPEN_TEACHERS.match(teacher):
+                why[f"teacher {teacher or '?'}"] += 1
+                continue
+            if row["resolved"] != 1:
+                why["not resolved"] += 1
+                continue
+            if languages and row["language"] not in languages:
+                why["language"] += 1
+                continue
+            if row["repo"].lower() in excluded:
+                why["benchmark repository"] += 1
+                continue
+            messages = wire(row["messages"])
+            if not submitted(messages):
+                why["did not submit"] += 1
+                continue
+            key = hashlib.sha256(json.dumps(messages, sort_keys=True).encode()).hexdigest()
+            if key in seen:
+                why["duplicate"] += 1
+                continue
+            seen.add(key)
+            rows.append(json.dumps({"messages": messages, "tools": [json.loads(t) for t in row["tools"]],
+                                    "train": "all",
+                                    "source": {"instance": row["instance_id"], "repo": row["repo"],
+                                               "teacher": teacher}}, ensure_ascii=False))
+    if args.sample and len(rows) > args.sample:
+        why["not sampled"] += len(rows) - args.sample
+        rows = random.Random(0).sample(rows, args.sample)
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    with args.out.open("w", encoding="utf-8") as handle:
-        for path in sorted(p for folder in args.folders for p in folder.rglob("*.parquet")):
-            table = pq.read_table(path, columns=["instance_id", "repo", "language", "messages", "tools",
-                                                 "resolved", "metadata"])
-            for row in table.to_pylist():
-                teacher = ((row.get("metadata") or {}).get("teacher_model") or {}).get("name") or ""
-                if not OPEN_TEACHERS.match(teacher):
-                    why[f"teacher {teacher or '?'}"] += 1
-                    continue
-                if row["resolved"] != 1:
-                    why["not resolved"] += 1
-                    continue
-                if languages and row["language"] not in languages:
-                    why["language"] += 1
-                    continue
-                if row["repo"].lower() in excluded:
-                    why["benchmark repository"] += 1
-                    continue
-                messages = wire(row["messages"])
-                if not submitted(messages):
-                    why["did not submit"] += 1
-                    continue
-                key = hashlib.sha256(json.dumps(messages, sort_keys=True).encode()).hexdigest()
-                if key in seen:
-                    why["duplicate"] += 1
-                    continue
-                seen.add(key)
-                handle.write(json.dumps({"messages": messages, "tools": [json.loads(t) for t in row["tools"]],
-                                         "train": "all",
-                                         "source": {"instance": row["instance_id"], "repo": row["repo"],
-                                                    "teacher": teacher}}, ensure_ascii=False) + "\n")
-                kept += 1
+    args.out.write_text("".join(row + "\n" for row in rows), encoding="utf-8")
+    kept = len(rows)
     stamp = {"producer": "edgeagent-trace-rows",
              "version": hashlib.sha256((BENCH / "mini_templates.json").read_bytes()).hexdigest()[:16],
-             "folders": [str(f) for f in args.folders], "excluded_repos": sorted(excluded)}
+             "folders": [str(f) for f in args.folders], "excluded_repos": sorted(excluded),
+             "sample": args.sample}
     args.out.with_name(args.out.name + ".version").write_text(json.dumps(stamp), encoding="utf-8")
     print(f"{kept} rows -> {args.out}; skipped {dict(why)}")
     return 0
