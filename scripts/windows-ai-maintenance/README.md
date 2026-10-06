@@ -4,9 +4,28 @@
 系統原值及量測資料留在 `%USERPROFILE%\.codex\windows-ai-maintenance`，不加入 Git；從 repo 執行也使用同一份還原快照。
 此工具獨立於 EdgeAgent 啟動流程，不會隨應用啟動自動修改 Windows。
 
+## 2026-10-06 服務精簡：已永久套用
+
+使用者授權未使用的服務預設關閉，保留 Discord 與正常電腦運作。已逐項核對實際服務、執行程序、依賴及裝置，再以服務管理員正常停止並設為 Disabled；不殺共用 svchost。
+
+| 服務 | 套用前 | 現在 | 評估 |
+|---|---|---|---|
+| DiagTrack | Auto、Running | Disabled、Stopped | Windows 診斷與使用資料傳送；本次不需要 |
+| ASUSSystemAnalysis | Manual、Stopped | Disabled、Stopped | 先前已停用的 ASUS 診斷 |
+| ASUSSystemDiagnosis | Manual、Stopped | Disabled、Stopped | 先前已停用的 ASUS 診斷 |
+| RetailDemo | Manual、Stopped | Disabled、Stopped | 商店展示模式；個人筆電不用 |
+
+`deploy.cmd ApplyServices` 套用上述四項，`deploy.cmd PlanServices` 只讀，`deploy.cmd RestoreServices` 恢復本次接管前的啟動方式、執行狀態及 delayed automatic start。原值沿用既有 `original-state.json` 的 ServiceProfile；重複套用不改原值。開始前若有執行中的依賴服務即拒絕全部變更；中途失敗嘗試恢復並回報失敗。完整 `Restore` 仍恢復之前全部維護的基準，包含 Wi-Fi 延伸。
+
+實際套用 exit 0，重新查服務四項均 Disabled／Stopped。Wi-Fi Up、GitHub HTTPS 200、WlanSvc／Audiosrv／WinDefend Running，Discord 六個程序仍存在。DiagTrack 停用前程序工作集 27.4 MiB、私有提交 43 MiB；其餘三項原本沒在跑，不能宣稱此次釋放大量 RAM。套用前後應用工作集持續變動，沒有隔離的 RAM 淨增量證據。
+
+保留 Wi-Fi 核心、Bluetooth、音訊、Defender、Windows Update、電源、驅動及使用中的 Quest 裝置服務。Xbox、Fax 等已按需啟動且停止的項目沒有目前程序占用。已安裝 Maps 和連線裝置功能，不能僅因當下沒有視窗就斷言不用。開發中的 VS Code 承載目前維護工作，保留至工作結束；日常模型啟動時不需要它。
+
+Microsoft 的[服務功能說明](https://learn.microsoft.com/en-us/windows/iot/iot-enterprise/optimize/services)列出 DiagTrack 的診斷用途與 RetailDemo 的展示用途；文件面向 IoT，這裡只用來核對功能，停用選擇依本機用途和依賴決定。
+
 ## 新增輕量化部署腳本：已驗證，尚未永久套用
 
-`deploy.cmd` 是 `maintain.ps1` 的一鍵入口；雙擊會要求 Windows UAC 提升權限。
+`deploy.cmd` 是 `maintain.ps1` 的一鍵入口；雙擊會要求 Windows UAC 提升權限。輔助 PowerShell 使用隱藏視窗，結束即退出，入口回傳真正的子程序 exit code。
 使用同一個 Windows 帳號提升權限，不能輸入另一個管理員帳號來修改不同的 HKCU。
 不需要重新開機。瀏覽器依其政策刷新時間生效；少數介面可能需要重新登入才完整更新。
 
@@ -25,13 +44,13 @@
 沒有安裝 Mem Reduct、移除系統套件或自動關閉開啟中的瀏覽器。
 本機沒有 Copilot、Cortana、Widgets 的對應 Appx 套件，不需修改；Windows 11 Home 不在 Microsoft Widgets 管理政策的支援版本清單中。
 
-驗證：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verify.ps1`，31 checks passed。
+驗證：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verify.ps1`，45 checks passed。
 真實 Win32 動畫 API 關閉／還原測試已恢復原值；服務操作使用隔離替身，registry 使用測試專用暫存 key，測完已刪除。
 已測既有 DWORD／ExpandString 的原值與 type、原本不存在的值、重複套用／還原、注入失敗回復、Search 工作階段、延遲自動啟動與含空白路徑的一鍵入口參數。
 
 2026-10-03 本機取樣：SysMain 工作集 6.8 MiB、WSearch 29.1 MiB、DiagTrack 29.4 MiB；wuauserv 已為 Manual／Stopped。
 工作集包含共用頁面，不能把這些數字視為實測釋放 RAM；備用快取已包含在 Available RAM 中，不能再加一次。
-沒有進行永久部署或效能 A/B 測試，因此尚無新增設定的實測 RAM／VRAM 淨增量。
+整套 Light profile 尚未永久套用；DiagTrack 已由上面的 Services profile 停用。尚無隔離的 RAM／VRAM 效能 A/B 淨增量。
 
 參考：[Windows 快取與可用記憶體](https://learn.microsoft.com/en-us/windows-server/administration/performance-tuning/subsystem/cache-memory-management/)、[Search 索引負載退避](https://learn.microsoft.com/en-us/troubleshoot/windows-client/shell-experience/windows-search-performance-issues)、[更新與使用時間](https://learn.microsoft.com/en-us/windows/deployment/update/waas-restart)、[Widgets 支援版本](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-newsandinterests)、[Mem Reduct 原始碼](https://github.com/henrypp/memreduct/blob/master/src/main.c)。
 
@@ -45,7 +64,7 @@
 |---|---|---|
 | Discord、Steam、Edge 登入自啟動 | 移除各自 HKCU Run 值 | 保存存在狀態、資料與 registry type |
 | Edge StartupBoostEnabled、BackgroundModeEnabled | 0 | 保存原值；原本不存在的值在還原時移除 |
-| ASUSSystemAnalysis、ASUSSystemDiagnosis | Manual、Stopped | 原本 Auto、Running；DelayedAutoStart 也保存 |
+| ASUSSystemAnalysis、ASUSSystemDiagnosis | Disabled、Stopped（2026-10-06 Services profile） | 完整基準原本 Auto、Running；本次 Services profile 前為 Manual、Stopped |
 | 兩個 ASUS 診斷排程 | Disabled | 原本 Enabled |
 | Intel AX201 的 IHV ExtensibilityDLL 登錄 | 移除該值，DLL 與 driver 原檔保留 | 保存原字串、registry type、網卡 identity |
 | 閒置 Steam | 正常 shutdown，遊戲程序不存在 | 應用程式仍安裝；可正常重新開啟 |

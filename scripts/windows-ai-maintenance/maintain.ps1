@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Inspect','Apply','Restore','RestartWifi','DisableWifiExtension','PlanLight','ApplyLight','RestoreLight','BeginAI','EndAI')][string]$Action = 'Inspect',
+    [ValidateSet('Inspect','Apply','Restore','RestartWifi','DisableWifiExtension','PlanLight','ApplyLight','RestoreLight','BeginAI','EndAI','PlanServices','ApplyServices','RestoreServices')][string]$Action = 'Inspect',
     [string]$StateDirectory = (Join-Path $env:USERPROFILE '.codex/windows-ai-maintenance')
 )
 $ErrorActionPreference = 'Stop'
@@ -57,6 +57,43 @@ function Restore-Services($services) {
         if ($service.State -eq 'Running') {Start-Service -Name $service.Name}
         else {Stop-Service -Name $service.Name}
     }
+}
+function Invoke-ServiceProfile($mode) {
+    # Optional diagnostics and store demonstration only; shared svchost processes
+    # are never killed. Network, audio, security, drivers and application services
+    # retain their configuration.
+    $names=@('DiagTrack','ASUSSystemAnalysis','ASUSSystemDiagnosis','RetailDemo')
+    if ($mode -eq 'PlanServices') {
+        [pscustomobject]@{Services=(Read-ServiceState $names);System=(Measure-System)} | ConvertTo-Json -Depth 6
+        return
+    }
+    Assert-Administrator
+    $state=Read-State
+    if ($mode -eq 'RestoreServices') {
+        if (!$state.ServiceProfile) {throw 'No service profile snapshot exists; no change made'}
+        Restore-Services $state.ServiceProfile.Services
+    } elseif ($mode -eq 'ApplyServices') {
+        $current=@(Read-ServiceState $names)
+        foreach ($service in $current) {
+            $dependents=@((Get-Service -Name $service.Name).DependentServices | Where-Object Status -eq 'Running')
+            if ($dependents.Count) {throw ('Service has running dependents; no change made: '+$service.Name)}
+        }
+        if (!$state.ServiceProfile) {
+            $state | Add-Member -NotePropertyName ServiceProfile -NotePropertyValue ([pscustomobject]@{Services=$current})
+            Save-State $state
+        }
+        try {
+            foreach ($service in $current) {
+                Stop-Service -Name $service.Name
+                Set-Service -Name $service.Name -StartupType Disabled
+            }
+        } catch {
+            $failure=$_
+            Restore-Services $state.ServiceProfile.Services
+            throw $failure
+        }
+    } else {throw 'Unknown service profile action'}
+    Invoke-ServiceProfile 'PlanServices'
 }
 function Save-State($state) {
     $stateDirectory=Split-Path -Parent $snapshotPath
@@ -218,6 +255,7 @@ function Invoke-LightProfile($mode) {
     } else {throw 'Unknown Light profile action'}
 }
 switch ($Action) {
+    {$_ -in @('PlanServices','ApplyServices','RestoreServices')} {Invoke-ServiceProfile $Action}
     {$_ -in @('PlanLight','ApplyLight','RestoreLight','BeginAI','EndAI')} {Invoke-LightProfile $Action}
     'Inspect' {
         [pscustomobject]@{System=(Measure-System);Registry=@($registry | ForEach-Object {Read-Registry $_});WifiExtension=(Read-Registry $wifiExtension);Services=@(Get-CimInstance Win32_Service | Where-Object {$serviceNames -contains $_.Name} | Select-Object Name,StartMode,State);Tasks=@(Get-ScheduledTask | Where-Object {$taskNames -contains $_.TaskName} | Select-Object TaskPath,TaskName,@{n='Enabled';e={$_.Settings.Enabled}})} | ConvertTo-Json -Depth 6
@@ -246,6 +284,7 @@ switch ($Action) {
     }
     'Restore' {
         $state=Read-State
+        if ($state.ServiceProfile) {Invoke-ServiceProfile 'RestoreServices' | Out-Null}
         if ($state.SearchSession) {Invoke-LightProfile 'EndAI' | Out-Null}
         if ($state.Light) {Invoke-LightProfile 'RestoreLight' | Out-Null}
         $original = Get-Content -LiteralPath $snapshotPath -Raw | ConvertFrom-Json
