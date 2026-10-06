@@ -15,6 +15,7 @@ const packageURL = new URL('../.runtime/pi/node_modules/@earendil-works/pi-codin
 const sdk = await import(new URL('index.js', packageURL));
 const { createLocalPowerShellOperations, createPowerShellToolDefinition } = await import(new URL('core/tools/powershell.js', packageURL));
 const { truncateTail } = await import(new URL('core/tools/truncate.js', packageURL));
+const { toolSearchSchema } = await import(new URL('extensions/tool-search/tool.js', packageURL));
 const { Type } = await import(pathToFileURL(createRequire(new URL('index.js', packageURL)).resolve('typebox')));
 
 // Read precisely one LF-delimited initialization record. Leave subsequent
@@ -272,16 +273,20 @@ function policy(pi) {
       description: 'Find tools that are not loaded yet: describe the job in a few words, in Chinese or English '
         + '(e.g. "整理 下載 資料夾", "convert Big5 text", "run tests"). The tools found can be called from your next step.',
       promptSnippet: 'Find and load tools for a job',
-      parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 300 }),
-        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })) }),
+      // Pi recognizes discovery by this shared schema identity. Its MCP hook
+      // then waits for connecting servers before our Chinese-aware search runs.
+      parameters: toolSearchSchema,
       exposure: 'model-only',
       async execute(_id, params) {
+        if (!params.query.length || params.query.length > 300) throw new Error('Search query must contain 1–300 characters.');
+        const limit = params.limit ?? 5;
+        if (!Number.isInteger(limit) || limit < 1 || limit > 10) throw new Error('Search limit must be an integer from 1 to 10.');
         const active = new Set(pi.getActiveTools());
         const all = pi.getAllTools().filter(tool => tool.name !== 'tool_search'
           && (active.has(tool.name) || tool.exposure === 'deferred'));
         const documents = all.map(tool => ({ name: tool.name,
           text: searchText({ ...tool, keywords: toolboxByName.get(tool.name)?.keywords ?? OWN_KEYWORDS[tool.name] }) }));
-        const found = withServers(rank(params.query, documents, params.limit ?? 5),
+        const found = withServers(rank(params.query, documents, limit),
           all.map(tool => ({ name: tool.name, server: tool.namespace?.name })));
         const load = found.filter(name => !active.has(name));
         if (load.length) pi.setActiveTools([...active, ...load]);

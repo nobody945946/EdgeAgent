@@ -156,6 +156,30 @@ def _ran(log: Path) -> list[str]:
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_first_search_waits_for_a_connecting_deferred_server(tmp_path, repeating_model):  # noqa: F811 - imported fixture
+    port, state = repeating_model
+    server, log = _server(tmp_path, permission="allow", hardware=False)
+    server["env"]["MCP_FIXTURE_INITIALIZE_DELAY_MS"] = "750"
+    state["sequence"] = [
+        ("tool_search", {"query": "stock quote"}),
+        ("mcp__fin__quote", {"symbol": "2330"}),
+    ]
+    chat = NativeChat(model_port=port)
+    try:
+        events = _run(chat, tmp_path, {"fin": server}, approve=lambda data: False)
+    finally:
+        chat.close()
+    searches = [d for n, d in events if n == "tool" and d["phase"] == "finished" and d["tool"] == "tool_search"]
+    assert len(searches) == 1
+    assert "mcp__fin__quote" in searches[0]["result"]["details"]["found"]
+    assert _ran(log) == ["quote"]
+    assert not any(n == "approval" for n, _ in events)
+    declarations = [[t["function"]["name"] for t in r.get("tools", [])] for r in state["requests"]]
+    assert "mcp__fin__quote" not in declarations[0]
+    assert "mcp__fin__quote" in declarations[1]
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
 def test_read_only_tools_run_and_destructive_ones_ask_once(tmp_path, repeating_model):  # noqa: F811
     port, state = repeating_model
     server, log = _server(tmp_path, permission="allow", hardware=False)

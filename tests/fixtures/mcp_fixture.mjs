@@ -42,8 +42,11 @@ createInterface({ input: process.stdin }).on('line', line => {
   const request = JSON.parse(line);
   if (request.id === undefined) return;  // notifications
   if (request.method === 'initialize') {
-    send({ id: request.id, result: { protocolVersion: request.params?.protocolVersion ?? '2025-06-18',
+    const initialized = () => send({ id: request.id, result: { protocolVersion: request.params?.protocolVersion ?? '2025-06-18',
       capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1.0.0' } } });
+    const delay = Number(process.env.MCP_FIXTURE_INITIALIZE_DELAY_MS ?? 0);
+    if (delay > 0) setTimeout(initialized, delay);
+    else initialized();
   } else if (request.method === 'tools/list') {
     send({ id: request.id, result: { tools } });
   } else if (request.method === 'tools/call') {
