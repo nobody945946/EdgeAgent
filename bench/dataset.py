@@ -15,10 +15,12 @@ Eval tasks (bench/tasks) never become training rows: only runs over
 .runtime/agentdata/tasks are accepted.
 
 One output holds one product version: per task scope (who asked), every
-row's system prompt and starting tool definitions must be the same, and the
-system prompt must be the current product's (edge_agent/prompt.py); runs
-recorded under other product code would teach two. Otherwise nothing is
-written (exit 3). The output gets a
+row's system prompt must be the same and the current product's
+(edge_agent/prompt.py), and each tool has one definition across all rows;
+runs recorded under other product code would teach two. Which tools a task
+starts with and which MCP servers it has follow the owner's settings for
+that task (web denied, servers connected), like its folder: per task, not a
+version. Otherwise nothing is written (exit 3). The output gets a
 sidecar <out>.version, the stamp SilentTalk's train_lora.py requires.
 
     python bench/dataset.py .runtime/bench/<run> [...] --out .runtime/agentdata/agent-rows.jsonl
@@ -120,15 +122,20 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
             kept.append({"messages": messages, "tools": request["tools"], "train": "all",
                          "train_from": len(requests[start]["messages"]),
                          "source": {"run": run_dir.name, "job": job, "kind": result.get("kind", ""),
-                                    "first_tools": [t.get("function", {}).get("name") for t in requests[0]["tools"]]}})
+                                    "first_tools": {t["function"]["name"]: _digest(t["function"])
+                                                    for t in requests[0]["tools"]}}})
             start = index + 1
     return kept, why
 
 
 # Pi adds the workspace's own AGENTS.md to the system prompt (the product does
-# the same for the user's folders), the folder and the date: per task, not a
-# product version.
-PER_TASK = re.compile(r"<(project_context|cwd|today)>.*?</\1>\n*", re.DOTALL)
+# the same for the user's folders), the folder, the date, and the MCP servers
+# the owner connected: per task, not a product version.
+PER_TASK = re.compile(r"<(project_context|cwd|today|addendum|mcp_servers)>.*?</\1>\n*", re.DOTALL)
+
+
+def _digest(value: object) -> str:
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
 
 def scope_of(row: dict) -> str | None:
@@ -141,12 +148,22 @@ def scope_of(row: dict) -> str | None:
     return None
 
 
-def product_version(row: dict) -> str:
-    """The product as the model saw it: system prompt (without per-task
-    sections) and the tools the task started with."""
-    system = [PER_TASK.sub("", str(m["content"])) for m in row["messages"] if m.get("role") == "system"]
-    blob = json.dumps([system, row["source"]["first_tools"]], ensure_ascii=False, sort_keys=True)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+def product_system(row: dict) -> str:
+    """The system prompt as the product writes it, without per-task sections."""
+    return _digest([PER_TASK.sub("", str(m["content"])) for m in row["messages"] if m.get("role") == "system"])
+
+
+def mixed_versions(total: list[dict]) -> dict[str, dict[str, int]]:
+    """Each scope's system prompt and each tool's definition that comes in
+    more than one version, with its rows per version and run."""
+    seen: dict[str, Counter] = {}
+    for row in total:
+        run = row["source"]["run"]
+        seen.setdefault(f"system {scope_of(row)}", Counter())[f"{run} {product_system(row)}"] += 1
+        for name, digest in row["source"]["first_tools"].items():
+            seen.setdefault(f"tool {name}", Counter())[f"{run} {digest}"] += 1
+    return {key: dict(runs) for key, runs in seen.items()
+            if len({version.split()[1] for version in runs}) > 1}
 
 
 def main() -> int:
@@ -163,18 +180,19 @@ def main() -> int:
     if stale:
         print(f"REFUSED: {len(stale)} rows were made under another system prompt: {stale[:5]}")
         return 3
-    versions = Counter((scope_of(row), product_version(row)) for row in total)
-    if len({scope for scope, _ in versions}) < len(versions):
-        by_run = Counter((row["source"]["run"], scope_of(row), product_version(row)) for row in total)
-        print(f"REFUSED: rows from more than one product version per scope would mix: {dict(by_run)}")
+    mixed = mixed_versions(total)
+    if mixed:
+        print(f"REFUSED: rows from more than one product version would mix: {mixed}")
         return 3
+    versions = sorted({(scope_of(row), product_system(row)) for row in total}
+                      | {(name, digest) for row in total for name, digest in row["source"]["first_tools"].items()})
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", encoding="utf-8") as handle:
         for row in total:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     with_project = sum("<project_context>" in str(row["messages"][0]["content"]) for row in total)
     stamp = {"producer": "edgeagent-dataset",
-             "version": hashlib.sha256(json.dumps(sorted(versions), ensure_ascii=False).encode()).hexdigest()[:16],
+             "version": _digest(versions),
              "runs": [run.name for run in args.runs],
              "rows_with_project_agents_md": with_project}
     args.out.with_name(args.out.name + ".version").write_text(json.dumps(stamp), encoding="utf-8")
