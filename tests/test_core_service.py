@@ -166,7 +166,8 @@ def test_base_server_is_one_slot_without_an_extra_agent_loop() -> None:
     assert _value_after(args, "--ctx-size") == "131072"
     assert _value_after(args, "--parallel") == "1"
     assert "--kv-unified" not in args
-    assert _value_after(args, "--load-mode") == "mlock"
+    assert _value_after(args, "--load-mode") == "mmap"
+    assert _value_after(args, "--lazy-mode") == "on"
     assert "--tools" not in args
 
 
@@ -241,7 +242,7 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
     preset = (tmp_path / ".runtime/models.ini").read_text()
     assert f"parallel = {role_slots + 1}" in preset
     assert f"ctx-size = {pool}" in preset
-    for line in ("kv-unified = true", "load-mode = mlock", "cache-ram = 256",
+    for line in ("kv-unified = true", "load-mode = mmap", "lazy-mode = on", "cache-ram = 256",
                  "ctx-checkpoints = 2", "n-gpu-layers = auto", "fit = on"):
         assert line in preset
     assert manager.agent_slot == manager.chat.slot_id == role_slots
@@ -335,7 +336,8 @@ def test_manual_device_split_disables_automatic_fitting(gpu_layers):
     assert _value_after(args, "--ctx-size") == "98304"
     assert _value_after(args, "--fit") == "off"
     assert "--fit-ctx" not in args and "--fit-target" not in args
-    assert _value_after(args, "--load-mode") == "mlock"
+    assert _value_after(args, "--load-mode") == "mmap"
+    assert _value_after(args, "--lazy-mode") == "on"
 
 
 def test_automatic_device_fitting_preserves_large_context_and_cache_precision():
@@ -371,12 +373,13 @@ def test_character_server_gets_two_slots_and_lora() -> None:
         slots=2,
     )
 
-    # One pool both slots draw from, the model locked in RAM, the prompt
+    # One pool both slots draw from, the model mapped from its file, the prompt
     # cache bounded in every mode (upstream keeps 8 GiB and 32 checkpoints).
     assert _value_after(args, "--ctx-size") == "32768"
     assert _value_after(args, "--parallel") == "2"
     assert "--kv-unified" in args
-    assert _value_after(args, "--load-mode") == "mlock"
+    assert _value_after(args, "--load-mode") == "mmap"
+    assert _value_after(args, "--lazy-mode") == "on"
     assert _value_after(args, "--cache-ram") == "256"
     assert _value_after(args, "--ctx-checkpoints") == "2"
     # Both adapters loaded, none applied unless a request names it.

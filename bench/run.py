@@ -156,10 +156,6 @@ class Server:
             threads=8, gpu_layers=99, low_vram=config.get("low_vram", True),
             lora_paths=[(MODELS / config["lora"]).resolve()] if config.get("lora") else (),
         )
-        # Bench-only: the dev box is shared and teachers are larger than its
-        # 16 GiB lock limit, so the model is not locked in RAM here.
-        at = args.index("--load-mode")
-        del args[at:at + 2]
         # Bench-only: N agents share one server; each slot keeps the full window.
         args[args.index("--parallel") + 1] = str(parallel)
         args[args.index("--ctx-size") + 1] = str(config["context_size"] * parallel)

@@ -70,8 +70,15 @@ def build_server_args(
     """Build the one canonical llama-server command for every core mode.
 
     `context_size` is one pool all slots share (the character's and the
-    Agent's turns take what they need from it). Request locked model pages;
-    the OS can still reject locking when physical memory is insufficient."""
+    Agent's turns take what they need from it). The weights are mapped from
+    the file, not copied or locked: under memory pressure the OS drops their
+    pages and reads them back, never writing them to the page file. E4B's
+    per-layer embeddings (1.5 GiB) are read a row at a time as tokens need
+    them. With the laptop's split (24 of 43 layers on the GPU, 128K, both
+    adapters, two requests served) the server held 2,994 MiB of RAM, 1,515 MiB
+    of it file pages the OS can drop; locked loading held 4,503 MiB, more
+    than the 8 GB laptop could lock, and the load died (dev box, 2026-10-07).
+    The vision projector, when loaded, adds about 0.55 GB."""
     if slots not in (1, 2, 3):
         raise ValueError("slots must be 1, 2 or 3")
     args = [
@@ -92,7 +99,9 @@ def build_server_args(
         str(slots),
         "--jinja",
         "--load-mode",
-        "mlock",
+        "mmap",
+        "--lazy-mode",
+        "on",
         "--cache-ram",
         str(PROMPT_CACHE_MIB),
         "--ctx-checkpoints",
