@@ -18,6 +18,10 @@ either. HELD_OUT repositories are never cut into the training folder, and no
 repository with training tasks is cut into another folder: what the model is
 tested on, it never trained on.
 
+--hide-tests makes issue tasks: the failing tests are taken out of the
+workspace (the grader puts them back from hidden/), so the request is all
+there is, as in a bug report; the agent has to reproduce the problem itself.
+
 A repository whose own suite already fails a few tests still gives tasks:
 those failures are its baseline, a candidate counts only the tests it newly
 breaks, and a candidate whose failing test files hold a baseline failure is
@@ -194,7 +198,8 @@ def run_tests(repo: Path, rel: str, text: str | None, timeout: int = 300) -> dic
                 line for line in out.splitlines() if line.startswith(("E ", "FAILED")))[:1500]}
 
 
-def cut(names: list[str], per_repo: int, seed: int, workers: int, tasks: Path) -> None:
+def cut(names: list[str], per_repo: int, seed: int, workers: int, tasks: Path,
+        hide_tests: bool = False) -> None:
     rng = random.Random(seed)
     tasks.mkdir(parents=True, exist_ok=True)
     training = tasks.resolve() == TASKS.resolve()
@@ -234,14 +239,38 @@ def cut(names: list[str], per_repo: int, seed: int, workers: int, tasks: Path) -
                             or {t.split("::")[0] for t in result["failed"]} & broken_files:
                         continue
                     made[kind] += 1
-                    write_task(name, base, candidate, result, tests, repo, tasks)
+                    write_task(name, base, candidate, result, tests, repo, tasks, hide_tests)
         print(f"{name}: {made} from {index} candidates", flush=True)
 
 
+def without_tests(text: str, names: set[str]) -> str:
+    """A test module minus the named test functions (a class left with no
+    statements keeps a `pass`)."""
+    tree = ast.parse(text)
+    lines = text.splitlines()
+    spans: list[tuple[int, int, str]] = []  # first line, last line, replacement
+
+    def visit(body: list[ast.stmt]) -> None:
+        doomed = [n for n in body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in names]
+        for index, node in enumerate(doomed):
+            first = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+            keep_pass = len(doomed) == len(body) and index == 0
+            spans.append((first, node.end_lineno or node.lineno, " " * node.col_offset + "pass" if keep_pass else ""))
+        for node in body:
+            if isinstance(node, ast.ClassDef):
+                visit(node.body)
+
+    visit(tree.body)
+    for first, last, replacement in sorted(spans, reverse=True):
+        lines[first - 1:last] = [replacement] if replacement else []
+    return "\n".join(lines) + "\n"
+
+
 def write_task(name: str, base: str, candidate: dict, result: dict, tests: list[str],
-               repo: Path, tasks: Path) -> None:
+               repo: Path, tasks: Path, hide_tests: bool = False) -> None:
     digest = hashlib.sha256(candidate["text"].encode("utf-8")).hexdigest()[:8]
-    task_id = f"{name}-{candidate['kind']}-{candidate['function']}-{digest}"
+    variant = "issue-" if hide_tests else ""
+    task_id = f"{name}-{variant}{candidate['kind']}-{candidate['function']}-{digest}"
     task_dir = tasks / task_id
     if task_dir.exists():
         shutil.rmtree(task_dir)
@@ -250,12 +279,24 @@ def write_task(name: str, base: str, candidate: dict, result: dict, tests: list[
     (task_dir / "solution" / candidate["file"]).parent.mkdir(parents=True)
     shutil.copyfile(repo / candidate["file"], task_dir / "solution" / candidate["file"])
     files = sorted({test.split("::")[0] for test in result["failed"]})
+    sources = []
+    if hide_tests:
+        names = {re.sub(r"\[.*$", "", test.split("::")[-1]) for test in result["failed"]}
+        for rel in files:
+            text = (repo / rel).read_text(encoding="utf-8")
+            (task_dir / "hidden" / rel).parent.mkdir(parents=True, exist_ok=True)
+            (task_dir / "hidden" / rel).write_text(text, encoding="utf-8")
+            (task_dir / "workspace" / rel).parent.mkdir(parents=True, exist_ok=True)
+            (task_dir / "workspace" / rel).write_text(without_tests(text, names), encoding="utf-8")
+            sources += [ast.get_source_segment(text, node) or "" for node in ast.walk(ast.parse(text))
+                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names]
     task = {
-        "kind": "train-" + candidate["kind"], "repo": name, "base": base, "git": True,
+        "kind": f"train-{variant}{candidate['kind']}", "repo": name, "base": base, "git": True,
         "image": IMAGE, "prompt": "",
         "spec": {"kind": candidate["kind"], "file": candidate["file"],
                  "function": candidate["function"], "operator": candidate["operator"],
-                 "failing_tests": result["failed"], "error_excerpt": result["excerpt"]},
+                 "failing_tests": result["failed"], "error_excerpt": result["excerpt"],
+                 "hidden_tests": hide_tests, "test_sources": [s[:1500] for s in sources[:3]]},
         "keep": tests, "check": ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider",
                                  "-o", "addopts=", *files],
         "timeout_s": 1200,
@@ -277,6 +318,24 @@ def describe_prompt(task: dict, style: str) -> str:
     spec = task["spec"]
     what = ("這個函式的實作被拿掉了，要請助理依照函式名稱、docstring 和測試把它實作出來"
             if spec["kind"] == "implement" else "這個函式有一個 bug，導致下面的測試失敗")
+    if spec.get("hidden_tests"):
+        tests = "\n\n".join(spec.get("test_sources") or [])
+        return f"""題目規格：
+- 專案：{task["repo"]}（Python 開源函式庫）
+- 檔案：{spec["file"]}
+- 函式：{spec["function"]}
+- 狀況：{what}；使用者手上沒有這些測試，只看到行為不對
+- 會抓到問題的測試（使用者看不到，只讓你知道正確行為）：
+{tests[:2000]}
+- 錯誤訊息節錄：
+{spec["error_excerpt"][:600]}
+
+寫法：{style}。
+規則：
+1. 像回報 bug：說他怎麼呼叫、預期得到什麼、實際得到什麼（或要實作什麼行為）。不要說出要怎麼修、錯在哪一行或正確的程式碼。
+2. 不要提測試的名字或測試檔；可以提函式名或模組。不要提到「題目」「規格」「練習」「測試」。
+3. 一到四句，不要用條列。
+只輸出 JSON：{{"request": "..."}}"""
     return f"""題目規格：
 - 專案：{task["repo"]}（Python 開源函式庫）
 - 檔案：{spec["file"]}
@@ -328,6 +387,9 @@ def describe(url: str, workers: int, seed: int, tasks: Path) -> None:
         if not 8 <= len(text) <= 400 or any(
                 len(line.strip()) > 12 and line.strip() in text for line in changed):
             return False
+        # An issue task's asker has no tests: a request naming them is not one.
+        if task["spec"].get("hidden_tests") and re.search(r"test_\w+|測試|tests?/", text):
+            return False
         task["prompt"] = text
         task["prompt_style"] = style
         path.write_text(json.dumps(task, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
@@ -358,11 +420,12 @@ def main() -> None:
     d.add_argument("--seed", type=int, default=3)
     for command in (c, d):
         command.add_argument("--tasks-dir", type=Path, default=TASKS)
+    c.add_argument("--hide-tests", action="store_true", help="issue tasks: the failing tests are hidden")
     args = parser.parse_args()
     if args.command == "describe":
         describe(args.url, args.workers, args.seed, args.tasks_dir)
     if args.command == "cut":
-        cut(args.repos.split(","), args.per_repo, args.seed, args.workers, args.tasks_dir)
+        cut(args.repos.split(","), args.per_repo, args.seed, args.workers, args.tasks_dir, args.hide_tests)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,10 @@ which functions to change, and their new code. Several versions are sampled
 and only the tests decide; when none passes, the closest one's new error
 goes back to the model.
 
+When nothing fails yet (a bug report with no test), the model first writes a
+test that reproduces the report; the host keeps it only if it fails on the
+code as it is, for a reason in the code rather than in the test itself.
+
 Python repositories tested with pytest, for now.
 """
 
@@ -33,6 +37,10 @@ SKIP_DIRS = {".git", ".venv", "venv", "env", "node_modules", "site-packages", "b
 TEST_TIMEOUT = 300
 MAX_CANDIDATES = 8
 MAX_CHOSEN = 2
+REPRO_NAME = "test_issue_repro.py"
+# A reproduction that fails for these reasons is broken itself.
+_BROKEN_TEST = re.compile(r"ImportError|ModuleNotFoundError|SyntaxError|IndentationError|"
+                          r"fixture '[^']+' not found|NameError: name '[^']+' is not defined")
 
 
 @dataclass
@@ -267,6 +275,72 @@ def _signature(item: Definition) -> str:
     return " ".join(signature)
 
 
+def repro_prompt(request: str, related: list[Definition], example: str) -> str:
+    code = "\n\n".join(f"# {d.file}  {d.name}\n{textwrap.dedent(d.source)}"[:2500] for d in related)
+    return f"""使用者回報的問題：
+{request}
+
+相關的程式（現在的樣子）：
+{_fence(code) if code else "（請求沒有提到函式名稱）"}
+
+這個專案現有測試的開頭（照它的 import 方式寫）：
+{_fence(example)}
+
+寫一個 pytest 測試檔，重現使用者說的問題：
+- 在現在的程式上要失敗，問題修好之後要通過。
+- 只測使用者描述的行為，用 assert 寫出正確的預期結果；不要用 mock 取代被測的程式。
+只輸出一個 ```python 區塊（完整的測試檔）。"""
+
+
+def related_to(request: str, defs: list[Definition], limit: int = 3) -> list[Definition]:
+    """The functions a report names, or those of the modules it names."""
+    words = set(re.findall(r"[A-Za-z_]\w+", request))
+    named = [d for d in defs if d.short in words or d.name in request]
+    if not named:
+        modules = {Path(d.file).stem for d in defs} & words
+        named = [d for d in defs if Path(d.file).stem in modules and not d.short.startswith("_")]
+    return named[:limit]
+
+
+def test_example(root: Path, test_files: list[str], related: list[Definition], lines: int = 20) -> str:
+    """The head of a test module that imports the code in question."""
+    modules = [Path(d.file).stem for d in related]
+    chosen = ""
+    for rel in test_files:
+        try:
+            text = (root / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not chosen and "def test" in text:
+            chosen = text
+        if any(re.search(rf"\b{re.escape(m)}\b", text[:3000]) for m in modules):
+            chosen = text
+            break
+    return "\n".join(chosen.splitlines()[:lines])
+
+
+def write_reproduction(root: Path, request: str, model: Model, defs: list[Definition],
+                       test_files: list[str], samples: int = 3) -> tuple[str, TestRun] | None:
+    """A test file of the model's that fails on the code as it is, or None."""
+    related = related_to(request, defs)
+    folder = next((d for d in ("tests", "test") if (root / d).is_dir()), "")
+    rel = f"{folder}/{REPRO_NAME}" if folder else REPRO_NAME
+    prompt = repro_prompt(request, related, test_example(root, test_files, related))
+    for sample in range(samples):
+        code = code_block(model.chat(messages(prompt), temperature=0.0 if sample == 0 else 0.8,
+                                     max_tokens=1500))
+        try:
+            ast.parse(code)
+        except SyntaxError:
+            continue
+        (root / rel).write_text(code.rstrip() + "\n", encoding="utf-8")
+        run = run_tests(root, [rel])
+        if run.failed and not run.errors and not run.timed_out and not _BROKEN_TEST.search(run.output):
+            return rel, run
+        (root / rel).unlink()
+    return None
+
+
 def choose_prompt(request: str, failure: str, tests: list[str], listed: list[tuple[Definition, str]]) -> str:
     rows = "\n".join(f"{n}. {item.file}  {item.name}  — {why}\n   {_signature(item)}"
                      for n, (item, why) in enumerate(listed, 1))
@@ -467,10 +541,21 @@ def solve(root: Path, request: str, model: Model, *, samples: int = 4, rounds: i
     started = time.monotonic()
     setup = reproduce(root, request)
     trace: list[dict] = [{"step": "reproduce", "targets": setup.targets, "failed": setup.first.failed[:20]}]
+    added: list[str] = []
     if not setup.goal:
-        return Result("no_failure", "沒有重現出失敗的測試，無法用測試確認修改；沒有改任何檔案。",
-                      trace=trace)
+        test_files = [f for f in python_files(root) if is_test(f)]
+        written = write_reproduction(root, request, model, setup.defs, test_files)
+        trace.append({"step": "write_reproduction", "kept": bool(written)})
+        if written is None:
+            return Result("no_failure", "現有測試都通過，也寫不出能重現問題的測試，無法用測試確認修改；"
+                          "沒有改任何檔案。", trace=trace)
+        rel, run = written
+        added = [rel]
+        tests = [t for t in (test_source(root, test_id) for test_id in run.failed[:3]) if t]
+        setup = Setup([rel], run, run.failed[:10], tests, setup.defs,
+                      candidates(setup.defs, run.output, tests, request))
     if not setup.listed:
+        _remove(root, added)
         return Result("unsolved", "找不到和失敗測試相關的函式；沒有改任何檔案。", trace=trace)
     reply = model.chat(messages(choose_prompt(request, setup.first.output, setup.tests, setup.listed)),
                        max_tokens=200)
@@ -507,7 +592,8 @@ def solve(root: Path, request: str, model: Model, *, samples: int = 4, rounds: i
                 if not new:
                     log(f"solved in round {round_number}, sample {sample + 1}")
                     edited = [d for d in chosen if d.source not in texts.get(d.file, "")]
-                    return Result("solved", _report(goal, edited or chosen, whole), sorted(texts), round_number,
+                    return Result("solved", _report(goal, edited or chosen, whole, added),
+                                  sorted([*texts, *added]), round_number,
                                   attempts, model.calls, dict(model.tokens), trace)
                 left, check = new, whole
             if best is None or len(left) < best[0]:
@@ -517,6 +603,7 @@ def solve(root: Path, request: str, model: Model, *, samples: int = 4, rounds: i
         if deadline is not None and time.monotonic() > deadline:
             break
     trace.append({"step": "give_up", "seconds": round(time.monotonic() - started, 1)})
+    _remove(root, added)
     return Result("unsolved", f"試了 {attempts} 個版本都沒讓測試全部通過；檔案已還原，沒有留下修改。",
                   [], rounds, attempts, model.calls, dict(model.tokens), trace)
 
@@ -529,7 +616,15 @@ def _helpers(defs: list[Definition], chosen: list[Definition], limit: int = 3) -
     return found[:limit]
 
 
-def _report(goal: list[str], chosen: list[Definition], whole: TestRun) -> str:
+def _remove(root: Path, files: list[str]) -> None:
+    for rel in files:
+        (root / rel).unlink(missing_ok=True)
+
+
+def _report(goal: list[str], chosen: list[Definition], whole: TestRun, added: list[str] = ()) -> str:
     where = "、".join(f"{item.file} 的 {item.name}" for item in chosen)
     still = f"；整套測試還有 {len(whole.failed)} 個原本就失敗的" if whole.failed else "；整套測試都通過"
+    if added:
+        return (f"先寫了重現問題的測試 {'、'.join(added)}（在原本的程式上失敗），再改了 {where}。"
+                f"這 {len(goal)} 個測試現在都通過{still}。")
     return f"改了 {where}。原本失敗的 {len(goal)} 個測試現在都通過{still}。"

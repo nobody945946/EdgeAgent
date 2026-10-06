@@ -51,11 +51,12 @@ def add(self, item, count=1):
 
 
 class FakeModel:
-    """Answers the choice with the listed method and the repair with
-    `replies` in turn."""
+    """Answers the choice with the listed method, a reproduction request
+    with `tests` in turn and the repair with `replies` in turn."""
 
-    def __init__(self, replies: list[str]):
+    def __init__(self, replies: list[str], tests: list[str] = ()):
         self.replies = list(replies)
+        self.tests = list(tests)
         self.prompts: list[str] = []
         self.calls = 0
         self.tokens = {"input": 0, "output": 0}
@@ -67,6 +68,8 @@ class FakeModel:
         if "只輸出 JSON" in prompt:
             number = next(line.split(".")[0] for line in prompt.splitlines() if "Basket.add" in line)
             return f'{{"edit": [{number}]}}'
+        if "寫一個 pytest 測試檔" in prompt:
+            return self.tests.pop(0)
         return self.replies.pop(0)
 
 
@@ -103,11 +106,36 @@ def test_nothing_is_left_changed_when_no_version_passes(tmp_path: Path) -> None:
     assert "上一次改過之後" in model.prompts[-1]  # the second round sees the new error
 
 
-def test_no_failing_test_means_no_change(tmp_path: Path) -> None:
+REPRO = """```python
+from shop.lib import Basket
+
+
+def test_three_apples():
+    assert Basket().add("apple", 3) == 3
+```"""
+PASSES = REPRO.replace("== 3", ">= 0")
+BROKEN = REPRO.replace("from shop.lib import Basket", "from shop.nowhere import Basket")
+
+
+def test_a_report_without_tests_gets_a_reproduction_first(tmp_path: Path) -> None:
+    """The failing test is not there (a bug report): the model's test is kept
+    only when it fails because of the code, then the usual repair runs."""
+    root = _repo(tmp_path)
+    (root / "tests" / "test_lib.py").write_text(TESTS.split("def test_add_counts")[0], encoding="utf-8")
+    model = FakeModel([FIXED], tests=[PASSES, BROKEN, REPRO])
+    result = coder.solve(root, "Basket 的 add 給 count=3 只加了兩個", model)
+    assert result.outcome == "solved"
+    assert result.changed == ["shop/lib.py", "tests/test_issue_repro.py"]
+    assert "先寫了重現問題的測試" in result.answer
+    assert "test_three_apples" in model.prompts[-1]  # the repair sees the reproduction
+
+
+def test_no_reproduction_means_no_change(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     (root / "shop" / "lib.py").write_text(LIB.replace("range(count - 1)", "range(count)"), encoding="utf-8")
-    result = coder.solve(root, "幫我看看 add", FakeModel([]))
+    result = coder.solve(root, "幫我看看 add", FakeModel([], tests=[PASSES, BROKEN, PASSES]))
     assert result.outcome == "no_failure" and result.changed == []
+    assert not (root / "tests" / "test_issue_repro.py").exists()
 
 
 def test_splice_places_helpers_and_imports(tmp_path: Path) -> None:
