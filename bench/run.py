@@ -82,6 +82,7 @@ def code_mounts(bridge: Path | None = None,
     mounts = [(product, "/opt/edgeagent/edge_agent", "ro"),
               (BENCH / "relay.py", "/opt/bench/relay.py", "ro"),
               (BENCH / "agent_runner.py", "/opt/bench/agent_runner.py", "ro"),
+              (BENCH / "coder_runner.py", "/opt/bench/coder_runner.py", "ro"),
               # Stand-in MCP servers (stock data, a drone) for tasks that enable them.
               (BENCH / "mcp_eval", "/opt/bench/mcp", "ro")]
     if bridge is not None:
@@ -353,15 +354,19 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
             # A task may set its own (an MCP task: no files, no shell, no web).
             "permissions": task.get("permissions", config.get("permissions")),
             "mcp_servers": task.get("mcp_servers"),
+            "coder": config.get("coder"),
             "timeout_s": timeout}
+    # runner "coder": the host-driven coder (edge_agent.coder) instead of the
+    # Agent's own loop, on the same tasks, sandbox and grader.
+    runner = "/opt/bench/coder_runner.py" if config.get("runner") == "coder" else "/opt/bench/agent_runner.py"
     name = f"eab-{config_name}-{job}".replace("_", "-")[:120]
     mounts, env, hosts = web_fixture(task_dir, task)
     command = sandbox(name, [(workspace, "/work", "rw"), (sock_dir, "/sock", "ro"),
                              *code_mounts(bridge, product), *mounts],
                       {"BENCH_SPEC": json.dumps(spec, ensure_ascii=False), **env},
                       ["sh", "-c", "python /opt/bench/web_fixture.py /web > /tmp/web.log 2>&1 & "
-                       "sleep 1; exec python /opt/bench/agent_runner.py"] if hosts
-                      else ["python", "/opt/bench/agent_runner.py"],
+                       f"sleep 1; exec python {runner}"] if hosts
+                      else ["python", runner],
                       image=task.get("image", IMAGE), hosts=hosts)
     started = time.monotonic()
     try:

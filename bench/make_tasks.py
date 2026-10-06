@@ -11,6 +11,10 @@ set is in range, with no collection errors, become tasks. The request text is
 written later by an open-weight teacher from the stored spec (`describe`).
 
     python bench/make_tasks.py cut --repos boltons,parse --per-repo 120
+    python bench/make_tasks.py cut --repos attrs,toolz --tasks-dir .runtime/agentdata/eval-tasks
+
+Held-out tasks (repositories no training task is cut from) go to their own
+--tasks-dir; `run.py --task-root` reads either.
 """
 
 from __future__ import annotations
@@ -178,9 +182,9 @@ def run_tests(repo: Path, rel: str, text: str | None, timeout: int = 300) -> dic
                 line for line in out.splitlines() if line.startswith(("E ", "FAILED")))[:1500]}
 
 
-def cut(names: list[str], per_repo: int, seed: int, workers: int) -> None:
+def cut(names: list[str], per_repo: int, seed: int, workers: int, tasks: Path) -> None:
     rng = random.Random(seed)
-    TASKS.mkdir(parents=True, exist_ok=True)
+    tasks.mkdir(parents=True, exist_ok=True)
     for name in names:
         repo = REPOS / name
         base = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True,
@@ -209,15 +213,15 @@ def cut(names: list[str], per_repo: int, seed: int, workers: int) -> None:
                     if made[kind] >= wanted[kind] or result["errors"] or not 1 <= len(result["failed"]) <= limit:
                         continue
                     made[kind] += 1
-                    write_task(name, base, candidate, result, tests, repo)
+                    write_task(name, base, candidate, result, tests, repo, tasks)
         print(f"{name}: {made} from {index} candidates", flush=True)
 
 
 def write_task(name: str, base: str, candidate: dict, result: dict, tests: list[str],
-               repo: Path) -> None:
+               repo: Path, tasks: Path) -> None:
     digest = hashlib.sha256(candidate["text"].encode("utf-8")).hexdigest()[:8]
     task_id = f"{name}-{candidate['kind']}-{candidate['function']}-{digest}"
-    task_dir = TASKS / task_id
+    task_dir = tasks / task_id
     if task_dir.exists():
         shutil.rmtree(task_dir)
     (task_dir / "workspace" / candidate["file"]).parent.mkdir(parents=True)
@@ -269,12 +273,12 @@ def describe_prompt(task: dict, style: str) -> str:
 只輸出 JSON：{{"request": "..."}}"""
 
 
-def describe(url: str, workers: int, seed: int) -> None:
+def describe(url: str, workers: int, seed: int, tasks: Path) -> None:
     """Fill each task's prompt with a request written by an open-weight
     teacher; the spec itself never reaches the agent."""
     rng = random.Random(seed)
     pending = []
-    for path in sorted(TASKS.glob("*/task.json")):
+    for path in sorted(tasks.glob("*/task.json")):
         task = json.loads(path.read_text(encoding="utf-8"))
         if not task.get("prompt"):
             pending.append((path, task, rng.choice(STYLES)))
@@ -331,11 +335,13 @@ def main() -> None:
     d.add_argument("--url", required=True, help="teacher llama-server base URL")
     d.add_argument("--workers", type=int, default=4)
     d.add_argument("--seed", type=int, default=3)
+    for command in (c, d):
+        command.add_argument("--tasks-dir", type=Path, default=TASKS)
     args = parser.parse_args()
     if args.command == "describe":
-        describe(args.url, args.workers, args.seed)
+        describe(args.url, args.workers, args.seed, args.tasks_dir)
     if args.command == "cut":
-        cut(args.repos.split(","), args.per_repo, args.seed, args.workers)
+        cut(args.repos.split(","), args.per_repo, args.seed, args.workers, args.tasks_dir)
 
 
 if __name__ == "__main__":
