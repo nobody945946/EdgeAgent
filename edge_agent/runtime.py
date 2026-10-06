@@ -67,8 +67,8 @@ def build_server_args(
     """Build the one canonical llama-server command for every core mode.
 
     `context_size` is one pool all slots share (the character's and the
-    Agent's turns take what they need from it). The model stays locked in
-    RAM: never swapped to disk."""
+    Agent's turns take what they need from it). Request locked model pages;
+    the OS can still reject locking when physical memory is insufficient."""
     if slots not in (1, 2, 3):
         raise ValueError("slots must be 1, 2 or 3")
     args = [
@@ -101,6 +101,10 @@ def build_server_args(
         # Upstream owns device-memory fitting. Explicit context plus fit-ctx
         # preserves the chosen window while weights can move to CPU.
         args += ["--fit", "on", "--fit-ctx", str(context_size), "--fit-target", "512"]
+    else:
+        # Explicit GPU layers own the split; remaining layers run on CPU.
+        # Do not allow upstream's default fitter to alter a manual placement.
+        args += ["--fit", "off"]
     if lora_path is not None:
         args += ["--lora", str(lora_path)]
     if projector_path is not None:

@@ -317,6 +317,19 @@ def test_multimodal_projector_uses_canonical_server_and_low_vram_policy():
     assert _value_after(args, "--parallel") == "1"
 
 
+@pytest.mark.parametrize("gpu_layers", [0, 33, 99])
+def test_manual_device_split_disables_automatic_fitting(gpu_layers):
+    args = runtime.build_server_args(
+        "llama-server", Path("base.gguf"), port=runtime.GENERAL_PORT,
+        context_size=98304, threads=4, gpu_layers=gpu_layers, low_vram=True,
+    )
+    assert _value_after(args, "--n-gpu-layers") == str(gpu_layers)
+    assert _value_after(args, "--ctx-size") == "98304"
+    assert _value_after(args, "--fit") == "off"
+    assert "--fit-ctx" not in args and "--fit-target" not in args
+    assert _value_after(args, "--load-mode") == "mlock"
+
+
 def test_automatic_device_fitting_preserves_large_context_and_cache_precision():
     args = runtime.build_server_args(
         "llama-server",
