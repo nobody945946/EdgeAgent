@@ -257,5 +257,64 @@
    "temperature": 0.8
   },
   "lora": "coder-v1.q8_0.gguf"
+ },
+ "e4b-mini": {
+  "_note": "E4B in the mini-swe-agent harness (one bash tool, bench/mini_templates.json), the harness of the open trajectories; step limit 100.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": false,
+  "context_size": 98304,
+  "max_output_tokens": 8192,
+  "working_context_size": 98304,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "runner": "mini",
+  "mini": {
+   "temperature": 0.6,
+   "top_p": 0.95,
+   "step_limit": 100
+  }
+ },
+ "teacher-27b-mini": {
+  "_note": "The 27B teacher in the same mini-swe-agent harness: the ceiling of the harness on the held-out tasks, and its passing runs are rows.",
+  "model": "../teacher/Qwen3.6-27B-UD-IQ3_XXS.gguf",
+  "vision": false,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 32768,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 13500,
+  "vram_slot_mib": 2100,
+  "search_tools": true,
+  "runner": "mini",
+  "mini": {
+   "temperature": 0.6,
+   "top_p": 0.95,
+   "step_limit": 100
+  }
+ },
+ "e4b-mini-cpu": {
+  "_note": "e4b-mini on the CPU only: a smoke run that never takes the shared GPU.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": false,
+  "context_size": 32768,
+  "max_output_tokens": 8192,
+  "working_context_size": 32768,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 0,
+  "vram_slot_mib": 0,
+  "search_tools": true,
+  "runner": "mini",
+  "mini": {
+   "temperature": 0.6,
+   "top_p": 0.95,
+   "step_limit": 40
+  },
+  "gpu_layers": 0,
+  "threads": 16
  }
 }
