@@ -195,6 +195,20 @@ async function uiRegression(){
   await setViewport({width:1280,height:850,deviceScaleFactor:1,mobile:false});
   await cdp('Page.navigate',{url:appOrigin+'/'});await wait('document.readyState==="complete"&&!!modelState?.active_model');
   await checkRecordingSettings();checks.push('local SSD recording setup, pause, resume and settings restoration');
+  await evaluate(`(()=>{const original=window.fetch;window.__restoreApprovalFetch=()=>{window.fetch=original;delete window.__restoreApprovalFetch};window.fetch=(url,...args)=>url==='/chat/approve'?Promise.resolve(new Response('{}')):original(url,...args)})()`);
+  try{
+    for(const [title,expected] of [
+      ['這個工具會做什麼（工具自己算出的計畫）','這個工具會做什麼（工具自己算出的計畫）'],
+      ['這個指令在做什麼（PowerShell 自己解析的結果，不是模型猜的）','這個指令在做什麼（PowerShell 自己解析的結果，不是模型猜的）'],
+      [null,'這個操作在做什麼（EdgeAgent 自己算出的，不是模型猜的）']
+    ]){
+      await evaluate(`window.__approvalPromise=approve(${JSON.stringify({tool:'fixture',call_id:'approval-title',arguments:{},explain:'測試計畫',...(title?{explain_title:title}:{})})});void 0`);
+      assert.equal(await evaluate('document.querySelector(".approval-card summary").textContent'),expected,'approval uses the payload title or generic fallback');
+      await click('.approval-card button:last-child');await evaluate('window.__approvalPromise');
+      await evaluate('document.querySelector(".approval-card").remove();delete window.__approvalPromise');
+    }
+  }finally{await evaluate('window.__restoreApprovalFetch()')}
+  checks.push('approval explanation titles follow tool payloads and generic fallback');
   const menu=async()=>{if(!await evaluate('actionsMenu.open'))await click('#actions-menu>summary')};
   await menu();await click('#export-chat');
   assert(await evaluate('chat.textContent.includes("沒有可匯出的訊息")'),'empty export explains why');
