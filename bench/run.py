@@ -146,7 +146,8 @@ class Server:
         # product loads one: applied to every request.
         args = build_server_args(
             str(SERVER), model, port=port, context_size=config["context_size"],
-            threads=8, gpu_layers=99, low_vram=config.get("low_vram", True),
+            threads=config.get("threads", 8), gpu_layers=config.get("gpu_layers", 99),
+            low_vram=config.get("low_vram", True),
             lora_path=(MODELS / config["lora"]).resolve() if config.get("lora") else None,
         )
         # Bench-only: the dev box is shared and teachers are larger than its

@@ -216,5 +216,26 @@
    "rounds": 3,
    "temperature": 0.8
   }
+ },
+ "e4b-coder-cpu": {
+  "_note": "e4b-coder on the CPU only (gpu_layers 0): a smoke run that never takes the shared GPU.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": false,
+  "context_size": 32768,
+  "max_output_tokens": 8192,
+  "working_context_size": 32768,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 0,
+  "vram_slot_mib": 0,
+  "search_tools": true,
+  "runner": "coder",
+  "coder": {
+   "samples": 4,
+   "rounds": 3,
+   "temperature": 0.8
+  },
+  "gpu_layers": 0,
+  "threads": 16
  }
 }

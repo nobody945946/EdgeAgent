@@ -426,47 +426,69 @@ def _add_imports(text: str, imports: list[str]) -> str:
 # ---------------------------------------------------------------- the loop
 
 
-def solve(root: Path, request: str, model: Model, *, samples: int = 4, rounds: int = 3,
-          temperature: float = 0.8, deadline: float | None = None,
-          log: Callable[[str], None] = lambda _: None) -> Result:
-    """Make the failing tests the request is about pass, changing only
-    functions outside the tests. The answer reports only what the host saw."""
-    started = time.monotonic()
+@dataclass
+class Setup:
+    """What the host found before asking the model anything."""
+
+    targets: list[str]  # the tests the request names (empty: the whole suite)
+    first: TestRun  # the reproduction
+    goal: list[str]  # the failing tests to fix
+    tests: list[str]  # their sources
+    defs: list[Definition]
+    listed: list[tuple[Definition, str]]  # the candidates shown to the model
+
+
+def reproduce(root: Path, request: str) -> Setup:
+    """Run the tests the request names (or all of them) and list the
+    functions the failure runs through."""
     files = python_files(root)
     test_files = [f for f in files if is_test(f)]
     defs = definitions(root, [f for f in files if not is_test(f)])
     targets = test_targets(request, root, test_files)
     first = run_tests(root, targets)
     if not first.failed and targets:
-        first = run_tests(root, [])
-        targets = []
-    trace: list[dict] = [{"step": "reproduce", "targets": targets, "failed": first.failed[:20]}]
-    if not first.failed:
+        first, targets = run_tests(root, []), []
+    goal = first.failed[:10]
+    tests = [t for t in (test_source(root, test_id) for test_id in goal[:3]) if t]
+    listed = candidates(defs, first.output, tests, request) if goal else []
+    return Setup(targets, first, goal, tests, defs, listed)
+
+
+def messages(prompt: str) -> list[dict]:
+    """A step's request as the model gets it (training rows use the same)."""
+    return [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
+
+
+def solve(root: Path, request: str, model: Model, *, samples: int = 4, rounds: int = 3,
+          temperature: float = 0.8, deadline: float | None = None,
+          log: Callable[[str], None] = lambda _: None) -> Result:
+    """Make the failing tests the request is about pass, changing only
+    functions outside the tests. The answer reports only what the host saw."""
+    started = time.monotonic()
+    setup = reproduce(root, request)
+    trace: list[dict] = [{"step": "reproduce", "targets": setup.targets, "failed": setup.first.failed[:20]}]
+    if not setup.goal:
         return Result("no_failure", "沒有重現出失敗的測試，無法用測試確認修改；沒有改任何檔案。",
                       trace=trace)
-    goal = first.failed[:10]
-    test_texts = [t for t in (test_source(root, test_id) for test_id in goal[:3]) if t]
-    listed = candidates(defs, first.output, test_texts, request)
-    if not listed:
+    if not setup.listed:
         return Result("unsolved", "找不到和失敗測試相關的函式；沒有改任何檔案。", trace=trace)
-    reply = model.chat([{"role": "system", "content": SYSTEM},
-                        {"role": "user", "content": choose_prompt(request, first.output, test_texts, listed)}],
+    reply = model.chat(messages(choose_prompt(request, setup.first.output, setup.tests, setup.listed)),
                        max_tokens=200)
-    chosen = [listed[i][0] for i in parse_choice(reply, len(listed))] or [listed[0][0]]
-    trace.append({"step": "choose", "listed": [f"{d.file}:{d.name}" for d, _ in listed],
+    chosen = [setup.listed[i][0] for i in parse_choice(reply, len(setup.listed))] or [setup.listed[0][0]]
+    trace.append({"step": "choose", "listed": [f"{d.file}:{d.name}" for d, _ in setup.listed],
                   "chosen": [f"{d.file}:{d.name}" for d in chosen]})
     originals = {item.file: (root / item.file).read_text(encoding="utf-8") for item in chosen}
+    goal, first = setup.goal, setup.first
     best: tuple[int, str] | None = None  # failures left, their output
     attempts = 0
     for round_number in range(1, rounds + 1):
-        helpers = _helpers(defs, chosen)
-        prompt = repair_prompt(request, first.output, test_texts, chosen, helpers,
+        prompt = repair_prompt(request, first.output, setup.tests, chosen, _helpers(setup.defs, chosen),
                                previous=best[1] if best else "")
         for sample in range(samples):
             if deadline is not None and time.monotonic() > deadline:
                 break
             attempts += 1
-            reply = model.chat([{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
+            reply = model.chat(messages(prompt),
                                temperature=0.0 if sample == 0 and round_number == 1 else temperature,
                                max_tokens=3000)
             texts = splice(root, chosen, code_block(reply))
@@ -475,8 +497,8 @@ def solve(root: Path, request: str, model: Model, *, samples: int = 4, rounds: i
                 continue
             for file, text in texts.items():
                 (root / file).write_text(text, encoding="utf-8")
-            check = run_tests(root, sorted({t.split("::")[0] for t in goal} | set(targets)))
-            left = [t for t in goal if t in check.broken] + [t for t in check.failed if t not in goal]
+            check = run_tests(root, sorted({t.split("::")[0] for t in goal} | set(setup.targets)))
+            left = check.failed
             trace.append({"step": "repair", "round": round_number, "left": len(left),
                           "errors": check.errors})
             if not left and not check.errors and not check.timed_out:
@@ -484,11 +506,10 @@ def solve(root: Path, request: str, model: Model, *, samples: int = 4, rounds: i
                 new = sorted(whole.broken - first.broken) if not whole.timed_out else []
                 if not new:
                     log(f"solved in round {round_number}, sample {sample + 1}")
-                    changed = sorted(texts)
-                    return Result("solved", _report(goal, chosen, whole), changed, round_number,
+                    edited = [d for d in chosen if d.source not in texts.get(d.file, "")]
+                    return Result("solved", _report(goal, edited or chosen, whole), sorted(texts), round_number,
                                   attempts, model.calls, dict(model.tokens), trace)
-                left = new
-                check = whole
+                left, check = new, whole
             if best is None or len(left) < best[0]:
                 best = (len(left), check.output)
             for file, text in originals.items():
