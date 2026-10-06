@@ -18,6 +18,7 @@ from pathlib import Path
 
 from edge_agent.runtime import (
     AGENT_ADAPTER,
+    CHARACTER_ADAPTER,
     CORE_ROOT,
     DEFAULT_MODEL,
     NODE_VERSION,
@@ -37,7 +38,8 @@ QWEN_MODEL_URL = (
 )
 QWEN_MODEL_SHA = "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
 # Adapters that ship with the code (edge_agent/adapters), by filename.
-ADAPTERS = {AGENT_ADAPTER: "45c3217ad78af8b370421ca6223d5bd6133fb566fbeba95257d8c783f8c333ca"}
+ADAPTERS = {AGENT_ADAPTER: "85b224ecec76572e2fb153b10d4b7d16f015bf69f0e6a63731a774c54e21566e",
+            CHARACTER_ADAPTER: "99ea1581f8f1f0e0f46d6da9b04d444b941c6395b93343b173073e6ade6d29d9"}
 PROJECTOR_ASSETS = {
     DEFAULT_MODEL: (
         "gemma4",
