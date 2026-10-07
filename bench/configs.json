@@ -94,19 +94,6 @@
   "search_tools": true,
   "lora": "agent-fw2.q8_0.gguf"
  },
- "teacher-27b": {
-  "_note": "Teacher for Agent trajectories: Qwen3.6-27B IQ3_XXS dense, all on GPU, 64K per slot (the student works at a 32K target). Dev box only; never a laptop model.",
-  "model": "../teacher/Qwen3.6-27B-UD-IQ3_XXS.gguf",
-  "vision": false,
-  "context_size": 65536,
-  "max_output_tokens": 8192,
-  "working_context_size": 32768,
-  "effort": "off",
-  "low_vram": true,
-  "vram_base_mib": 13500,
-  "vram_slot_mib": 2100,
-  "search_tools": true
- },
  "e4b-mini": {
   "_note": "E4B in the mini-swe-agent harness (one bash tool, bench/mini_templates.json), the harness of the open trajectories; step limit 100.",
   "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
@@ -118,25 +105,6 @@
   "low_vram": true,
   "vram_base_mib": 6000,
   "vram_slot_mib": 2000,
-  "search_tools": true,
-  "runner": "mini",
-  "mini": {
-   "temperature": 0.6,
-   "top_p": 0.95,
-   "step_limit": 100
-  }
- },
- "teacher-27b-mini": {
-  "_note": "The 27B teacher in the same mini-swe-agent harness: the ceiling of the harness on the held-out tasks, and its passing runs are rows.",
-  "model": "../teacher/Qwen3.6-27B-UD-IQ3_XXS.gguf",
-  "vision": false,
-  "context_size": 65536,
-  "max_output_tokens": 8192,
-  "working_context_size": 32768,
-  "effort": "off",
-  "low_vram": true,
-  "vram_base_mib": 13500,
-  "vram_slot_mib": 2100,
   "search_tools": true,
   "runner": "mini",
   "mini": {
