@@ -123,7 +123,8 @@ def records(run_dir: Path, task_root: Path) -> list[tuple[str, dict, dict]]:
     for line in (run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines():
         result = json.loads(line)
         task_file = task_root / result["task"] / "task.json"
-        if result.get("kind") != "scenario" or not task_file.is_file():
+        # A crash is the sandbox failing to report (run.py reruns it), not a conversation.
+        if result.get("kind") != "scenario" or result.get("outcome") == "crash" or not task_file.is_file():
             continue
         job = f"{result['task']}-r{result['rep']}"
         trajectory_file = run_dir / "traj" / f"{job}.json"
