@@ -1,0 +1,10 @@
+{
+ "kind": "chat",
+ "scope": "change",
+ "prompt": "我喜歡看台股，下次開新對話你還會記得嗎？",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ]
+}

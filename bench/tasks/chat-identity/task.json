@@ -1,0 +1,10 @@
+{
+ "kind": "chat",
+ "scope": "change",
+ "prompt": "你是誰？",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ]
+}

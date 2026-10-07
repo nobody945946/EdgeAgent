@@ -54,6 +54,32 @@
   "search_tools": true,
   "lora": "agent-fw1.q8_0.gguf"
  },
+ "e4b-laptop-base": {
+  "_note": "The laptop product as it runs from 2026-10-07 15:00: the laptop cleared the Agent adapter (agent-fw1 looped on ls for a greeting); E4B alone, 64K, thinking off.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true
+ },
+ "e4b-laptop-base-high": {
+  "_note": "e4b-laptop-base with thinking high.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true
+ },
  "e4b-product-agent-lora2": {
   "_note": "e4b-product with the second Agent adapter (agent-fw2: tool, scope and MCP tasks re-recorded in the final framework, plus repo tasks).",
   "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",

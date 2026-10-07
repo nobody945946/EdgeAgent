@@ -537,6 +537,13 @@ def main() -> None:
                           record_port=server.port if args.record else None,
                           simulator_sock=simulator.sock_dir if simulator is not None else None)
             row["revision"] = revision
+            # A model server that died mid-run (2026-10-07: another tenant took
+            # the GPU) fails every later job in seconds; those are not the
+            # model's results. Stop without recording: the next start resumes.
+            for name, owner in (("model", server), ("simulator", simulator)):
+                if owner is not None and owner.process.poll() is not None:
+                    raise SystemExit(f"the {name} server exited ({owner.process.returncode}) during the run; "
+                                     f"{row['task']} r{row['rep']} not recorded, rerun to resume")
             with lock, results.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             print(f"{row['task']} r{row['rep']}: {'PASS' if row['passed'] else 'fail'} "
