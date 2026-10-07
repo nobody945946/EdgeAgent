@@ -10,6 +10,7 @@ import { compactionSettings, searchHistory, historyReference } from './memory.mj
 import { webSearch, webFetch, webResearch, checkCitations, normalURL, urlsIn } from './web_tools.mjs';
 import { explicitApproval } from './shell_guard.mjs';
 import { rank, searchText, withServers } from './catalog.mjs';
+import { today, modelFacts } from './prompt_sections.mjs';
 
 const packageURL = new URL('../.runtime/pi/node_modules/@earendil-works/pi-coding-agent/dist/', import.meta.url);
 const sdk = await import(new URL('index.js', packageURL));
@@ -102,30 +103,6 @@ const mcpServerOf = toolName => {
   const found = mcpPrefixes.find(([prefix]) => toolName.startsWith(prefix));
   return found ? { name: found[1], ...mcpServers[found[1]] } : null;
 };
-
-// Today's date in this computer's time zone, e.g. "Today is 2026-10-05
-// (Monday), time zone Asia/Taipei (UTC+08:00). ..."
-function today(now = new Date()) {
-  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  const parts = options => Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: zone, ...options })
-    .formatToParts(now).map(({ type, value }) => [type, value]));
-  const { year, month, day, weekday } = parts({ year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long' });
-  const offset = parts({ timeZoneName: 'longOffset' }).timeZoneName.replace('GMT', 'UTC');
-  return `Today is ${year}-${month}-${day} (${weekday}), time zone ${zone} (${offset === 'UTC' ? 'UTC+00:00' : offset}). `
-    + 'Use this date for anything time-sensitive; never assume a date from training data.';
-}
-
-// What the model is and how its memory works, from the host's own settings:
-// without it a small local model describes itself as a cloud AI that needs a
-// data centre, promises to remember things next time, and says compaction is
-// invisible (owner's conversations, 2026-10-07).
-function modelFacts() {
-  const model = String(init.model_name || init.model || '').split(/[\\/]/).pop().replace(/\.gguf$/i, '');
-  return `你是在這台電腦上用 llama.cpp 執行的本機模型 ${model}，不是雲端服務。`
-    + `上下文視窗是 ${init.context_size} 個 token；對話太長時，主機會把較早的內容整理成摘要`
-    + '（聊天畫面會出現「已整理上下文」的提示），整理前的細節可能不見了。你看不到 token 用量。'
-    + '你沒有跨對話的記憶：開新對話就是空白的，所以不要答應下次還記得什麼。';
-}
 
 function policy(pi) {
   let turnApproved = false;
@@ -347,7 +324,7 @@ function policy(pi) {
     // The model cannot know the date and otherwise assumes one from its
     // training data. The date alone (no clock time) keeps the prompt prefix,
     // and llama.cpp's cache, unchanged until the day turns.
-    event.systemPromptOptions.sections = { ...event.systemPromptOptions.sections, today: today(), runtime: modelFacts() };
+    event.systemPromptOptions.sections = { ...event.systemPromptOptions.sections, today: today(), runtime: modelFacts(init) };
   });
   pi.on('before_provider_request', (event, ctx) => {
     const payload = { ...event.payload, cache_prompt: true, ...(init.agent ? { temperature: 0.2 } : {}) };
