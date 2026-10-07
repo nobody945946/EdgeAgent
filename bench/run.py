@@ -43,6 +43,7 @@ STATE = ROOT / ".runtime/bench"
 IMAGE = "edgeagent-bench:1"
 TRAIN_IMAGE = "edgeagent-train:1"
 VRAM_EXIT = 3  # gave up waiting for free VRAM
+REFIT_MIN = 30  # --fit-slots: minutes a run with fewer slots than asked keeps going
 SERVER = Path(os.environ.get(
     "BENCH_LLAMA_SERVER",
     "/home/clawd/SilentTalk/.runtime/tools/llama.cpp-b11193-src/build-cuda/bin/llama-server",
@@ -145,8 +146,26 @@ class Server:
     """llama-server for one configuration plus the host end of the relay."""
 
     def __init__(self, config: dict, run_dir: Path, parallel: int, port: int,
-                 vram_wait_min: float = 0) -> None:
+                 vram_wait_min: float = 0, fit_slots: bool = False) -> None:
         self.port = port
+        base, slot = config["vram_base_mib"], config["vram_slot_mib"]
+        give_up = time.monotonic() + vram_wait_min * 60 if vram_wait_min else None
+        # fit_slots: up to `parallel` slots, as many as the GPU holds now
+        # (another tenant's share changes by the hour); at least one.
+        while True:
+            free = free_vram_mib()
+            fits = min(parallel, (free - base) // slot) if fit_slots else parallel
+            if fits >= 1 and free >= base + slot * fits:
+                break
+            if give_up is not None and time.monotonic() > give_up:
+                # Another tenant kept the GPU: give the queue back instead of
+                # blocking it all night; the run resumes when started again.
+                raise SystemExit(VRAM_EXIT)
+            print(f"waiting for {base + slot * (1 if fit_slots else parallel)} MiB free VRAM (now {free})",
+                  flush=True)
+            time.sleep(30)
+        self.parallel = parallel = fits
+        need = base + slot * parallel  # weights and buffers, plus a full context window per slot
         # Relative to the student models folder; teachers live next to it.
         model = (MODELS / config["model"]).resolve()
         # An adapter (config "lora", next to the model) is loaded the way the
@@ -160,16 +179,6 @@ class Server:
         args[args.index("--parallel") + 1] = str(parallel)
         args[args.index("--ctx-size") + 1] = str(config["context_size"] * parallel)
         args += ["--fit", "off", *config.get("extra_args", [])]
-        # Weights and buffers, plus one full context window per parallel slot.
-        need = config["vram_base_mib"] + config["vram_slot_mib"] * parallel
-        give_up = time.monotonic() + vram_wait_min * 60 if vram_wait_min else None
-        while free_vram_mib() < need:
-            if give_up is not None and time.monotonic() > give_up:
-                # Another tenant kept the GPU: give the queue back instead of
-                # blocking it all night; the run resumes when started again.
-                raise SystemExit(VRAM_EXIT)
-            print(f"waiting for {need} MiB free VRAM (now {free_vram_mib()})", flush=True)
-            time.sleep(30)
         self.log = open(run_dir / "server.log", "ab")
         self.process = subprocess.Popen(args, stdout=self.log, stderr=subprocess.STDOUT)
         deadline = time.monotonic() + 600
@@ -485,6 +494,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=18189)
     parser.add_argument("--vram-wait", type=float, default=0,
                         help=f"minutes to wait for free VRAM, then exit {VRAM_EXIT} (0: forever)")
+    parser.add_argument("--fit-slots", action="store_true",
+                        help="--parallel is the most: start with as many slots as fit now; with fewer, "
+                             f"hand back after {REFIT_MIN} minutes (exit {VRAM_EXIT}) to grow when started again")
     parser.add_argument("--keep", action="store_true", help="keep workspaces")
     parser.add_argument("--tag", help="run directory name (default: the config name)")
     parser.add_argument("--record", action="store_true",
@@ -535,23 +547,30 @@ def main() -> None:
         shutil.copytree(args.product.resolve(), product,
                         ignore=shutil.ignore_patterns("__pycache__"))
     bridge = bridge_variant(config, run_dir, product)
-    server = Server(config, run_dir, args.parallel, args.port, args.vram_wait)
+    server = Server(config, run_dir, args.parallel, args.port, args.vram_wait, args.fit_slots)
+    # Fewer slots than asked: stop taking jobs after a while so the queue
+    # starts the run again with what the GPU holds by then.
+    refit_at = time.monotonic() + REFIT_MIN * 60 if server.parallel < args.parallel else None
+    handed_back = threading.Event()
     # Scenarios measuring a student talk to a simulated user on a model of
     # its own (config "simulator", another config's name); without it the
     # teacher being recorded also plays the user, on its own server.
     simulator = None
     if config.get("simulator"):
         (run_dir / "simulator").mkdir(exist_ok=True)
-        simulator = Server(configs[config["simulator"]], run_dir / "simulator", args.parallel,
+        simulator = Server(configs[config["simulator"]], run_dir / "simulator", server.parallel,
                            args.port + 1, args.vram_wait)
     # The main thread sits in the worker pool, so exiting there would wait
     # for every job: the handler closes the servers and exits at once.
     close_on_term(server, simulator)
     lock = threading.Lock()
     try:
-        print(f"server ready, {server.speed()} tok/s single stream", flush=True)
+        print(f"server ready, {server.parallel} slots, {server.speed()} tok/s single stream", flush=True)
 
         def work(job: tuple[Path, int]) -> None:
+            if refit_at is not None and time.monotonic() > refit_at:
+                handed_back.set()
+                return
             row = run_job(job[0], job[1], args.config, config, run_dir, server.sock_dir,
                           args.keep, bridge, product,
                           record_port=server.port if args.record else None,
@@ -572,8 +591,12 @@ def main() -> None:
                   f"{row.get('outcome')} {row['wall']}s {row['grade'].get('problems', [])}",
                   flush=True)
 
-        with ThreadPoolExecutor(args.parallel) as pool:
+        with ThreadPoolExecutor(server.parallel) as pool:
             list(pool.map(work, jobs))
+        if handed_back.is_set():
+            print(f"ran {REFIT_MIN} minutes on {server.parallel} of {args.parallel} slots; "
+                  "start again to resume with what fits then", flush=True)
+            raise SystemExit(VRAM_EXIT)
     finally:
         server.close()
         if simulator is not None:
