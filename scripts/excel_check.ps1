@@ -1,6 +1,7 @@
-# Checks two Excel-only claims of the formula translator (edge_agent/lingua/excel.py)
-# in the real Excel, if it is installed. Opens one new blank workbook, never a
-# user's file, never saves, and makes sure Excel exits. Prints one JSON line.
+# Checks two Excel-only claims of the formula translator (edge_agent/lingua/excel.py,
+# excel_functions.py) in the real Excel, if it is installed. Opens one new blank
+# workbook, never a user's file, never saves, and makes sure Excel exits. Prints
+# one JSON line.
 $ErrorActionPreference = 'Stop'
 $result = [ordered]@{ excel = $false; vlookup_past_table = $null; xlookup_default = $null; libreoffice = $false }
 $soffice = @("$env:ProgramFiles\LibreOffice\program\soffice.exe", "${env:ProgramFiles(x86)}\LibreOffice\program\soffice.exe") | Where-Object { Test-Path $_ }

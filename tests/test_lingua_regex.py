@@ -3,7 +3,7 @@
 Two kinds of checks:
 - parity: for every pattern in CORPUS and every flavor, what the parser says
   (invalid / valid with these groups / not covered) must agree with the engine;
-- claims: every flavor-dependent sentence in edge_agent/lingua/regex.py has
+- claims: every flavor-dependent sentence of edge_agent/lingua/regex*.py has
   cases here that the engine must answer the way the sentence says.
 A missing engine (no pwsh or node) skips that flavor; the laptop has both.
 """
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from edge_agent.lingua import regex
+from edge_agent.lingua import regex, regex_parser, regex_syntax
 from edge_agent.lingua.engines import RUNNERS
 
 CORPUS = [
@@ -38,7 +38,7 @@ FLAGGED = [("a b # c", "x"), ("^a$", "m"), (".", "s"), ("A", "i"), ("\\w", "a"),
 
 
 def cases_for(flavor: str) -> list[tuple[str, str]]:
-    allowed = set(regex.FLAGS[flavor])
+    allowed = set(regex_syntax.FLAGS[flavor])
     return [(p, "") for p in CORPUS] + [(p, f) for p, f in FLAGGED if set(f) <= allowed]
 
 
@@ -49,17 +49,17 @@ def engine(flavor: str, cases: list[dict]) -> list[dict]:
     return results
 
 
-@pytest.mark.parametrize("flavor", regex.FLAVORS)
+@pytest.mark.parametrize("flavor", regex_syntax.FLAVORS)
 def test_parser_agrees_with_engine(flavor: str) -> None:
     cases = cases_for(flavor)
     results = engine(flavor, [{"pattern": p, "flags": f, "inputs": []} for p, f in cases])
     wrong, covered = [], 0
     for (pattern, flags), result in zip(cases, results):
         try:
-            _, groups = regex.parse(pattern, flavor, flags)
-        except regex.Unsupported:
+            _, groups = regex_parser.parse(pattern, flavor, flags)
+        except regex_syntax.Unsupported:
             continue
-        except regex.RegexError as exc:
+        except regex_syntax.RegexError as exc:
             covered += 1
             if result["ok"]:
                 wrong.append(f"{pattern!r}/{flags}: parser says invalid ({exc}), engine accepts")
@@ -85,12 +85,12 @@ CLAIMS = [
     ("python", "^\\d$", "a", "５", False),
     # \w: letters of every script, but only ASCII in JavaScript.
     *[(f, "^\\w$", "", s, f != "js") for f in ("python", "dotnet", "js") for s in ("中", "é")],
-    *[(f, "^\\w$", "", "_", True) for f in regex.FLAVORS],
+    *[(f, "^\\w$", "", "_", True) for f in regex_syntax.FLAVORS],
     ("dotnet", "^\\w$", "", "‿", True), ("python", "^\\w$", "", "‿", False),
     ("dotnet", "^\\w$", "", "́", True), ("python", "^\\w$", "", "́", False),
     ("python", "^\\w$", "a", "中", False),
     # \s: full-width and no-break space everywhere; the exact sets differ.
-    *[(f, "^\\s$", "", s, True) for f in regex.FLAVORS for s in ("　", " ", "\t")],
+    *[(f, "^\\s$", "", s, True) for f in regex_syntax.FLAVORS for s in ("　", " ", "\t")],
     ("python", "^\\s$", "", "\x1c", True), ("dotnet", "^\\s$", "", "\x1c", False),
     ("js", "^\\s$", "", "\x1c", False),
     ("python", "^\\s$", "", "\x85", True), ("dotnet", "^\\s$", "", "\x85", True),
@@ -99,18 +99,18 @@ CLAIMS = [
     ("dotnet", "^\\s$", "", "﻿", False),
     ("python", "^\\s$", "a", "　", False), ("python", "^\\s$", "a", " ", False),
     # . : everything but \n; JavaScript also stops at \r, U+2028, U+2029.
-    *[(f, "^.$", "", "\n", False) for f in regex.FLAVORS],
-    *[(f, "^.$", "s", "\n", True) for f in regex.FLAVORS],
-    *[(f, "^.$", "", s, f != "js") for f in regex.FLAVORS for s in ("\r", " ", " ")],
+    *[(f, "^.$", "", "\n", False) for f in regex_syntax.FLAVORS],
+    *[(f, "^.$", "s", "\n", True) for f in regex_syntax.FLAVORS],
+    *[(f, "^.$", "", s, f != "js") for f in regex_syntax.FLAVORS for s in ("\r", " ", " ")],
     # One "character" is one UTF-16 unit in .NET and JavaScript.
-    *[(f, "^.$", "", "\U0001F600", f == "python") for f in regex.FLAVORS],
+    *[(f, "^.$", "", "\U0001F600", f == "python") for f in regex_syntax.FLAVORS],
     # $ before a final newline (not in JavaScript); multiline line starts.
-    *[(f, "a$", "", "a\n", f != "js") for f in regex.FLAVORS],
-    *[(f, "a$", "", "a\nb", False) for f in regex.FLAVORS],
-    *[(f, "^b", "m", "a\nb", True) for f in regex.FLAVORS],
-    *[(f, "^b", "m", "a\rb", f == "js") for f in regex.FLAVORS],
-    *[(f, "a$", "m", "a\rb", f == "js") for f in regex.FLAVORS],
-    *[(f, "^b", "", "a\nb", False) for f in regex.FLAVORS],
+    *[(f, "a$", "", "a\n", f != "js") for f in regex_syntax.FLAVORS],
+    *[(f, "a$", "", "a\nb", False) for f in regex_syntax.FLAVORS],
+    *[(f, "^b", "m", "a\nb", True) for f in regex_syntax.FLAVORS],
+    *[(f, "^b", "m", "a\rb", f == "js") for f in regex_syntax.FLAVORS],
+    *[(f, "a$", "m", "a\rb", f == "js") for f in regex_syntax.FLAVORS],
+    *[(f, "^b", "", "a\nb", False) for f in regex_syntax.FLAVORS],
     # \Z: the very end in Python, also before a final \n in .NET; \z in .NET.
     ("python", "a\\Z", "", "a\n", False), ("dotnet", "a\\Z", "", "a\n", True),
     ("dotnet", "a\\z", "", "a\n", False), ("dotnet", "a\\z", "", "a", True),
@@ -118,7 +118,7 @@ CLAIMS = [
     # In JavaScript \A, \Z, \z, \G are just letters.
     *[("js", f"^\\{c}$", "", c, True) for c in "AZzG"],
     # \b follows \w: Chinese characters are word characters except in JavaScript.
-    *[(f, "\\b中", "", "a 中", f != "js") for f in regex.FLAVORS],
+    *[(f, "\\b中", "", "a 中", f != "js") for f in regex_syntax.FLAVORS],
     # {,n} is a count in Python and plain text elsewhere.
     ("python", "^a{,3}$", "", "aaa", True), ("python", "^a{,3}$", "", "a{,3}", False),
     *[(f, "^a{,3}$", "", "a{,3}", True) for f in ("dotnet", "js")],
@@ -136,7 +136,7 @@ CLAIMS = [
 ]
 
 
-@pytest.mark.parametrize("flavor", regex.FLAVORS)
+@pytest.mark.parametrize("flavor", regex_syntax.FLAVORS)
 def test_claims_hold_in_engine(flavor: str) -> None:
     claims = [c for c in CLAIMS if c[0] == flavor]
     results = engine(flavor, [{"pattern": p, "flags": f, "inputs": [s]} for _, p, f, s, _ in claims])
@@ -170,12 +170,12 @@ def test_wording_states_the_claims() -> None:
 def test_refuses_instead_of_guessing() -> None:
     for pattern, flavor in [("[]a]", "python"), ("(?<1>a)", "dotnet"), ("\\p{L}", "js"),
                             ("(?(1)a|b)", "python"), ("[a-[b]]", "dotnet"), ("\\10", "python")]:
-        with pytest.raises(regex.Unsupported):
-            regex.parse(pattern, flavor)
+        with pytest.raises(regex_syntax.Unsupported):
+            regex_parser.parse(pattern, flavor)
 
 
 def test_errors_point_at_the_problem() -> None:
-    with pytest.raises(regex.RegexError) as caught:
-        regex.parse("ab(c", "python")
+    with pytest.raises(regex_syntax.RegexError) as caught:
+        regex_parser.parse("ab(c", "python")
     assert caught.value.position == 2
     assert "第 3 個字元" in str(caught.value)

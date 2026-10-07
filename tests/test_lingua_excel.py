@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import pytest
 
-from edge_agent.lingua import excel
+from edge_agent.lingua import excel, excel_parser
 from edge_agent.lingua.engines import find_soffice, run_calc
 
 DATA = {
     "A1": 1, "A2": 3, "A3": 5, "B1": "a", "B2": "b", "B3": "c", "C1": 10, "C2": 20, "C3": 30,
     "D1": "台北市", "D2": "台北", "E1": '=""', "E2": "x",
 }
-# formula -> what Calc must show; each backs a sentence in excel.py.
+# formula -> what Calc must show; each backs a sentence in excel.py or excel_functions.py.
 CLAIMS = {
     "=-2^2": "4", "=2^3^2": "64", '="a"&1+2': "a3", "=1+1=2": "TRUE", "=5%=0.05": "TRUE",
     "=TRUE+TRUE": "2", '="a"="A"': "TRUE", "=1&2": "12",
@@ -60,16 +60,16 @@ def test_claims_hold_in_calc() -> None:
 
 def tree(formula: str) -> str:
     def show(node) -> str:
-        if isinstance(node, excel.Binary):
+        if isinstance(node, excel_parser.Binary):
             return f"({show(node.left)}{node.op}{show(node.right)})"
-        if isinstance(node, excel.Unary):
+        if isinstance(node, excel_parser.Unary):
             return f"({node.op}{show(node.operand)})"
-        if isinstance(node, excel.Percent):
+        if isinstance(node, excel_parser.Percent):
             return f"({show(node.operand)}%)"
-        if isinstance(node, excel.Call):
+        if isinstance(node, excel_parser.Call):
             return f"{node.name}[{','.join(show(a) if a else '' for a in node.args)}]"
         return formula[node.start:node.end]
-    return show(excel.parse(formula))
+    return show(excel_parser.parse(formula))
 
 
 def test_excel_precedence() -> None:
@@ -106,10 +106,10 @@ def test_wording_states_the_traps() -> None:
 
 def test_refuses_and_errors() -> None:
     for formula in ("=SUM(Table1[Amount])", "=@A1", "=A1#", "=SUM(Sheet1:Sheet3!A1)", "=SUM(A1 B1)"):
-        with pytest.raises(excel.Unsupported):
-            excel.parse(formula)
+        with pytest.raises(excel_parser.Unsupported):
+            excel_parser.parse(formula)
     for formula in ("=SUM(1,2", '="abc', "=1+", "=)"):
-        with pytest.raises(excel.FormulaError):
-            excel.parse(formula)
-    with pytest.raises(excel.FormulaError):
+        with pytest.raises(excel_parser.FormulaError):
+            excel_parser.parse(formula)
+    with pytest.raises(excel_parser.FormulaError):
         excel.translate("=VLOOKUP(1,A1:B2)")
