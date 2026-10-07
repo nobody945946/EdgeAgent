@@ -189,6 +189,7 @@ def generate(args: argparse.Namespace) -> None:
     run_dir = OUT / f"server-{args.split}"
     run_dir.mkdir(parents=True, exist_ok=True)
     server = run.Server(config, run_dir, args.parallel, args.port)
+    run.close_on_term(server)
     today = datetime.date.today().isoformat()
     topics = topics_for(args.split, spec)
     lock = threading.Lock()

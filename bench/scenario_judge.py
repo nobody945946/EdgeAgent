@@ -201,6 +201,7 @@ def main() -> None:
     config = json.loads((run.BENCH / "configs.json").read_text(encoding="utf-8"))[args.config]
     (args.run / "judge").mkdir(exist_ok=True)
     server = run.Server(config, args.run / "judge", 1, args.port)
+    run.close_on_term(server)
     try:
         {"judge": judge, "validate": validate}[args.command](args, server)
     finally:

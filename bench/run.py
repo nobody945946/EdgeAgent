@@ -212,6 +212,19 @@ class Server:
         self.log.close()
 
 
+def close_on_term(*servers: Server | None) -> None:
+    """A stopped step must not leave llama-server holding VRAM: the queue
+    stops a step with SIGTERM, and Python's default action skips `finally`
+    (2026-10-07: a stopped card writer left 21 GB to an orphan server)."""
+    def stop(*_: object) -> None:
+        for server in servers:
+            if server is not None:
+                server.close()
+        os._exit(143)
+
+    signal.signal(signal.SIGTERM, stop)
+
+
 TASK_ROOT = BENCH / "tasks"
 
 
@@ -518,15 +531,9 @@ def main() -> None:
         (run_dir / "simulator").mkdir(exist_ok=True)
         simulator = Server(configs[config["simulator"]], run_dir / "simulator", args.parallel,
                            args.port + 1, args.vram_wait)
-    # A stopped run must not leave llama-server holding VRAM. The main thread
-    # sits in the worker pool, so exiting there would wait for every job.
-    def stop(*_: object) -> None:
-        server.close()
-        if simulator is not None:
-            simulator.close()
-        os._exit(143)
-
-    signal.signal(signal.SIGTERM, stop)
+    # The main thread sits in the worker pool, so exiting there would wait
+    # for every job: the handler closes the servers and exits at once.
+    close_on_term(server, simulator)
     lock = threading.Lock()
     try:
         print(f"server ready, {server.speed()} tok/s single stream", flush=True)
