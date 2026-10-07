@@ -482,6 +482,13 @@ def repeating_model():
             state.setdefault("requests", []).append(request)
             state["calls"] += 1
             time.sleep(state.get("delays", {}).get(state["calls"], 0))
+            override = state.get("response_for", lambda *_: {})(request, state["calls"])
+            if override.get("status"):
+                self.send_response(override["status"])
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(override["body"]).encode())
+                return
             # A "sequence" of (tool, input) pairs is played once, then answered.
             sequence = state.get("sequence")
             if sequence is not None and state["calls"] > len(sequence):
@@ -491,6 +498,8 @@ def repeating_model():
                 if sequence
                 else (state["tool"], state["input"])
             )
+            tool = override.get("tool", tool)
+            arguments = override.get("input", arguments)
             call = {
                 "index": 0,
                 "id": str(state["calls"]),
@@ -505,9 +514,9 @@ def repeating_model():
                     ({"role": "assistant", "tool_calls": [call]}, None),
                     ({}, "tool_calls"),
                 ]
-                if not state.get("answer")
+                if "text" not in override and (override or not state.get("answer"))
                 and state["calls"] < state.get("answer_after", float("inf"))
-                else [({"role": "assistant", "content": state.get("text", "fixture")}, None), ({}, state.get("finish_reasons", {}).get(state["calls"], "stop"))]
+                else [({"role": "assistant", "content": override.get("text", state.get("text", "fixture"))}, None), ({}, state.get("finish_reasons", {}).get(state["calls"], "stop"))]
             )
             for delta, stop in chunks:
                 record = {
@@ -705,6 +714,55 @@ def test_real_sdk_compacts_at_working_target_and_retains_ram_archive(
         assert chat.context_size == 131072
         assert chat.max_output_tokens == 8192
         assert not list(tmp_path.iterdir())
+    finally:
+        chat.close()
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_continues_the_same_task_after_context_overflow_compaction(
+    tmp_path, repeating_model
+):
+    port, state = repeating_model
+    phases = []
+
+    def respond(request, calls):
+        if not request.get("tools"):
+            phases.append("compact")
+            return {"text": "Task: create first.txt and second.txt. first.txt is done; create second.txt next."}
+        phase = sum(item != "compact" for item in phases)
+        if phase == 1:
+            phases.append("overflow")
+            return {"status": 400, "body": {"error": {"message": "This model's maximum context length is 32768 tokens. Requested tokens exceed context length."}}}
+        if phase in (0, 2):
+            name = "first.txt" if phase == 0 else "second.txt"
+            phases.append(name)
+            return {"tool": "write", "input": {"path": name, "content": "synthetic completed step"}}
+        phases.append("done")
+        return {"text": "Both task steps completed."}
+
+    state["answer"] = True
+    chat = NativeChat(model_port=port)
+    chat.configure_context(32768, max_output_tokens=8192, working_context_size=32768)
+    try:
+        assert list(chat.stream_reply(
+            "continuing-task", "synthetic-archive-context " * 800,
+            working_dir=tmp_path,
+        ))[-1][0] == "done"
+        state["response_for"] = respond
+        events = list(chat.stream_reply(
+            "continuing-task", "Create first.txt and second.txt. " + "synthetic-task-context " * 1000,
+            agent=True, working_dir=tmp_path,
+            permissions={"edit": "allow", "shell": "deny", "web": "deny"},
+        ))
+        assert any(name == "compacted" for name, _ in events), (
+            phases, [(name, data.get("message")) for name, data in events if name in ("error", "status")]
+        )
+        assert events[-1][0] == "done"
+        assert (tmp_path / "first.txt").read_text() == "synthetic completed step"
+        assert (tmp_path / "second.txt").read_text() == "synthetic completed step"
+        assert phases.count("first.txt") == phases.count("second.txt") == 1
+        assert phases.index("first.txt") < phases.index("compact") < phases.index("second.txt")
+        assert chat.session("continuing-task").entries
     finally:
         chat.close()
 
@@ -978,7 +1036,7 @@ def test_real_sdk_cancel_while_waiting_for_approval_does_not_write(
         reply = chat.stream_reply(
             "fixture", "fixture", agent=True, working_dir=tmp_path
         )
-        for name, payload in reply:
+        for name, _payload in reply:
             if name == "approval":
                 break
         else:

@@ -289,21 +289,19 @@ def test_a_lease_brings_the_bases_projector_kept_off_the_gpu(tmp_path, monkeypat
     assert "no-mmproj-offload = true" in preset
 
 
-def test_a_pool_the_character_fills_leases_without_the_agent(tmp_path, monkeypatch):
-    """A 16K setting leaves the Agent nothing once the character's 32K is
-    reserved: the character still gets its part, the Agent waits."""
+def test_a_small_pool_bounds_the_lease_and_keeps_the_agent(tmp_path, monkeypatch):
     manager = service.EdgeAgent(tmp_path)
     manager._save_config({**manager.config, "context_size": 16384})
-    _lease_fixture(manager, monkeypatch, tmp_path, 131072, 32768)
+    _lease_fixture(manager, monkeypatch, tmp_path, 131072, 16384)
     manager.switch(
         "character", 123,
         {"model": "base.gguf", "lora": "", "port": 18088, "context_size": 32768},
     )
     preset = (tmp_path / ".runtime/models.ini").read_text()
-    assert "parallel = 1" in preset and "ctx-size = 32768" in preset
-    assert "kv-unified" not in preset
-    assert manager.agent_slot is None
-    assert manager.status()["agent_slot"] is None
+    assert "parallel = 2" in preset and "ctx-size = 16384" in preset
+    assert "kv-unified = true" in preset
+    assert manager.agent_slot == 1
+    assert manager.status()["context_size"] == 8192
 
 
 def test_busy_stream_cannot_switch_models_but_does_not_hold_service_lock(tmp_path):

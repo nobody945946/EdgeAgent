@@ -16,6 +16,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from edge_agent.chat import MODES, THINKING_PROFILES, NativeChat, decode_attachments
+from edge_agent.context_pool import allocate_context
 from edge_agent.deploy import download, ensure_projector
 from edge_agent.mcp import servers_for, validate_mcp_servers
 from edge_agent.models import hub_catalog, list_models, model_filename, model_metadata
@@ -675,12 +676,11 @@ class EdgeAgent:
         # The character's adapter first (index 0, as the lease's client
         # names it), then the Agent's; one file serving both is loaded once.
         loras = list(dict.fromkeys(path for path in (character_lora, agent_lora) if path))
-        reserved = role_slots * character_context
-        context_size = max(context_size, reserved)
-        agent_context = context_size - reserved
-        if mode == "base" and agent_context < MIN_AGENT_CONTEXT_SIZE:
-            raise ValueError("此模型的 context 少於 8192，無法支援 EdgeAgent")
-        shared = mode == "character" and agent_context >= MIN_AGENT_CONTEXT_SIZE
+        allocation = allocate_context(
+            context_size, character_context, role_slots if mode == "character" else 0
+        )
+        character_context, agent_context = allocation.character, allocation.agent
+        shared = mode == "character"
         agent_slot = role_slots if shared else (0 if mode == "base" else None)
         # The upstream router owns model processes, loading and hot replacement.
         # Keep one public inference endpoint for the Agent and leased clients.
