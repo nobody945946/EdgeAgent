@@ -26,8 +26,10 @@ import random
 import re
 import shutil
 import sys
+import threading
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -179,20 +181,24 @@ def generate(args: argparse.Namespace) -> None:
                          "start a new file instead of mixing versions")
     run_dir = OUT / f"server-{args.split}"
     run_dir.mkdir(parents=True, exist_ok=True)
-    server = run.Server(config, run_dir, 1, args.port)
+    server = run.Server(config, run_dir, args.parallel, args.port)
     today = datetime.date.today().isoformat()
-    rng = random.Random(f"{args.split}-{args.seed}")
     topics = topics_for(args.split, spec)
-    try:
-        for family_id in args.families or sorted(spec["families"]):
-            family = spec["families"][family_id]
+    lock = threading.Lock()
+
+    def family_cards(family_id: str) -> None:
+        """One family's cards; families run side by side on the server's slots."""
+        family = spec["families"][family_id]
+        rng = random.Random(f"{args.split}-{args.seed}-{family_id}")
+        with lock:
             have = sum(c["family"] == family_id for c in kept)
-            tries = 0
-            while have < args.per_family and tries < args.per_family * 3:
-                tries += 1
-                topic = rng.choice(topics)
-                card = parse_card(ask(server.port, prompt_for(family_id, family, topic, today)))
-                why = ["not JSON"] if card is None else problems(card, family_id, family)
+        tries = 0
+        while have < args.per_family and tries < args.per_family * 3:
+            tries += 1
+            topic = rng.choice(topics)
+            card = parse_card(ask(server.port, prompt_for(family_id, family, topic, today)))
+            why = ["not JSON"] if card is None else problems(card, family_id, family)
+            with lock:
                 if not why and near_duplicate(card, [c for c in kept if c["family"] == family_id]):
                     why = ["near-duplicate"]
                 if why:
@@ -208,6 +214,10 @@ def generate(args: argparse.Namespace) -> None:
                 with out.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(card, ensure_ascii=False) + "\n")
                 print(f"{card_id} {topic}: kept", flush=True)
+
+    try:
+        with ThreadPoolExecutor(args.parallel) as pool:
+            list(pool.map(family_cards, args.families or sorted(spec["families"])))
     finally:
         server.close()
 
@@ -255,6 +265,7 @@ def main() -> None:
     g.add_argument("--families", nargs="*", help="family ids (default all)")
     g.add_argument("--seed", type=int, default=0)
     g.add_argument("--port", type=int, default=18389)
+    g.add_argument("--parallel", type=int, default=2, help="families written side by side")
     t = sub.add_parser("tasks")
     t.add_argument("--split", choices=SPLITS, required=True)
     args = parser.parse_args()

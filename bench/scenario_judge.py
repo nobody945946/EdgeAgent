@@ -101,10 +101,15 @@ def rule(port: int, task: dict, trajectory: list[dict], seed: int) -> dict:
             "passed": not missing and all(verdicts[key] for key, _ in items)}
 
 
-def verdict(port: int, task: dict, record: dict) -> dict:
+def verdict(port: int | None, task: dict, record: dict) -> dict:
+    """The programmatic checks, then (with a judge server) the judge twice.
+    Without a server (--checks-only: the judge failed its own validation) a
+    conversation passes on the checks alone."""
     found = failures(record, task.get("checks", []))
     if found:
         return {"passed": False, "checks": found}
+    if port is None:
+        return {"passed": True, "checks": {}, "judge": "checks-only"}
     passes = [rule(port, task, record["trajectory"], seed) for seed in (1, 2)]
     return {"passed": all(p["passed"] for p in passes), "checks": {}, "judge": passes}
 
@@ -126,13 +131,13 @@ def records(run_dir: Path, task_root: Path) -> list[tuple[str, dict, dict]]:
     return found
 
 
-def judge(args: argparse.Namespace, server: run.Server) -> None:
+def judge(args: argparse.Namespace, server: run.Server | None) -> None:
     out = args.run / "verdicts.jsonl"
     done = {json.loads(line)["job"] for line in out.read_text(encoding="utf-8").splitlines()} if out.is_file() else set()
     for job, task, record in records(args.run, args.task_root):
         if job in done:
             continue
-        found = verdict(server.port, task, record)
+        found = verdict(server.port if server is not None else None, task, record)
         with out.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"job": job, "family": task["family"], **found}, ensure_ascii=False) + "\n")
         print(f"{job}: {'PASS' if found['passed'] else 'fail'} {list(found['checks'])}", flush=True)
@@ -184,7 +189,12 @@ def main() -> None:
     parser.add_argument("--config", required=True, help="the judge's bench config (configs.json)")
     parser.add_argument("--port", type=int, default=18489)
     parser.add_argument("--limit", type=int, default=30, help="validate: conversations to use")
+    parser.add_argument("--checks-only", action="store_true",
+                        help="judge: no judge model (it failed validation); the checks decide")
     args = parser.parse_args()
+    if args.checks_only:
+        judge(args, None)
+        return
     config = json.loads((run.BENCH / "configs.json").read_text(encoding="utf-8"))[args.config]
     (args.run / "judge").mkdir(exist_ok=True)
     server = run.Server(config, args.run / "judge", 1, args.port)

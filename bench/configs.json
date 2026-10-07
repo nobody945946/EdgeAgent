@@ -204,5 +204,33 @@
   "low_vram": true,
   "vram_base_mib": 13000,
   "vram_slot_mib": 2500
+ },
+ "e4b-laptop-fw2": {
+  "_note": "The urgent agent-fw2 (owner 2026-10-07: distil Qwen3.8 at thinking high now): tool tasks and scenario conversations the teacher recorded, with and without its reasoning; E4B 64K, thinking off.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "agent-fw2.q8_0.gguf"
+ },
+ "e4b-laptop-fw2-high": {
+  "_note": "e4b-laptop-fw2 with thinking high.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "agent-fw2.q8_0.gguf"
  }
 }
