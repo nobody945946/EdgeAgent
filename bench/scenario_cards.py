@@ -90,8 +90,11 @@ def prompt_for(family_id: str, family: dict, topic: str, today: str) -> str:
 
 
 def ask(port: int, prompt: str) -> str:
+    # Without thinking: a card is a structured outline the 27B writes well
+    # straight away, and thinking made one card take minutes (owner wants the
+    # first distilled adapter fast, 2026-10-07).
     body = json.dumps({"messages": [{"role": "user", "content": prompt}], "temperature": 0.9,
-                       "max_tokens": 12000, "chat_template_kwargs": {"enable_thinking": True}}).encode()
+                       "max_tokens": 6000, "chat_template_kwargs": {"enable_thinking": False}}).encode()
     request = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", body,
                                      {"Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=1800) as response:
