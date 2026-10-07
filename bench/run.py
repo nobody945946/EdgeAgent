@@ -43,6 +43,7 @@ STATE = ROOT / ".runtime/bench"
 IMAGE = "edgeagent-bench:1"
 TRAIN_IMAGE = "edgeagent-train:1"
 VRAM_EXIT = 3  # gave up waiting for free VRAM
+CONVERSATION_TURNS = 2  # a scenario conversation may take two turns' budget in all
 REFIT_MIN = 30  # --fit-slots: minutes a run with fewer slots than asked keeps going
 SERVER = Path(os.environ.get(
     "BENCH_LLAMA_SERVER",
@@ -439,7 +440,8 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
             # A task may set its own (an MCP task: no files, no shell, no web).
             "permissions": task.get("permissions", config.get("permissions")),
             "mcp_servers": task.get("mcp_servers"),
-            "timeout_s": timeout}
+            # A scenario's timeout is per turn; the conversation gets twice that.
+            "timeout_s": timeout, "conversation_s": timeout * (CONVERSATION_TURNS if task.get("scenario") else 1)}
     name = f"eab-{config_name}-{job}".replace("_", "-")[:120]
     mounts, env, hosts = web_fixture(task_dir, task)
     if simulator_sock is not None and task.get("scenario"):
@@ -453,7 +455,8 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
                       image=task.get("image", IMAGE), hosts=hosts)
     started = time.monotonic()
     try:
-        agent = subprocess.run(command, capture_output=True, text=True, timeout=timeout + 180)
+        agent = subprocess.run(command, capture_output=True, text=True,
+                               timeout=spec["conversation_s"] + 180)
         result = last_json(agent.stdout) or {"outcome": "crash",
                                              "notice": agent.stderr[-300:]}
     except subprocess.TimeoutExpired:

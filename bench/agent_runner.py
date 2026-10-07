@@ -137,8 +137,21 @@ def main() -> None:
 
     approvals = 0
 
+    # A card's budget is per turn (run.py: timeout_s), within the
+    # conversation's (conversation_s): a whole-conversation budget cut healthy
+    # five-turn conversations at their last turn (2026-10-08).
+    deadline = time.monotonic() + spec.get("conversation_s", spec["timeout_s"])
+
     def turn(text: str) -> dict:
         """One user line through the Agent: what the asker read and how it ended."""
+        timer = threading.Timer(max(0.0, min(spec["timeout_s"], deadline - time.monotonic())), expire)
+        timer.start()
+        try:
+            return reply(text)
+        finally:
+            timer.cancel()
+
+    def reply(text: str) -> dict:
         nonlocal approvals
         outcome, reason, notice = "none", "", ""
         # What the asker reads: every text delta, the host's own notices included.
@@ -162,38 +175,36 @@ def main() -> None:
         return {"answer": "".join(answer), "outcome": "timeout" if timed_out.is_set() else outcome,
                 "reason": reason, "notice": notice, "unverified": unverified}
 
-    timer = threading.Timer(spec["timeout_s"], expire)
-    timer.start()
     started = time.monotonic()
     dialogue: list[dict] = []
     ended = ""
-    try:
-        if not card:
-            last = turn(spec["prompt"])
-        else:
-            seen = 0
-            last = {"answer": "", "outcome": "none", "reason": "", "notice": "", "unverified": []}
-            ended = "max_turns"
-            while len(dialogue) < card["max_turns"]:
-                line = simulate(card, simulator_port, [t["user"] for t in dialogue],
-                                [t["answer"] for t in dialogue], card["max_turns"] - len(dialogue))
-                if END in line:
-                    ended = "end" if dialogue else "simulator ended before speaking"
-                    break
-                last = turn(line)
-                messages = session_messages(chat)
-                calls = [{"name": item.get("name"), "arguments": item.get("arguments")}
-                         for message in messages[seen:] if message.get("role") == "assistant"
-                         for item in message.get("content") or []
-                         if isinstance(item, dict) and item.get("type") == "toolCall"]
-                seen = len(messages)
-                dialogue.append({"user": line, "answer": last["answer"], "outcome": last["outcome"],
-                                 "calls": calls})
-                if last["outcome"] != "done":
-                    ended = "turn " + last["outcome"]
-                    break
-    finally:
-        timer.cancel()
+    if not card:
+        last = turn(spec["prompt"])
+    else:
+        seen = 0
+        last = {"answer": "", "outcome": "none", "reason": "", "notice": "", "unverified": []}
+        ended = "max_turns"
+        while len(dialogue) < card["max_turns"]:
+            if time.monotonic() >= deadline:
+                ended = "conversation timeout"
+                break
+            line = simulate(card, simulator_port, [t["user"] for t in dialogue],
+                            [t["answer"] for t in dialogue], card["max_turns"] - len(dialogue))
+            if END in line:
+                ended = "end" if dialogue else "simulator ended before speaking"
+                break
+            last = turn(line)
+            messages = session_messages(chat)
+            calls = [{"name": item.get("name"), "arguments": item.get("arguments")}
+                     for message in messages[seen:] if message.get("role") == "assistant"
+                     for item in message.get("content") or []
+                     if isinstance(item, dict) and item.get("type") == "toolCall"]
+            seen = len(messages)
+            dialogue.append({"user": line, "answer": last["answer"], "outcome": last["outcome"],
+                             "calls": calls})
+            if last["outcome"] != "done":
+                ended = "turn " + last["outcome"]
+                break
     elapsed = time.monotonic() - started
     messages = session_messages(chat)
     chat.close()
