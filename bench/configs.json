@@ -277,5 +277,24 @@
   "lora": "agent-fw2.q8_0.gguf",
   "_note": "e4b-laptop-fw2-high playing held-out scenario cards against the simulated user on its own server (teacher-38-sim).",
   "simulator": "teacher-38-sim"
+ },
+ "teacher-38-iq3": {
+  "_note": "teacher-38 at IQ3_XXS so five conversations run side by side (2026-10-07: at Q4 two slots made 12-15 conversations an hour, one stuck conversation halved it). The 27B IQ3 ranked within the threshold of Q4 as a teacher before (dev box 2026-09-29: 1.54 vs 1.46). A conversation past 15 minutes (time_scale 0.5 of the cards' 30) is a loop that never becomes a row.",
+  "model": "../teacher/Qwen3.8-27B-UD-IQ3_XXS.gguf",
+  "self_model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": false,
+  "context_size": 65536,
+  "max_output_tokens": 16384,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 12500,
+  "vram_slot_mib": 1500,
+  "search_tools": true,
+  "extra_args": [
+   "--reasoning-budget",
+   "1024"
+  ],
+  "time_scale": 0.5
  }
 }
