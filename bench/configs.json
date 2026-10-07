@@ -152,5 +152,30 @@
   "vram_slot_mib": 2000,
   "search_tools": true,
   "lora": "machine-spirit-v1.q8_0.gguf"
+ },
+ "teacher-38": {
+  "_note": "The one teacher (owner, 2026-10-07): Qwen3.8-27B (Apache 2.0) UD-Q4_K_XL, all on GPU, the Agent's 64K window, thinking high so its reasoning is recorded with its answers. Also plays the simulated user in scenario cards it records. Dev box only.",
+  "model": "../teacher/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+  "vision": false,
+  "context_size": 65536,
+  "max_output_tokens": 16384,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 18500,
+  "vram_slot_mib": 1500,
+  "search_tools": true
+ },
+ "judge-gemma": {
+  "_note": "The scenario judge (owner, 2026-10-07): Gemma 4 31B, another family than the teacher so it does not grade its own kind's answers; IQ3_XXS agreed 99% with Q4 as the character pipeline's checker.",
+  "model": "../teacher/gemma-4-31B-it-UD-IQ3_XXS.gguf",
+  "vision": false,
+  "context_size": 32768,
+  "max_output_tokens": 8192,
+  "working_context_size": 32768,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 13000,
+  "vram_slot_mib": 2500
  }
 }

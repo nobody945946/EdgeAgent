@@ -2,6 +2,13 @@
 
 Approvals are answered the way a user pressing "Allow this turn" would. The
 result (metrics plus the bench trajectory) is the last stdout line as JSON.
+
+A scenario task (bench/scenario_cards.py) is a conversation instead of one
+prompt: a simulated user, an open-weight model reading the scenario card,
+writes each user line after reading only what the asker would see (the
+Agent's answers, never its thinking or tool output), until it ends the
+conversation or the card's turn limit. Its model is the Agent's own server
+unless the run gives it one of its own (/simsock).
 """
 
 from __future__ import annotations
@@ -12,11 +19,21 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 from edge_agent.chat import NativeChat
 
 SESSION = "bench"
+SIMULATOR_PORT = 18090
+END = "[END]"
+SIMULATOR_RULES = """你在幫忙測試一個 AI 助理。你扮演下面情境卡裡的使用者，用聊天視窗跟助理對話。
+規則：
+1. 一次只寫一則訊息，就像真人在聊天視窗打字：短、口語、台灣用語、繁體中文。
+2. 不要提到情境卡、測試、扮演，也不要把「目標」原句講出來；照「步驟」一步一步來，可以自然地變化說法。
+3. 讀助理的回答：目標達成了就結束；答偏了、沒做完、漏了你要的東西、承諾做不到的事，就像真人一樣直接指出或追問。
+4. 要結束對話時，只輸出 [END]。
+5. 只輸出你要說的那則訊息本身，不加引號、不加說明。"""
 
 
 def summarize(messages: list[dict]) -> dict:
@@ -51,18 +68,55 @@ def mcp_servers(spec: dict) -> dict | None:
     return servers_for("ui", validate_mcp_servers(spec["mcp_servers"]))
 
 
+def session_messages(chat: NativeChat) -> list[dict]:
+    # NativeChat checkpoints finished messages into Pi session entries.
+    session = chat.session(SESSION)
+    return [entry["message"] for entry in session.entries
+            if entry.get("type") == "message" and isinstance(entry.get("message"), dict)] + list(session.messages)
+
+
+def relay(listen_port: int, socket: str) -> subprocess.Popen:
+    process = subprocess.Popen(
+        [sys.executable, "/opt/bench/relay.py", "--listen", f"tcp:127.0.0.1:{listen_port}",
+         "--connect", f"unix:{socket}"],
+        stdout=subprocess.PIPE,
+    )
+    assert process.stdout is not None
+    process.stdout.readline()
+    return process
+
+
+def simulate(card: dict, port: int, lines: list[str], answers: list[str], turns_left: int) -> str:
+    """The simulated user's next line (END to stop). Its own lines are its
+    side of the chat; the Agent's answers are what it reads."""
+    card_text = json.dumps({key: card[key] for key in ("persona", "topic", "opening", "goal", "plan")
+                            if key in card}, ensure_ascii=False, indent=1)
+    messages = [{"role": "system", "content": f"{SIMULATOR_RULES}\n\n情境卡：\n{card_text}\n\n"
+                                              f"你最多還能說 {turns_left} 則。"},
+                {"role": "user", "content": "（對話開始。請說第一則訊息。）"}]
+    for line, answer in zip(lines, answers, strict=True):
+        messages += [{"role": "assistant", "content": line},
+                     {"role": "user", "content": answer or "（助理沒有回答）"}]
+    body = json.dumps({"messages": messages, "temperature": 0.8, "max_tokens": 400,
+                       "chat_template_kwargs": {"enable_thinking": False}}).encode("utf-8")
+    request = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", body,
+                                     {"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=300) as response:
+        text = json.loads(response.read())["choices"][0]["message"].get("content") or ""
+    return text.strip().strip("「」\"") or END
+
+
 def main() -> None:
     spec = json.loads(os.environ["BENCH_SPEC"])
     if spec.get("search_tools"):
         # rg and fd for Pi's grep/find tools (inherited by the Node process).
         os.environ["PATH"] = "/opt/searchtools/bin" + os.pathsep + os.environ["PATH"]
-    relay = subprocess.Popen(
-        [sys.executable, "/opt/bench/relay.py", "--listen", "tcp:127.0.0.1:18089",
-         "--connect", "unix:/sock/model.sock"],
-        stdout=subprocess.PIPE,
-    )
-    assert relay.stdout is not None
-    relay.stdout.readline()
+    relays = [relay(18089, "/sock/model.sock")]
+    card = spec.get("scenario")
+    simulator_port = 18089
+    if card and Path("/simsock/model.sock").exists():
+        relays.append(relay(SIMULATOR_PORT, "/simsock/model.sock"))
+        simulator_port = SIMULATOR_PORT
     chat = NativeChat(model_port=18089, core_dir=Path("/opt/edgeagent"))
     # The product pins its one Agent session to a slot (it shares the server
     # with the character); the bench runs several jobs on one server, so the
@@ -81,16 +135,17 @@ def main() -> None:
         timed_out.set()
         chat.cancel(SESSION)
 
-    timer = threading.Timer(spec["timeout_s"], expire)
-    timer.start()
-    started = time.monotonic()
-    outcome, reason, notice, approvals = "none", "", "", 0
-    # What the asker reads: every text delta, the host's own notices included.
-    answer: list[str] = []
-    unverified: list[str] = []
-    try:
+    approvals = 0
+
+    def turn(text: str) -> dict:
+        """One user line through the Agent: what the asker read and how it ended."""
+        nonlocal approvals
+        outcome, reason, notice = "none", "", ""
+        # What the asker reads: every text delta, the host's own notices included.
+        answer: list[str] = []
+        unverified: list[str] = []
         for kind, payload in chat.stream_reply(
-            SESSION, spec["prompt"], thinking_effort=spec["effort"], agent=True,
+            SESSION, text, thinking_effort=spec["effort"], agent=True,
             working_dir=Path("/work"), permissions=spec.get("permissions"),
             scope=spec.get("scope", "change"), mcp_servers=mcp_servers(spec),
         ):
@@ -104,21 +159,54 @@ def main() -> None:
                 unverified = list(payload.get("unverified") or [])
                 reason = str(payload.get("reason", ""))
                 notice = str(payload.get("message", ""))[:300]
+        return {"answer": "".join(answer), "outcome": "timeout" if timed_out.is_set() else outcome,
+                "reason": reason, "notice": notice, "unverified": unverified}
+
+    timer = threading.Timer(spec["timeout_s"], expire)
+    timer.start()
+    started = time.monotonic()
+    dialogue: list[dict] = []
+    ended = ""
+    try:
+        if not card:
+            last = turn(spec["prompt"])
+        else:
+            seen = 0
+            last = {"answer": "", "outcome": "none", "reason": "", "notice": "", "unverified": []}
+            ended = "max_turns"
+            while len(dialogue) < card["max_turns"]:
+                line = simulate(card, simulator_port, [t["user"] for t in dialogue],
+                                [t["answer"] for t in dialogue], card["max_turns"] - len(dialogue))
+                if END in line:
+                    ended = "end" if dialogue else "simulator ended before speaking"
+                    break
+                last = turn(line)
+                messages = session_messages(chat)
+                calls = [{"name": item.get("name"), "arguments": item.get("arguments")}
+                         for message in messages[seen:] if message.get("role") == "assistant"
+                         for item in message.get("content") or []
+                         if isinstance(item, dict) and item.get("type") == "toolCall"]
+                seen = len(messages)
+                dialogue.append({"user": line, "answer": last["answer"], "outcome": last["outcome"],
+                                 "calls": calls})
+                if last["outcome"] != "done":
+                    ended = "turn " + last["outcome"]
+                    break
     finally:
         timer.cancel()
     elapsed = time.monotonic() - started
-    # NativeChat checkpoints finished messages into Pi session entries.
-    session = chat.session(SESSION)
-    messages = [entry["message"] for entry in session.entries
-                if entry.get("type") == "message" and isinstance(entry.get("message"), dict)]
-    messages += list(session.messages)
+    messages = session_messages(chat)
     chat.close()
-    relay.terminate()
+    for process in relays:
+        process.terminate()
+    if card and last["outcome"] == "done" and ended not in ("end", "max_turns"):
+        last["outcome"] = "error"
     print(json.dumps({
-        "outcome": "timeout" if timed_out.is_set() else outcome,
-        "reason": reason, "notice": notice, "seconds": round(elapsed, 1),
-        "approvals": approvals, **summarize(messages), "answer": "".join(answer),
-        "unverified": unverified, "trajectory": messages,
+        "outcome": last["outcome"], "reason": last["reason"], "notice": last["notice"],
+        "seconds": round(elapsed, 1), "approvals": approvals, **summarize(messages),
+        "answer": last["answer"], "unverified": last["unverified"],
+        **({"dialogue": dialogue, "ended": ended} if card else {}),
+        "trajectory": messages,
     }, ensure_ascii=False), flush=True)
 
 

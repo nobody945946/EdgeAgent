@@ -34,3 +34,27 @@ def test_a_tool_defined_two_ways_or_another_prompt_is_refused() -> None:
     assert list(mixed) == ["tool read"]
     mixed = dataset.mixed_versions([_row("a", [READ]), _row("b", [READ], "多一段產品文字\n")])
     assert list(mixed) == ["system change"]
+
+
+def test_the_final_answer_keeps_its_reasoning() -> None:
+    trajectory = [{"role": "assistant", "content": [{"type": "thinking", "thinking": "先算日期"},
+                                                    {"type": "text", "text": "答案 [1]"}]}]
+    assert dataset.final_answer(trajectory) == {"role": "assistant", "content": "答案 [1]",
+                                                "reasoning_content": "先算日期"}
+
+
+def test_both_thinking_modes_from_one_row() -> None:
+    row = {"messages": [{"role": "user", "content": "問"},
+                        {"role": "assistant", "content": "答", "reasoning_content": "想"}], "tools": []}
+    on, off = dataset.with_thinking_modes(row, both=True)
+    assert on["thinking"] and on["messages"][1]["reasoning_content"] == "想"
+    assert not off["thinking"] and "reasoning_content" not in off["messages"][1]
+    assert dataset.with_thinking_modes({"messages": [{"role": "user", "content": "問"}]}, both=True) == [
+        {"messages": [{"role": "user", "content": "問"}], "thinking": False}]
+
+
+def test_a_new_user_turn_ends_a_stretch() -> None:
+    first = {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "一"}]}
+    second = {"messages": [*first["messages"], {"role": "assistant", "content": "答"},
+                           {"role": "user", "content": "二"}]}
+    assert dataset.user_turns(second) > dataset.user_turns(first)
