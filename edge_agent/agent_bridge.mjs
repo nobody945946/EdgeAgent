@@ -115,6 +115,18 @@ function today(now = new Date()) {
     + 'Use this date for anything time-sensitive; never assume a date from training data.';
 }
 
+// What the model is and how its memory works, from the host's own settings:
+// without it a small local model describes itself as a cloud AI that needs a
+// data centre, promises to remember things next time, and says compaction is
+// invisible (owner's conversations, 2026-10-07).
+function modelFacts() {
+  const model = String(init.model_name || init.model || '').split(/[\\/]/).pop().replace(/\.gguf$/i, '');
+  return `你是在這台電腦上用 llama.cpp 執行的本機模型 ${model}，不是雲端服務。`
+    + `上下文視窗是 ${init.context_size} 個 token；對話太長時，主機會把較早的內容整理成摘要`
+    + '（聊天畫面會出現「已整理上下文」的提示），整理前的細節可能不見了。你看不到 token 用量。'
+    + '你沒有跨對話的記憶：開新對話就是空白的，所以不要答應下次還記得什麼。';
+}
+
 function policy(pi) {
   let turnApproved = false;
   // Set once web content enters the turn: a page can carry instructions, so
@@ -133,6 +145,10 @@ function policy(pi) {
   // Catalog searches this turn that loaded nothing new (a small model that
   // learned to search first can keep rewording a search for a job no tool does).
   let fruitlessSearches = 0;
+  // After the fourth such search tool_search leaves the turn's tool list: a
+  // refusal alone did not stop the model calling it (owner's conversation,
+  // 2026-10-07: eight identical searches until the owner pressed stop).
+  let searchShelved = false;
   // The passages web_research handed out this turn, numbered across searches,
   // so the host can check the answer's numbers against them.
   const researched = [];
@@ -290,7 +306,10 @@ function policy(pi) {
           all.map(tool => ({ name: tool.name, server: tool.namespace?.name })));
         const load = found.filter(name => !active.has(name));
         if (load.length) pi.setActiveTools([...active, ...load]);
-        else fruitlessSearches++;
+        else if (++fruitlessSearches >= 4) {
+          pi.setActiveTools([...active].filter(name => name !== 'tool_search'));
+          searchShelved = true;
+        }
         const describe = name => (all.find(tool => tool.name === name)?.description ?? '').trim().split(/\r?\n/)[0];
         const text = load.length
           ? 'These tools can be used from your next step:\n' + found.map(name => `- ${name}: ${describe(name)}`).join('\n')
@@ -320,11 +339,15 @@ function policy(pi) {
   pi.on('before_agent_start', event => {
     turnApproved = false; tainted = false; calls = 0; repeats.clear(); unverified.clear(); researched.length = 0;
     fruitlessSearches = 0;
+    if (searchShelved) {
+      pi.setActiveTools([...pi.getActiveTools(), 'tool_search']);
+      searchShelved = false;
+    }
     remember(event.prompt);
     // The model cannot know the date and otherwise assumes one from its
     // training data. The date alone (no clock time) keeps the prompt prefix,
     // and llama.cpp's cache, unchanged until the day turns.
-    event.systemPromptOptions.sections = { ...event.systemPromptOptions.sections, today: today() };
+    event.systemPromptOptions.sections = { ...event.systemPromptOptions.sections, today: today(), runtime: modelFacts() };
   });
   pi.on('before_provider_request', (event, ctx) => {
     const payload = { ...event.payload, cache_prompt: true, ...(init.agent ? { temperature: 0.2 } : {}) };
@@ -395,7 +418,14 @@ function policy(pi) {
       const signature = JSON.stringify([toolName, input]);
       const count = (repeats.get(signature) ?? 0) + 1;
       repeats.set(signature, count);
-      if (count >= 3) return stop(ctx, '同一操作重複 3 次而未推進工作；已停止，修改與上下文仍保留。');
+      // The third identical call is refused with the way out; only a fourth
+      // ends the turn, so a model that can still answer gets the chance to
+      // (the bench's repo tasks: 7 of 15 failures ended here with nothing said).
+      if (count >= 4) return stop(ctx, '同一操作重複 4 次而未推進工作；已停止，修改與上下文仍保留。');
+      if (count === 3) {
+        return { block: true, reason: 'You already ran exactly this twice; a third run will not change the result. '
+          + 'Use what it returned, try a different approach, or tell the user what is done and what is not.' };
+      }
     }
     if (typeof input.path === 'string') {
       const path = resolve(root, input.path);

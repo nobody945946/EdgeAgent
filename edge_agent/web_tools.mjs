@@ -286,7 +286,13 @@ export async function webResearch(question, queries = [], signal,
   });
   if (!best.length) lines.push('\n沒有找到和問題相關的段落。');
   if (failures.length) lines.push(`\n讀不到的：${failures.slice(0, 5).join('；')}`);
-  lines.push('\n回答時：每個事實後面標上段落編號，例如 [2]；段落裡沒有寫的，就說查不到，不要自己補。'
+  // The owner (2026-10-07): an answer that only lists passages is no better
+  // than searching themselves. The model writes the answer the asker wanted from
+  // them; it still never adds facts the passages do not have.
+  lines.push('\n回答時：用這些段落回答對方在這段對話裡真正要的東西，自己整理成結論，'
+    + '照對方要的數量、欄位和格式交齊；不要只貼段落，也不要叫對方自己去查。'
+    + '段落講的若是同名但和對話主題無關的東西，就當作沒查到，換主題的正式名稱再查一次。'
+    + '每個事實後面標上段落編號，例如 [2]；段落裡沒有寫的事實就說查不到，不要自己補。'
     + '數字要有一個一級來源，或兩個不同網站的二級來源支持，不然就說找不到可靠來源。'
     + '來源說法不一就把每種說法和出處都列出來。問的是最新狀況時寫出資料日期，舊資料不要當成現在。'
     + (opinions ? '標成網友意見的段落只是看法，不能當成事實。' : ''));

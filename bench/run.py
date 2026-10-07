@@ -349,6 +349,9 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
     timeout = round(task.get("timeout_s", 900) * config.get("time_scale", 1))
     spec = {**{k: config[k] for k in ("model", "context_size", "max_output_tokens",
                                       "working_context_size", "effort")},
+            # The model the Agent says it is (the bridge's runtime section): a
+            # teacher recording rows for the product speaks as the product's model.
+            **({"model": config["self_model"]} if config.get("self_model") else {}),
             "vision": config.get("vision", False), "prompt": task.get("prompt", ""),
             # A scenario (bench/scenario_cards.py) is a conversation with a simulated user.
             **({"scenario": task["scenario"]} if task.get("scenario") else {}),
