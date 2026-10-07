@@ -39,11 +39,6 @@ def test_the_same_call_twice_in_one_turn_fails() -> None:
     assert scenario_checks.check("no_repeat_search", {"dialogue": [turn("好", [call]), turn("好", [call])]}) is None
 
 
-def test_simplified_characters_in_the_models_own_text_fail() -> None:
-    assert scenario_checks.check("zh_tw", {"trajectory": said("这个结果很好")})
-    assert scenario_checks.check("zh_tw", {"trajectory": said("這個結果很好")}) is None
-
-
 def test_quiet_first_turn_and_no_tools() -> None:
     call = {"name": "web_research", "arguments": {}}
     assert scenario_checks.check("first_turn_quiet", {"dialogue": [turn("萬機之神保佑", [call])]})
@@ -53,8 +48,8 @@ def test_quiet_first_turn_and_no_tools() -> None:
 
 def test_a_conversation_that_did_not_end_cleanly_never_passes() -> None:
     record = {"dialogue": [turn("好", outcome="timeout")], "ended": "turn timeout", "trajectory": said("好")}
-    assert set(scenario_checks.failures(record, ["zh_tw"])) == {"outcome", "ended"}
-    assert scenario_checks.failures({"dialogue": [turn("好")], "ended": "end", "trajectory": said("好")}, ["zh_tw"]) == {}
+    assert set(scenario_checks.failures(record, ["no_tools"])) == {"outcome", "ended"}
+    assert scenario_checks.failures({"dialogue": [turn("好")], "ended": "end", "trajectory": said("好")}, ["no_tools"]) == {}
 
 
 def card(**extra: object) -> dict:
@@ -117,3 +112,8 @@ def test_the_judge_sees_tool_calls_and_results_but_not_thinking() -> None:
     text = scenario_judge.transcript(trajectory)
     assert "秘密思考" not in text
     assert "web_research" in text and "結果" in text and "答案 [1]" in text
+
+
+def test_a_card_with_simplified_characters_is_converted_not_dropped() -> None:
+    converted = scenario_cards.traditional({"goal": "查询这个软件", "plan": ["先问", "这个"], "max_turns": 3})
+    assert converted == {"goal": "查詢這個軟體", "plan": ["先問", "這個"], "max_turns": 3}

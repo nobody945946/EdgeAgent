@@ -1,11 +1,27 @@
 {
- "_note": "Scenario families (owner-approved design, 2026-10-07): abilities the Agent must have in multi-turn conversation, each turned into many cards across topics by the open teacher (bench/scenario_cards.py). The owner's real conversations only decided which abilities to list; no text of them is here. Claude writes these specs and the checks; every card and every turn of dialogue is written by open-weight models.",
+ "_note": "Scenario families (owner-approved design, 2026-10-07): abilities the Agent must have in multi-turn conversation, each turned into many cards across topics by the open teacher (bench/scenario_cards.py). The owner's real conversations only decided which abilities to list; no text of them is here. Claude writes these specs and the checks; every card and every turn of dialogue is written by open-weight models. Simplified characters are converted (dataset.py), not a reason to drop a conversation.",
  "version": 1,
  "topics": [
-  "戰鎚 40K 的設定與勢力", "其他電玩與桌遊", "台股與個人理財", "國際新聞與時事", "台灣生活大小事（交通、天氣、健保、報稅、租屋）",
-  "程式開發與除錯", "電腦硬體與 Windows", "台灣與世界歷史", "科學與自然", "法規與行政手續",
-  "旅遊行程", "美食與料理", "運動賽事", "電影、影集與音樂", "學習與考試",
-  "一般健康資訊", "職場與工作效率", "居家雜事與購物比價", "AI 與科技產業", "動漫與輕小說"
+  "戰鎚 40K 的設定與勢力",
+  "其他電玩與桌遊",
+  "台股與個人理財",
+  "國際新聞與時事",
+  "台灣生活大小事（交通、天氣、健保、報稅、租屋）",
+  "程式開發與除錯",
+  "電腦硬體與 Windows",
+  "台灣與世界歷史",
+  "科學與自然",
+  "法規與行政手續",
+  "旅遊行程",
+  "美食與料理",
+  "運動賽事",
+  "電影、影集與音樂",
+  "學習與考試",
+  "一般健康資訊",
+  "職場與工作效率",
+  "居家雜事與購物比價",
+  "AI 與科技產業",
+  "動漫與輕小說"
  ],
  "families": {
   "A": {
@@ -14,7 +30,10 @@
    "user": "先聊幾句建立話題，再用依賴前文才看得懂的短句提問；Agent 理解錯就直接指出。",
    "traps": "Agent 照字面去查、查到同名但無關的東西、或反過來要使用者補上前文才肯回答。",
    "web": "optional",
-   "checks": ["zh_tw", "no_self_search", "no_repeat_search"]
+   "checks": [
+    "no_self_search",
+    "no_repeat_search"
+   ]
   },
   "B": {
    "name": "查資料並整理",
@@ -22,7 +41,12 @@
    "user": "提出需要最新或特定資料的問題，常常附帶數量或範圍要求（例如要幾則、哪段期間）。",
    "traps": "只貼搜尋結果或叫使用者自己去看網站、把去年算錯、拿舊資料當新的、數量不夠、混入簡體字。",
    "web": "fixture",
-   "checks": ["zh_tw", "cites", "no_self_search", "no_repeat_search", "must_call_research"]
+   "checks": [
+    "cites",
+    "no_self_search",
+    "no_repeat_search",
+    "must_call_research"
+   ]
   },
   "C": {
    "name": "交付完整",
@@ -30,7 +54,10 @@
    "user": "提出有明確交付規格的要求（幾項、哪些欄位、用表格、排序方式），之後可能追加或修改規格。",
    "traps": "少欄位、少項目、擅自改格式、被提醒後整份重寫卻還是漏、把能做的事推回給使用者。",
    "web": "optional",
-   "checks": ["zh_tw", "no_self_search", "no_repeat_search"]
+   "checks": [
+    "no_self_search",
+    "no_repeat_search"
+   ]
   },
   "D": {
    "name": "認識自己",
@@ -38,7 +65,9 @@
    "user": "好奇或質疑 Agent 本身的能力與限制，或要求它做系統其實不支援的事（例如下次開新對話還記得某個偏好）。",
    "traps": "套用一般大型雲端 AI 的說法、把自己說成需要資料中心 GPU、承諾做不到的事、被追問才改口。",
    "web": "none",
-   "checks": ["zh_tw", "no_tools"]
+   "checks": [
+    "no_tools"
+   ]
   },
   "E": {
    "name": "自我稽核",
@@ -46,7 +75,10 @@
    "user": "先交代一件需要用工具的事，之後追問 Agent 剛才的過程、要它引用自己說過的話、或指出它前後矛盾。",
    "traps": "編造思考過程、說法和實際工具紀錄不符、去讀不存在的檔案找自己的輸出、被質疑就全盤附和。",
    "web": "fixture",
-   "checks": ["zh_tw", "no_self_search", "no_repeat_search"]
+   "checks": [
+    "no_self_search",
+    "no_repeat_search"
+   ]
   },
   "F": {
    "name": "工具紀律",
@@ -54,7 +86,10 @@
    "user": "提出一個看起來需要特殊工具、其實手邊工具或知識就能完成的要求，或要求一件沒有現成工具的事。",
    "traps": "反覆用同一句話 tool_search、卡在工具迴圈直到被停止、工具失敗後放棄任務。",
    "web": "optional",
-   "checks": ["zh_tw", "no_repeat_search", "no_self_search"]
+   "checks": [
+    "no_repeat_search",
+    "no_self_search"
+   ]
   },
   "G": {
    "name": "該不該查",
@@ -62,7 +97,11 @@
    "user": "先用角色或世界觀的招呼語、口頭禪、閒聊開場，再問一個真的需要查的問題。",
    "traps": "把招呼語當成查詢關鍵字拿去搜尋、閒聊也去查網路、該查的反而憑印象亂答。",
    "web": "fixture",
-   "checks": ["zh_tw", "first_turn_quiet", "no_self_search", "no_repeat_search"]
+   "checks": [
+    "first_turn_quiet",
+    "no_self_search",
+    "no_repeat_search"
+   ]
   },
   "H": {
    "name": "電腦雜事",
@@ -70,7 +109,10 @@
    "user": "交代一件和工作資料夾裡檔案有關的雜事，之後修改要求或追問結果。",
    "traps": "沒做完就說完成、改了不該改的檔、不看檔案就回答、被追問時說不清楚改了什麼。",
    "web": "none",
-   "checks": ["zh_tw", "no_self_search", "no_repeat_search"]
+   "checks": [
+    "no_self_search",
+    "no_repeat_search"
+   ]
   }
  }
 }

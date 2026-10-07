@@ -2,8 +2,7 @@
 
 A dialogue is what agent_runner.py returns for a scenario card: `dialogue`
 (each user line, the answer the asker read, the tool calls and how the turn
-ended) and the Pi `trajectory` (the model's own text, before the host turns
-Simplified characters into Traditional). These checks run before the judge
+ended) and the Pi `trajectory`. These checks run before the judge
 model and are the more reliable gate: a dialogue that fails one never
 becomes a training row, whatever the judge says.
 """
@@ -13,7 +12,6 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from functools import cache
 
 RESEARCH = {"web_research", "web_search"}
 CITATION = re.compile(r"\[\d+\]")
@@ -25,24 +23,6 @@ SELF_SEARCH = re.compile(
 )
 
 
-@cache
-def _characters() -> object:
-    from opencc import OpenCC
-
-    return OpenCC("s2t")
-
-
-def simplified(text: str) -> bool:
-    """True when the text has a character OpenCC would turn into Traditional."""
-    return bool(text) and str(_characters().convert(text)) != text  # type: ignore[attr-defined]
-
-
-def model_text(trajectory: list[dict]) -> list[str]:
-    """The text the model wrote in its answers (not its thinking, not tool calls)."""
-    return [item.get("text", "") for message in trajectory if message.get("role") == "assistant"
-            for item in message.get("content") or []
-            if isinstance(item, dict) and item.get("type") == "text"]
-
 
 def repeated_calls(calls: list[dict]) -> list[str]:
     seen = Counter(f"{c.get('name')} {json.dumps(c.get('arguments'), ensure_ascii=False, sort_keys=True)}"
@@ -53,9 +33,6 @@ def repeated_calls(calls: list[dict]) -> list[str]:
 def check(name: str, dialogue: dict) -> str | None:
     """None when the dialogue passes check `name`, else why it does not."""
     turns = dialogue.get("dialogue") or []
-    if name == "zh_tw":
-        bad = [text[:40] for text in model_text(dialogue.get("trajectory") or []) if simplified(text)]
-        return f"Simplified characters in: {bad[:2]}" if bad else None
     if name == "cites":
         missing = [i + 1 for i, turn in enumerate(turns)
                    if RESEARCH & {c.get("name") for c in turn.get("calls") or []}

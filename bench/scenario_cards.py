@@ -34,7 +34,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run  # noqa: E402  (the one way to start a model server)
-from scenario_checks import check  # noqa: E402
+
+from edge_agent.turn import taiwan_traditional  # noqa: E402
 
 BENCH = Path(__file__).resolve().parent
 FAMILIES = BENCH / "scenarios" / "families.json"
@@ -146,13 +147,19 @@ def problems(card: dict, family_id: str, family: dict) -> list[str]:
             and not Path(path).is_absolute() and ".." not in Path(path).parts
             for path, text in files.items())):
         found.append("H needs 2-6 text files with relative paths")
-    text = json.dumps(card, ensure_ascii=False)
-    try:
-        if check("zh_tw", {"trajectory": [{"role": "assistant", "content": [{"type": "text", "text": text}]}]}):
-            found.append("Simplified characters")
-    except ImportError:
-        pass
     return found
+
+
+def traditional(value: object) -> object:
+    """Every string of a card in Taiwan's forms (the teacher slips Simplified
+    characters in; the product's converter leaves Traditional text alone)."""
+    if isinstance(value, str):
+        return taiwan_traditional(value)
+    if isinstance(value, list):
+        return [traditional(item) for item in value]
+    if isinstance(value, dict):
+        return {key: traditional(item) for key, item in value.items()}
+    return value
 
 
 def bigrams(text: str) -> set[str]:
@@ -197,6 +204,7 @@ def generate(args: argparse.Namespace) -> None:
             tries += 1
             topic = rng.choice(topics)
             card = parse_card(ask(server.port, prompt_for(family_id, family, topic, today)))
+            card = traditional(card) if card is not None else None
             why = ["not JSON"] if card is None else problems(card, family_id, family)
             with lock:
                 if not why and near_duplicate(card, [c for c in kept if c["family"] == family_id]):

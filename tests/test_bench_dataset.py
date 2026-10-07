@@ -58,3 +58,8 @@ def test_a_new_user_turn_ends_a_stretch() -> None:
     second = {"messages": [*first["messages"], {"role": "assistant", "content": "答"},
                            {"role": "user", "content": "二"}]}
     assert dataset.user_turns(second) > dataset.user_turns(first)
+
+
+def test_rows_teach_taiwan_forms_but_leave_traditional_text_alone() -> None:
+    assert dataset.taiwan_traditional("这个软件") == "這個軟體"
+    assert dataset.taiwan_traditional("測試通過") == "測試通過"

@@ -49,17 +49,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from edge_agent import prompt as agent_prompt  # noqa: E402
+from edge_agent.turn import taiwan_traditional  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "bench"))
 from make_tool_tasks import EXPECT_TOOLS  # noqa: E402
 
 EVAL_TASKS = {p.name for p in (ROOT / "bench/tasks").iterdir() if p.is_dir()}
-sys.path.insert(0, "/home/clawd/SilentTalk")
-try:
-    from silenttalk.copilot.script import to_taiwan_traditional
-except ImportError:  # no converter: keep the text as the teacher wrote it
-    def to_taiwan_traditional(text: str) -> str:
-        return text
 
 
 def final_answer(trajectory: list[dict]) -> dict | None:
@@ -147,9 +142,14 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
             if not last_of_stretch:
                 continue
             messages = [dict(m) for m in request["messages"]] + [reply]
+            # The teacher (Qwen) slips Simplified characters into what it and
+            # the simulated user write; the student learns Taiwan's forms (the
+            # product's own converter, which leaves Traditional text alone).
             for message in messages:
-                if message.get("role") == "user" and isinstance(message.get("content"), str):
-                    message["content"] = to_taiwan_traditional(message["content"])
+                if message.get("role") in ("user", "assistant"):
+                    for key in ("content", "reasoning_content"):
+                        if isinstance(message.get(key), str):
+                            message[key] = taiwan_traditional(message[key])
             kept.append({"messages": messages, "tools": request["tools"], "train": "all",
                          "train_from": len(requests[start]["messages"]),
                          "source": {"run": run_dir.name, "job": job, "kind": result.get("kind", ""),
