@@ -136,6 +136,47 @@ def build_image() -> None:
                         f"edgeagent-bench-{name}:1", str(repo_context)], check=True)
 
 
+def task_digest(task_dir: Path) -> str:
+    """What a job was played on: every file of its task directory."""
+    digest = hashlib.sha256()
+    for path in sorted(p for p in task_dir.rglob("*") if p.is_file()):
+        digest.update(path.relative_to(task_dir).as_posix().encode() + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()[:16]
+
+
+def drop_superseded(run_dir: Path) -> None:
+    """Results of a task that changed since they were recorded (2026-10-08:
+    cards got the files their users talk about) are no result of the task as
+    it is: drop them with their recording, trajectory and verdict, so a
+    resumed run plays them again. Rows from before digests are kept."""
+    results = run_dir / "results.jsonl"
+    if not results.is_file():
+        return
+    rows = [json.loads(line) for line in results.read_text(encoding="utf-8").splitlines()]
+    current: dict[str, str | None] = {}
+    for row in rows:
+        if row["task"] not in current:
+            task_dir = TASK_ROOT / row["task"]
+            current[row["task"]] = task_digest(task_dir) if task_dir.is_dir() else None
+    stale = [row for row in rows if row.get("task_digest") and current[row["task"]]
+             and row["task_digest"] != current[row["task"]]]
+    if not stale:
+        return
+    jobs = {f"{row['task']}-r{row['rep']}" for row in stale}
+    keep = [row for row in rows if row not in stale]
+    results.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in keep), encoding="utf-8")
+    for job in jobs:
+        shutil.rmtree(run_dir / "records" / job, ignore_errors=True)
+        (run_dir / "traj" / f"{job}.json").unlink(missing_ok=True)
+    verdicts = run_dir / "verdicts.jsonl"
+    if verdicts.is_file():
+        lines = verdicts.read_text(encoding="utf-8").splitlines()
+        verdicts.write_text("".join(line + "\n" for line in lines if json.loads(line)["job"] not in jobs),
+                            encoding="utf-8")
+    print(f"{len(stale)} results were recorded on an earlier version of their task; dropped to play again",
+          flush=True)
+
+
 def free_vram_mib() -> int:
     out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
                          capture_output=True, text=True, check=True).stdout
@@ -368,6 +409,9 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
         # Unix socket paths are limited to ~108 bytes: a short name per job.
         sock_dir = run_dir / "s" / hashlib.sha1(job.encode()).hexdigest()[:10]
         sock_dir.mkdir(parents=True, exist_ok=True)
+        # A rerun (a crash, a card changed) records from 0000 again: requests
+        # of the earlier attempt must not outlive it.
+        shutil.rmtree(run_dir / "records" / job, ignore_errors=True)
         relay = subprocess.Popen(
             [sys.executable, str(BENCH / "relay.py"), "--listen",
              f"unix:{sock_dir / 'model.sock'}", "--connect", f"tcp:127.0.0.1:{record_port}",
@@ -526,6 +570,7 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     containment(run_dir)
     results = run_dir / "results.jsonl"
+    drop_superseded(run_dir)
     done = set()
     if results.is_file():
         for line in results.read_text(encoding="utf-8").splitlines():
@@ -571,11 +616,12 @@ def main() -> None:
             if refit_at is not None and time.monotonic() > refit_at:
                 handed_back.set()
                 return
+            digest = task_digest(job[0])
             row = run_job(job[0], job[1], args.config, config, run_dir, server.sock_dir,
                           args.keep, bridge, product,
                           record_port=server.port if args.record else None,
                           simulator_sock=simulator.sock_dir if simulator is not None else None)
-            row["revision"] = revision
+            row["revision"], row["task_digest"] = revision, digest
             # A model server that died mid-run (2026-10-07: another tenant took
             # the GPU) fails every later job in seconds; those are not the
             # model's results. Stop without recording: the next start resumes.

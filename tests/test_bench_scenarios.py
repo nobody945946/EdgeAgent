@@ -7,6 +7,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
 
 import scenario_cards  # noqa: E402
@@ -63,9 +65,12 @@ def test_card_validation() -> None:
     assert scenario_cards.problems(card(), "B", family) == []
     assert "needs 3-7 pages" in scenario_cards.problems(card(pages=[]), "B", family)
     assert "max_turns must be 2-8" in scenario_cards.problems(card(max_turns=12), "B", family)
-    assert scenario_cards.problems(card(files={"a.txt": "x"}), "H", {"web": "none"}) == [
-        "H needs 2-6 text files with relative paths"]
-    assert scenario_cards.problems(card(files={"a.txt": "x", "../b.txt": "y"}), "H", {"web": "none"})
+    assert scenario_cards.file_problems({}, "C") == []
+    assert scenario_cards.file_problems({"a.txt": "x"}, "H") == ["needs 2-6 files"]
+    assert scenario_cards.file_problems({"a.txt": "x", "../b.txt": "y"}, "H")
+    assert scenario_cards.file_problems({"C:/logs/a.txt": "x"}, "C")
+    assert scenario_cards.file_problems({"logs\\..\\..\\a.txt": "x"}, "C")
+    assert scenario_cards.file_problems({"logs/a.txt": "x", "b.csv": "y"}, "H") == []
 
 
 def test_near_duplicate_cards_are_dropped() -> None:
@@ -85,8 +90,13 @@ def test_cards_become_tasks_with_the_stand_in_web(tmp_path: Path, monkeypatch) -
     monkeypatch.setattr(scenario_cards, "OUT", tmp_path)
     one = {**card(), "id": "train-B-001", "family": "B", "topic": "台灣生活"}
     (tmp_path / "train-cards.jsonl").write_text(json.dumps(one, ensure_ascii=False) + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="run `files` first"):
+        scenario_cards.tasks(type("Args", (), {"split": "train"})())
+    one["files"] = {"logs/app.log": "[ERROR] db 連線逾時"}
+    (tmp_path / "train-cards.jsonl").write_text(json.dumps(one, ensure_ascii=False) + "\n", encoding="utf-8")
     scenario_cards.tasks(type("Args", (), {"split": "train"})())
     task_dir = tmp_path / "train-tasks" / "train-B-001"
+    assert (task_dir / "workspace" / "logs" / "app.log").read_text(encoding="utf-8") == "[ERROR] db 連線逾時"
     task = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
     assert task["kind"] == "scenario" and task["web"] and task["check"] == ["true"]
     assert "must" not in task["scenario"] and "goal" in task["scenario"]
@@ -187,3 +197,30 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
         assert not verdicts["train-C-004-r0"]["passed"] and len(verdicts["train-C-004-r0"]["judge"]) == 1
     finally:
         httpd.shutdown()
+
+
+def test_results_of_a_changed_task_are_dropped_to_play_again(tmp_path: Path, monkeypatch) -> None:
+    import run
+
+    tasks, run_dir = tmp_path / "tasks", tmp_path / "run"
+    for name in ("a", "b", "c"):
+        (tasks / name / "workspace").mkdir(parents=True)
+        (tasks / name / "task.json").write_text("{}")
+    monkeypatch.setattr(run, "TASK_ROOT", tasks)
+    digests = {name: run.task_digest(tasks / name) for name in ("a", "b")}
+    rows = [{"task": "a", "rep": 0, "task_digest": digests["a"]},
+            {"task": "b", "rep": 0, "task_digest": digests["b"]},
+            {"task": "c", "rep": 0}]  # from before digests: kept
+    (run_dir / "records" / "b-r0").mkdir(parents=True)
+    (run_dir / "traj").mkdir()
+    (run_dir / "traj" / "b-r0.json").write_text("[]")
+    (run_dir / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (run_dir / "verdicts.jsonl").write_text('{"job": "a-r0"}\n{"job": "b-r0"}\n')
+    run.drop_superseded(run_dir)
+    assert len((run_dir / "results.jsonl").read_text().splitlines()) == 3
+    (tasks / "b" / "workspace" / "app.log").write_text("[ERROR] x")
+    run.drop_superseded(run_dir)
+    left = [json.loads(line)["task"] for line in (run_dir / "results.jsonl").read_text().splitlines()]
+    assert left == ["a", "c"]
+    assert not (run_dir / "records" / "b-r0").exists() and not (run_dir / "traj" / "b-r0.json").exists()
+    assert (run_dir / "verdicts.jsonl").read_text() == '{"job": "a-r0"}\n'
