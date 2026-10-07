@@ -180,7 +180,7 @@
   "lora": "machine-spirit-v1.q8_0.gguf"
  },
  "teacher-38": {
-  "_note": "The one teacher (owner, 2026-10-07): Qwen3.8-27B (Apache 2.0) UD-Q4_K_XL, all on GPU, the Agent's 64K window, thinking high so its reasoning is recorded with its answers. Also plays the simulated user in scenario cards it records. Dev box only. Says it is the product's model (self_model) so its rows teach the student what it is.",
+  "_note": "The one teacher (owner, 2026-10-07): Qwen3.8-27B (Apache 2.0) UD-Q4_K_XL, all on GPU, the Agent's 64K window, thinking high so its reasoning is recorded with its answers. Also plays the simulated user in scenario cards it records. Dev box only. Says it is the product's model (self_model) so its rows teach the student what it is. Thinking capped at 1,024 tokens a step (2026-10-07): uncapped it wrote 20-40K characters of thinking per conversation, ran into the 16K output cap 4 times in 29, and small students learn short reasoning better than long (2502.12143).",
   "model": "../teacher/Qwen3.8-27B-UD-Q4_K_XL.gguf",
   "self_model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
   "vision": false,
@@ -191,7 +191,11 @@
   "low_vram": true,
   "vram_base_mib": 18500,
   "vram_slot_mib": 1500,
-  "search_tools": true
+  "search_tools": true,
+  "extra_args": [
+   "--reasoning-budget",
+   "1024"
+  ]
  },
  "judge-gemma": {
   "_note": "The scenario judge (owner, 2026-10-07): Gemma 4 31B, another family than the teacher so it does not grade its own kind's answers; IQ3_XXS agreed 99% with Q4 as the character pipeline's checker.",
