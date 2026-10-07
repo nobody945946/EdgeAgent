@@ -231,5 +231,6 @@ def _guard(tool: Tool, fn: Callable[[dict, Path], str]) -> Callable[[dict, Path]
 
 
 # Each module registers its tools on import (after the names above exist).
-for _module in ("files", "photos", "text", "system", "dev", "calc"):
+for _module in ("backup", "tidy", "zips", "scan", "photos", "text", "system", "git", "checks", "outline",
+                "calc"):
     importlib.import_module(f"edge_agent.toolbox.{_module}")

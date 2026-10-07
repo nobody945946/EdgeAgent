@@ -57,6 +57,10 @@ def human_size(size: float) -> str:
     raise AssertionError
 
 
+def human_count(n: int) -> str:
+    return f"{n:,}"
+
+
 def cap(lines: list[str], limit: int = 40) -> list[str]:
     if len(lines) <= limit:
         return lines
