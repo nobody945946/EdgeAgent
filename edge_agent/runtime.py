@@ -36,6 +36,7 @@ CONTEXT_CHECKPOINTS = 2
 NODE_VERSION = "22.23.3"
 CORE_ROOT = Path(__file__).resolve().parents[1]
 MODEL_DIR = CORE_ROOT / "models"
+SLOT_SAVE_DIR = CORE_ROOT / ".runtime/slots"
 
 
 class EdgeAgentError(RuntimeError):
@@ -66,6 +67,7 @@ def build_server_args(
     lora_paths: Sequence[Path] = (),
     projector_path: Path | None = None,
     slots: int = 1,
+    slot_save_path: Path | None = None,
 ) -> list[str]:
     """Build the one canonical llama-server command for every core mode.
 
@@ -81,6 +83,8 @@ def build_server_args(
     The vision projector, when loaded, adds about 0.55 GB."""
     if slots not in (1, 2, 3):
         raise ValueError("slots must be 1, 2 or 3")
+    target_slot_dir = slot_save_path or SLOT_SAVE_DIR
+    target_slot_dir.mkdir(parents=True, exist_ok=True)
     args = [
         executable,
         "--model",
@@ -106,6 +110,8 @@ def build_server_args(
         str(PROMPT_CACHE_MIB),
         "--ctx-checkpoints",
         str(CONTEXT_CHECKPOINTS),
+        "--slot-save-path",
+        str(target_slot_dir).replace("\\", "/"),
     ]
     if slots > 1:
         args += ["--kv-unified"]

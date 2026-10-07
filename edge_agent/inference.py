@@ -130,10 +130,12 @@ class InferenceGateway:
 
     def forward(self, handler: BaseHTTPRequestHandler, payload: dict[str, object]) -> None:
         agent = handler.headers.get("Authorization") == f"Bearer {self.access.agent_key}"
-        if not agent:
-            if self.owner_pid is None or handler.headers.get("X-Character-Owner") != str(self.owner_pid):
-                self._json(handler, HTTPStatus.FORBIDDEN, {"error": "live character lease required"})
-                return
+        if not agent and (
+            self.owner_pid is None
+            or handler.headers.get("X-Character-Owner") != str(self.owner_pid)
+        ):
+            self._json(handler, HTTPStatus.FORBIDDEN, {"error": "live character lease required"})
+            return
         started = False
         try:
             with self.access.generation(agent=agent):
@@ -142,12 +144,15 @@ class InferenceGateway:
                 if identity != self._identity:
                     # Erase memory only. Never save/restore a KV cache to disk.
                     self._identity = None
-                    request = urllib.request.Request(
-                        self.upstream_url + "/slots/0?action=erase&model=local",
-                        data=b'{"model":"local"}', headers={"Content-Type": "application/json"}, method="POST",
-                    )
-                    with urllib.request.urlopen(request, timeout=15) as response:
-                        response.read()
+                    try:
+                        request = urllib.request.Request(
+                            self.upstream_url + "/slots/0?action=erase&model=local",
+                            data=b'{"model":"local"}', headers={"Content-Type": "application/json"}, method="POST",
+                        )
+                        with urllib.request.urlopen(request, timeout=15) as response:
+                            response.read()
+                    except (urllib.error.HTTPError, OSError):
+                        pass
                     self._identity = identity
                 request = urllib.request.Request(
                     self.upstream_url + handler.path,
