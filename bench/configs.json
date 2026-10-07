@@ -279,7 +279,7 @@
   "simulator": "teacher-38-sim"
  },
  "teacher-38-iq3": {
-  "_note": "teacher-38 at IQ3_XXS so five conversations run side by side (2026-10-07: at Q4 two slots made 12-15 conversations an hour, one stuck conversation halved it). The 27B IQ3 ranked within the threshold of Q4 as a teacher before (dev box 2026-09-29: 1.54 vs 1.46). A conversation past 15 minutes (time_scale 0.5 of the cards' 30) is a loop that never becomes a row.",
+  "_note": "teacher-38 at IQ3_XXS so four conversations run side by side (five ran out of memory: a 64K slot takes about 2.1 GB) (2026-10-07: at Q4 two slots made 12-15 conversations an hour, one stuck conversation halved it). The 27B IQ3 ranked within the threshold of Q4 as a teacher before (dev box 2026-09-29: 1.54 vs 1.46). A conversation past 15 minutes (time_scale 0.5 of the cards' 30) is a loop that never becomes a row.",
   "model": "../teacher/Qwen3.8-27B-UD-IQ3_XXS.gguf",
   "self_model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
   "vision": false,
@@ -288,8 +288,8 @@
   "working_context_size": 65536,
   "effort": "high",
   "low_vram": true,
-  "vram_base_mib": 12500,
-  "vram_slot_mib": 1500,
+  "vram_base_mib": 12000,
+  "vram_slot_mib": 2100,
   "search_tools": true,
   "extra_args": [
    "--reasoning-budget",
