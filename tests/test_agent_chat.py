@@ -479,6 +479,11 @@ def repeating_model():
     class ModelHandler(BaseHTTPRequestHandler):
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path.startswith("/slots/0?"):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"n_erased":1}')
+                return
             state.setdefault("requests", []).append(request)
             state["calls"] += 1
             time.sleep(state.get("delays", {}).get(state["calls"], 0))
@@ -719,11 +724,17 @@ def test_real_sdk_compacts_at_working_target_and_retains_ram_archive(
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+@pytest.mark.parametrize("use_gateway", [False, True])
 def test_real_sdk_continues_the_same_task_after_context_overflow_compaction(
-    tmp_path, repeating_model
+    tmp_path, repeating_model, use_gateway
 ):
+    from contextlib import ExitStack, nullcontext
+
+    from tests.test_inference import routed_model
+
     port, state = repeating_model
     phases = []
+    context_size = 65536 if use_gateway else 32768
 
     def respond(request, calls):
         if not request.get("tools"):
@@ -732,7 +743,7 @@ def test_real_sdk_continues_the_same_task_after_context_overflow_compaction(
         phase = sum(item != "compact" for item in phases)
         if phase == 1:
             phases.append("overflow")
-            return {"status": 400, "body": {"error": {"message": "This model's maximum context length is 32768 tokens. Requested tokens exceed context length."}}}
+            return {"status": 400, "body": {"error": {"message": f"This model's maximum context length is {context_size} tokens. Requested tokens exceed context length."}}}
         if phase in (0, 2):
             name = "first.txt" if phase == 0 else "second.txt"
             phases.append(name)
@@ -741,19 +752,27 @@ def test_real_sdk_continues_the_same_task_after_context_overflow_compaction(
         return {"text": "Both task steps completed."}
 
     state["answer"] = True
+    stack = ExitStack()
+    gateway = None
+    if use_gateway:
+        port, gateway = stack.enter_context(routed_model(port))
     chat = NativeChat(model_port=port)
-    chat.configure_context(32768, max_output_tokens=8192, working_context_size=32768)
+    if gateway is not None:
+        chat.api_key = gateway.access.agent_key
+    chat.configure_context(context_size, max_output_tokens=8192, working_context_size=context_size)
     try:
-        assert list(chat.stream_reply(
-            "continuing-task", "synthetic-archive-context " * 800,
-            working_dir=tmp_path,
-        ))[-1][0] == "done"
+        with gateway.access.agent_turn() if gateway else nullcontext():
+            assert list(chat.stream_reply(
+                "continuing-task", "synthetic-archive-context " * (1600 if use_gateway else 800),
+                working_dir=tmp_path,
+            ))[-1][0] == "done"
         state["response_for"] = respond
-        events = list(chat.stream_reply(
-            "continuing-task", "Create first.txt and second.txt. " + "synthetic-task-context " * 1000,
-            agent=True, working_dir=tmp_path,
-            permissions={"edit": "allow", "shell": "deny", "web": "deny"},
-        ))
+        with gateway.access.agent_turn() if gateway else nullcontext():
+            events = list(chat.stream_reply(
+                "continuing-task", "Create first.txt and second.txt. " + "synthetic-task-context " * (2000 if use_gateway else 1000),
+                agent=True, working_dir=tmp_path,
+                permissions={"edit": "allow", "shell": "deny", "web": "deny"},
+            ))
         assert any(name == "compacted" for name, _ in events), (
             phases, [(name, data.get("message")) for name, data in events if name in ("error", "status")]
         )
@@ -765,6 +784,7 @@ def test_real_sdk_continues_the_same_task_after_context_overflow_compaction(
         assert chat.session("continuing-task").entries
     finally:
         chat.close()
+        stack.close()
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")

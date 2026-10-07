@@ -18,6 +18,7 @@ from uuid import uuid4
 from edge_agent.chat import MODES, THINKING_PROFILES, NativeChat, decode_attachments
 from edge_agent.context_pool import allocate_context
 from edge_agent.deploy import download, ensure_projector
+from edge_agent.inference import InferenceGateway
 from edge_agent.mcp import servers_for, validate_mcp_servers
 from edge_agent.models import hub_catalog, list_models, model_filename, model_metadata
 from edge_agent.permissions import (
@@ -184,7 +185,9 @@ class EdgeAgent:
         self.loading = False
         self.config_path = self.core_dir / "config.json"
         self.config = self._load_config()
-        self.chat = NativeChat(model_port=GENERAL_PORT, core_dir=self.core_dir)
+        self.inference = InferenceGateway(GENERAL_PORT)
+        self.chat = NativeChat(model_port=CONTROL_PORT, core_dir=self.core_dir)
+        self.chat.api_key = self.inference.access.agent_key
         self.terminal = NativeTerminal()
         self.active_model = ""
         self.active_lora = ""
@@ -536,12 +539,15 @@ class EdgeAgent:
             "service": "edge-agent",
             "mode": self.mode,
             "ready": ready,
-            "port": self.port,
+            "port": CONTROL_PORT,
+            "inference_policy": "agent_priority_idle_borrow",
+            "inference_slots": 1,
             "url": f"http://127.0.0.1:{CONTROL_PORT}/",
-            "model_url": f"http://127.0.0.1:{self.port}",
+            "model_url": f"http://127.0.0.1:{CONTROL_PORT}",
             "owner_pid": self.owner_pid,
             "agent_slot": self.agent_slot,
             "agent_busy": self.chat_in_progress,
+            "inference_reserved": self.inference.access.agent_reserved,
             "error": self.error,
             "model": self.active_model,
             "lora": self.active_lora,
@@ -625,6 +631,15 @@ class EdgeAgent:
         owner_pid: int | None,
         character: dict[str, object] | None,
     ) -> None:
+        with self.inference.access.maintenance():
+            self._load_child(mode, owner_pid, character)
+
+    def _load_child(
+        self,
+        mode: str,
+        owner_pid: int | None,
+        character: dict[str, object] | None,
+    ) -> None:
         if mode == "base":
             model_path = self._model_path(str(self.config["model"]))
             metadata = model_metadata(model_path)
@@ -650,7 +665,7 @@ class EdgeAgent:
             agent_lora = (self._adapter_path(metadata, str(self.config["lora"]))
                           if self.config["model"] == model_path.name else None)
             # How much of the shared window the character's turns need.
-            character_context = self._bounded_int(character, "context_size", 1_024, 32_768)
+            character_context = self._bounded_int(character, "context_size", 1_024, 262_144)
             port = self._bounded_int(character, "port", 1_024, 65_535)
             if port in (CONTROL_PORT, GENERAL_PORT):
                 raise ValueError("character port conflicts with EdgeAgent")
@@ -665,23 +680,19 @@ class EdgeAgent:
         # EdgeAgent owns the server: one pool of context (its setting, up to
         # the model's own limit) that every slot draws from, placed on the
         # GPU and CPU by --fit. A lease supplies the model and adapter for
-        # both clients and reserves the character's part; the Agent gets the
-        # rest. Standalone preferences remain in config and return with it.
+        # both clients. One slot is lent to the idle character; an Agent task
+        # owns the full window. Standalone preferences remain in config.
         context_size = int(self.config["context_size"])
         limit = metadata["context_length"]
         if isinstance(limit, int) and limit > 0:
             context_size = min(context_size, limit)
             character_context = min(character_context, limit)
-        role_slots = 2 if mode == "character" and character_lora else 1
         # The character's adapter first (index 0, as the lease's client
         # names it), then the Agent's; one file serving both is loaded once.
         loras = list(dict.fromkeys(path for path in (character_lora, agent_lora) if path))
-        allocation = allocate_context(
-            context_size, character_context, role_slots if mode == "character" else 0
-        )
+        allocation = allocate_context(context_size, character_context)
         character_context, agent_context = allocation.character, allocation.agent
-        shared = mode == "character"
-        agent_slot = role_slots if shared else (0 if mode == "base" else None)
+        agent_slot = 0
         # The upstream router owns model processes, loading and hot replacement.
         # Keep one public inference endpoint for the Agent and leased clients.
         args = build_server_args(
@@ -694,7 +705,7 @@ class EdgeAgent:
             low_vram=bool(self.config["low_vram"]),
             lora_paths=loras,
             projector_path=projector_path,
-            slots=role_slots + (1 if shared else 0),
+            slots=allocation.slots,
         )
         preset = self.core_dir / ".runtime/models.ini"
         preset.parent.mkdir(parents=True, exist_ok=True)
@@ -775,7 +786,7 @@ class EdgeAgent:
             "vision": isinstance(modalities, dict) and modalities.get("vision") is True,
             "audio": isinstance(modalities, dict) and modalities.get("audio") is True,
         }
-        # The Agent's window: the whole pool, or what a lease leaves it.
+        # The full configured window belongs to the active Agent task.
         self.active_model, self.active_context_size = model_path.name, agent_context
         self.active_lora = agent_lora.name if agent_lora else ""
         self.active_character_lora = character_lora.name if character_lora else ""
@@ -792,6 +803,7 @@ class EdgeAgent:
         )
         self.chat.slot_id = agent_slot
         self.chat.lora_id = loras.index(agent_lora) if agent_lora else None
+        self.inference.configure(self.owner_pid, len(loras), self.chat.lora_id)
 
     def _projector_path(self, filename: str) -> Path:
         path = self._model_path(filename)
@@ -958,7 +970,11 @@ class Handler(BaseHTTPRequestHandler):
     core: EdgeAgent
 
     def do_GET(self) -> None:
-        if self.path == "/status":
+        if self.path == "/health":
+            ready = self.core.status()["ready"] is True
+            self._json(HTTPStatus.OK if ready else HTTPStatus.SERVICE_UNAVAILABLE,
+                       {"status": "ok" if ready else "loading"})
+        elif self.path == "/status":
             self._json(HTTPStatus.OK, self.core.status())
         elif self.path == "/config":
             self._json(HTTPStatus.OK, self.core.config)
@@ -1011,6 +1027,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.path.rsplit("/", 1)[-1], payload
                 )
                 self._json(HTTPStatus.ACCEPTED, result)
+                return
+            if self.path in InferenceGateway.PATHS:
+                self.core.inference.forward(self, payload)
                 return
             if self.path == "/chat":
                 self._chat(payload)
@@ -1199,22 +1218,23 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("目前模型不支援此附件，請更換模型")
                 self.core.chat_in_progress = True
             try:
-                for event, data in self.core.chat.stream_reply(
-                    session_id,
-                    text.strip(),
-                    thinking_effort=thinking_effort,
-                    agent=agent,
-                    working_dir=working_dir,
-                    mode=mode,
-                    media=media,
-                    permissions=bridge_rules(profile),
-                    scope=scope,
-                    mcp_servers=mcp_servers,
-                    record_folder=self.core.config["record_folder"]
-                    if self.core.config["record_sessions"]
-                    else None,
-                ):
-                    self._event(event, data)
+                with self.core.inference.access.agent_turn():
+                    for event, data in self.core.chat.stream_reply(
+                        session_id,
+                        text.strip(),
+                        thinking_effort=thinking_effort,
+                        agent=agent,
+                        working_dir=working_dir,
+                        mode=mode,
+                        media=media,
+                        permissions=bridge_rules(profile),
+                        scope=scope,
+                        mcp_servers=mcp_servers,
+                        record_folder=self.core.config["record_folder"]
+                        if self.core.config["record_sessions"]
+                        else None,
+                    ):
+                        self._event(event, data)
             finally:
                 with self.core.lock:
                     self.core.chat_in_progress = False

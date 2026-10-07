@@ -49,7 +49,7 @@ const modelRuntime = await sdk.ModelRuntime.create({
   allowModelNetwork: false, refreshOnCreate: false,
 });
 modelRuntime.registerProvider('local', {
-  api: 'openai-completions', baseUrl: init.model_url + '/v1', apiKey: 'local',
+  api: 'openai-completions', baseUrl: init.model_url + '/v1', apiKey: init.api_key || 'local',
   models: [{ id: init.model, name: init.model_name, reasoning: true,
     thinkingLevelMap: { off: 'none' },
     input: init.capabilities?.vision || init.capabilities?.audio ? ['text', 'image'] : ['text'],

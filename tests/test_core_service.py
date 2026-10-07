@@ -222,8 +222,8 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
     model_limit,
 ):
     """One pool for both clients: EdgeAgent's own size (up to the model's
-    limit), the character's part reserved, the rest the Agent's window; the
-    server is placed by EdgeAgent (--fit), locked in RAM, its cache bounded.
+    limit), borrowed serially without reducing the Agent window. The server
+    is placed by EdgeAgent (--fit), mapped from disk, its cache bounded.
     The character's adapter is the lease's (index 0); the Agent keeps its own
     when its model is the leased one, and each request names only its own."""
     manager = service.EdgeAgent(tmp_path)
@@ -236,9 +236,8 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
         }
     )
     saved = manager.config_path.read_bytes()
-    role_slots = 2 if leased_lora else 1
     pool = model_limit
-    agent_window = pool - role_slots * 32768
+    agent_window = pool
     _lease_fixture(manager, monkeypatch, tmp_path, model_limit, pool)
     leased_model = "base.gguf" if same_base else "other.gguf"
     status = manager.switch(
@@ -247,12 +246,13 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
         {"model": leased_model, "lora": leased_lora, "port": 18088, "context_size": 32768},
     )
     preset = (tmp_path / ".runtime/models.ini").read_text()
-    assert f"parallel = {role_slots + 1}" in preset
+    assert "parallel = 1" in preset
+    assert "kv-unified" not in preset
     assert f"ctx-size = {pool}" in preset
-    for line in ("kv-unified = true", "load-mode = mmap", "lazy-mode = on", "cache-ram = 256",
+    for line in ("load-mode = mmap", "lazy-mode = on", "cache-ram = 256",
                  "ctx-checkpoints = 2", "n-gpu-layers = auto", "fit = on"):
         assert line in preset
-    assert manager.agent_slot == manager.chat.slot_id == role_slots
+    assert manager.agent_slot == manager.chat.slot_id == 0
     assert manager.chat.context_size == status["context_size"] == agent_window
     agent = standalone_lora if same_base else ""
     loaded = list(dict.fromkeys(name for name in (leased_lora, agent) if name))
@@ -298,10 +298,10 @@ def test_a_small_pool_bounds_the_lease_and_keeps_the_agent(tmp_path, monkeypatch
         {"model": "base.gguf", "lora": "", "port": 18088, "context_size": 32768},
     )
     preset = (tmp_path / ".runtime/models.ini").read_text()
-    assert "parallel = 2" in preset and "ctx-size = 16384" in preset
-    assert "kv-unified = true" in preset
-    assert manager.agent_slot == 1
-    assert manager.status()["context_size"] == 8192
+    assert "parallel = 1" in preset and "ctx-size = 16384" in preset
+    assert "kv-unified" not in preset
+    assert manager.agent_slot == 0
+    assert manager.status()["context_size"] == 16384
 
 
 def test_busy_stream_cannot_switch_models_but_does_not_hold_service_lock(tmp_path):

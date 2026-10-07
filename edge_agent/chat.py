@@ -236,6 +236,7 @@ class NativeChat:
     def __init__(self, *, model_port: int, core_dir: Path = CORE_ROOT) -> None:
         self.core_dir = core_dir.resolve()
         self.model_url = f"http://127.0.0.1:{model_port}"
+        self.api_key = "local"
         self.context_size = GENERAL_CONTEXT_SIZE
         self.max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS
         self.working_context_size = DEFAULT_WORKING_CONTEXT_SIZE
@@ -514,6 +515,7 @@ class NativeChat:
             {
                 "cwd": str(cwd),
                 "model_url": self.model_url,
+                "api_key": self.api_key,
                 "model": "local",
                 "model_name": self.model,
                 "slot_id": self.slot_id,
