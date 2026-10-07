@@ -206,7 +206,7 @@
   "lora": "agent-fw2.q8_0.gguf"
  },
  "teacher-38-sim": {
-  "_note": "The simulated user when a student plays scenario cards: the same teacher model, IQ3 so it fits beside E4B. Plays the user only (no tools).",
+  "_note": "The simulated user when a student plays scenario cards: the same teacher model, IQ3 so it fits beside E4B. Plays the user only (no tools). VRAM from the IQ3 measurement (2026-10-08: 12,720 MiB with one 64K slot, 15,302 with two): base 10,200, a 32K slot about 1,300.",
   "model": "../teacher/Qwen3.8-27B-UD-IQ3_XXS.gguf",
   "vision": false,
   "context_size": 32768,
@@ -214,8 +214,8 @@
   "working_context_size": 32768,
   "effort": "off",
   "low_vram": true,
-  "vram_base_mib": 11500,
-  "vram_slot_mib": 1200
+  "vram_base_mib": 10200,
+  "vram_slot_mib": 1300
  },
  "e4b-laptop-base-scen": {
   "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
@@ -225,10 +225,10 @@
   "working_context_size": 65536,
   "effort": "high",
   "low_vram": true,
-  "vram_base_mib": 6000,
-  "vram_slot_mib": 1500,
+  "vram_base_mib": 5000,
+  "vram_slot_mib": 1200,
   "search_tools": true,
-  "_note": "e4b-laptop-base-high playing held-out scenario cards against the simulated user on its own server (teacher-38-sim).",
+  "_note": "e4b-laptop-base-high playing held-out scenario cards against the simulated user on its own server (teacher-38-sim). VRAM from E4B's layout: 4 of its 24 KV-holding layers are global (16 KB a token), so a 64K slot is about 1.05 GB; weights on the GPU 2.5 GB (the 1.5 GB per-layer table stays in RAM) plus vision and buffers.",
   "simulator": "teacher-38-sim"
  },
  "e4b-laptop-fw2-scen": {
@@ -239,8 +239,8 @@
   "working_context_size": 65536,
   "effort": "high",
   "low_vram": true,
-  "vram_base_mib": 6000,
-  "vram_slot_mib": 1500,
+  "vram_base_mib": 5000,
+  "vram_slot_mib": 1200,
   "search_tools": true,
   "lora": "agent-fw2.q8_0.gguf",
   "_note": "e4b-laptop-fw2-high playing held-out scenario cards against the simulated user on its own server (teacher-38-sim).",
