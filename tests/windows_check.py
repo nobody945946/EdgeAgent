@@ -281,7 +281,7 @@ def main() -> int:
         (workspace / "probe.py").write_text("fixture_marker = 1\n")
         core = EdgeAgent(root)
         core.model_dir = CORE_ROOT / "models"
-        core.chat.core_dir = CORE_ROOT
+        core.chat.bridge.core_dir = CORE_ROOT
         core.config = {
             **core.config,
             "model": QWEN_MODEL,
