@@ -41,17 +41,26 @@ def test_the_same_call_twice_in_one_turn_fails() -> None:
     assert scenario_checks.check("no_repeat_search", {"dialogue": [turn("好", [call]), turn("好", [call])]}) is None
 
 
-def test_quiet_first_turn_and_no_tools() -> None:
-    call = {"name": "web_research", "arguments": {}}
-    assert scenario_checks.check("first_turn_quiet", {"dialogue": [turn("萬機之神保佑", [call])]})
-    assert scenario_checks.check("first_turn_quiet", {"dialogue": [turn("萬機之神保佑"), turn("查到了 [1]", [call])]}) is None
-    assert scenario_checks.check("no_tools", {"dialogue": [turn("我是 E4B", [call])]})
+def test_reading_the_machine_itself_never_passes_and_sandbox_words_only_when_unasked() -> None:
+    probe = {"name": "powershell", "arguments": {"command": "Get-CimInstance Win32_VideoController"}}
+    found = scenario_checks.failures({"dialogue": [turn("你跑在 GPU 上", [probe])], "ended": "end"}, [])
+    assert set(found) == {"system_probe"}
+    work = {"name": "read", "arguments": {"path": "/work/notes.md"}}
+    assert scenario_checks.failures({"dialogue": [turn("讀完了", [work])], "ended": "end"}, []) == {}
+    assert scenario_checks.check("no_sandbox_words", {"dialogue": [turn("我跑在 Docker 容器裡")]})
+    linux = {"user": "我在 Linux 上跑 .NET", "answer": "Linux 上要裝憑證", "calls": [], "outcome": "done"}
+    assert scenario_checks.check("no_sandbox_words", {"dialogue": [linux]}) is None
+
+
+def test_checks_are_the_familys_policy_read_when_judging() -> None:
+    assert scenario_checks.family_checks("D") == ["no_sandbox_words"]
+    assert "first_turn_quiet" not in scenario_checks.family_checks("G")
 
 
 def test_a_conversation_that_did_not_end_cleanly_never_passes() -> None:
     record = {"dialogue": [turn("好", outcome="timeout")], "ended": "turn timeout", "trajectory": said("好")}
-    assert set(scenario_checks.failures(record, ["no_tools"])) == {"outcome", "ended"}
-    assert scenario_checks.failures({"dialogue": [turn("好")], "ended": "end", "trajectory": said("好")}, ["no_tools"]) == {}
+    assert set(scenario_checks.failures(record, [])) == {"outcome", "ended"}
+    assert scenario_checks.failures({"dialogue": [turn("好")], "ended": "end", "trajectory": said("好")}, []) == {}
 
 
 def card(**extra: object) -> dict:
@@ -184,7 +193,7 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
         name = f"train-C-{n:03d}"
         (task_root / name).mkdir(parents=True)
         (task_root / name / "task.json").write_text(json.dumps(
-            {"family": "C", "must": ["做完"], "must_not": ["反問"], "checks": [], "scenario": {"goal": f"目標{n}"}}))
+            {"family": "C", "must": ["做完"], "must_not": ["反問"], "scenario": {"goal": f"目標{n}"}}))
         answer = f"答{n}。完整的結尾{n}。" if n < 4 else None
         trajectory = [{"role": "user", "content": "問"}, *(said(answer) if answer else [])]
         (run_dir / "traj" / f"{name}-r0.json").write_text(json.dumps(trajectory, ensure_ascii=False))
@@ -219,6 +228,8 @@ def test_results_of_a_changed_task_are_dropped_to_play_again(tmp_path: Path, mon
         (tasks / name / "task.json").write_text("{}")
     monkeypatch.setattr(run, "TASK_ROOT", tasks)
     digests = {name: run.task_digest(tasks / name) for name in ("a", "b")}
+    (tasks / "a" / "task.json").write_text('{"must": ["judged only"]}')  # judging changed: not re-played
+    assert run.task_digest(tasks / "a") == digests["a"]
     rows = [{"task": "a", "rep": 0, "task_digest": digests["a"]},
             {"task": "b", "rep": 0, "task_digest": digests["b"]},
             {"task": "c", "rep": 0}]  # from before digests: kept

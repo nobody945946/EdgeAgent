@@ -330,7 +330,6 @@ def files(args: argparse.Namespace) -> None:
 
 def tasks(args: argparse.Namespace) -> None:
     """Each card as a bench task directory (task.json, web/pages.json, workspace/)."""
-    spec = families()
     cards = [json.loads(line) for line in (OUT / f"{args.split}-cards.jsonl").read_text(encoding="utf-8").splitlines()]
     unchecked = [card["id"] for card in cards if "files" not in card]
     if unchecked:
@@ -339,7 +338,6 @@ def tasks(args: argparse.Namespace) -> None:
     if root.exists():
         shutil.rmtree(root)
     for card in cards:
-        family = spec["families"][card["family"]]
         task_dir = root / card["id"]
         (task_dir / "workspace").mkdir(parents=True)
         for path, text in (card.get("files") or {}).items():
@@ -359,7 +357,7 @@ def tasks(args: argparse.Namespace) -> None:
         scenario = {key: card[key] for key in ("persona", "topic", "opening", "goal", "plan", "max_turns")}
         task = {"kind": "scenario", "family": card["family"], "scope": "change", "web": bool(pages),
                 "scenario": scenario, "must": card["must"], "must_not": card["must_not"],
-                "checks": family["checks"], "check": ["true"], "timeout_s": TIMEOUT_S}
+                "check": ["true"], "timeout_s": TIMEOUT_S}
         (task_dir / "task.json").write_text(json.dumps(task, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"{len(cards)} tasks -> {root}")
 

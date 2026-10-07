@@ -12,6 +12,9 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from pathlib import Path
+
+FAMILIES = Path(__file__).resolve().parent / "scenarios" / "families.json"
 
 RESEARCH = {"web_research", "web_search"}
 CITATION = re.compile(r"\[\d+\]")
@@ -34,6 +37,32 @@ def repeated_calls(calls: list[dict]) -> list[str]:
 # Get-ChildItem / -Recurse): slow and intrusive on the owner's laptop.
 ROOT_PATH = re.compile(r"""^\s*['"]?(?:/|[A-Za-z]:[\\/]?)['"]?\s*$""")
 ROOT_SCAN = re.compile(r"""(?i)(?:get-childitem|gci|dir|ls)\s+(?:-(?:literal)?path\s+)?['"]?(?:/|[a-z]:[\\/]?)['"]?(?:\s|$)""")
+
+
+# Reading the machine itself (hardware, OS, processes, disks): in the bench
+# that is the dev box's sandbox (2026-10-08: answers told the owner he runs
+# Docker on an RTX 3090), so the facts in the answer are false on the laptop.
+SYSTEM_PROBE = re.compile(
+    r"(?i)get-ciminstance|get-wmiobject|win32_|nvidia-smi|lscpu|systeminfo|get-computerinfo|/proc/|/sys/"
+    r"|\buname\b|get-psdrive|\$psversiontable|get-process|\bdf\s|\bfree\s+-|\[(?:system\.)?environment\]"
+    r"|osversion|\$env:(?:processor|computername|os|number_of)|\bhostname\b|docker|nproc|\bps\s+(?:aux|-e)"
+    r"|get-hotfix|get-netadapter|ipconfig|\bip\s+a")
+SYSTEM_PATH = re.compile(r"^/(?:proc|sys|etc|var|usr)\b")
+# Words that, in an answer about the Agent itself, can only come from the sandbox.
+SANDBOX_WORDS = re.compile(r"(?i)docker|容器|ubuntu|\blinux\b|rtx\s*3090|\b3090\b|/proc/")
+
+
+def family_checks(family_id: str) -> list[str]:
+    """A family's checks: judging policy, read when judging (not baked into
+    tasks, so changing them never re-records a conversation)."""
+    return json.loads(FAMILIES.read_text(encoding="utf-8"))["families"][family_id]["checks"]
+
+
+def probes_the_machine(call: dict) -> bool:
+    arguments = call.get("arguments") or {}
+    if call.get("name") == "powershell":
+        return bool(SYSTEM_PROBE.search(str(arguments.get("command", ""))))
+    return call.get("name") in ("ls", "read", "find", "grep") and bool(SYSTEM_PATH.match(str(arguments.get("path", ""))))
 
 
 def scans_a_drive(call: dict) -> bool:
@@ -61,23 +90,26 @@ def check(name: str, dialogue: dict) -> str | None:
     if name == "must_call_research":
         called = any(RESEARCH & {c.get("name") for c in turn.get("calls") or []} for turn in turns)
         return None if called else "never researched"
-    if name == "no_tools":
-        used = sorted({c.get("name") for turn in turns for c in turn.get("calls") or []})
-        return f"called tools: {used}" if used else None
-    if name == "first_turn_quiet":
-        used = sorted({c.get("name") for c in (turns[0].get("calls") or [])}) if turns else []
-        return f"first turn called {used}" if used else None
+    if name == "no_sandbox_words":
+        asked = " ".join(turn.get("user", "") for turn in turns).lower()
+        words = sorted({m.group(0) for turn in turns for m in SANDBOX_WORDS.finditer(turn.get("answer", ""))
+                        if m.group(0).lower() not in asked})
+        return f"describes the sandbox: {words}" if words else None
     raise ValueError(f"unknown check: {name}")
 
 
 def failures(dialogue: dict, names: list[str]) -> dict[str, str]:
     """Every listed check the dialogue fails, plus what no family allows:
     turns that did not end normally (a crash, a cancel or a timeout is never
-    a clean example) and searching a whole drive."""
+    a clean example), searching a whole drive and reading the machine itself."""
     found = {name: why for name in names if (why := check(name, dialogue)) is not None}
-    scans = [c for turn in dialogue.get("dialogue") or [] for c in turn.get("calls") or [] if scans_a_drive(c)]
+    calls = [c for turn in dialogue.get("dialogue") or [] for c in turn.get("calls") or []]
+    scans = [c for c in calls if scans_a_drive(c)]
     if scans:
         found["drive_scan"] = f"searched a whole drive: {scans[0].get('name')}"
+    probes = [c for c in calls if probes_the_machine(c)]
+    if probes:
+        found["system_probe"] = f"read the machine itself: {json.dumps(probes[0].get('arguments'), ensure_ascii=False)[:120]}"
     broken = [i + 1 for i, turn in enumerate(dialogue.get("dialogue") or []) if turn.get("outcome") != "done"]
     if broken:
         found["outcome"] = f"turns not done: {broken}"

@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run  # noqa: E402  (the one way to start a model server)
-from scenario_checks import failures  # noqa: E402
+from scenario_checks import failures, family_checks  # noqa: E402
 
 TOOL_RESULT_CHARS = 700
 REJECT_NEEDED = 0.9
@@ -110,7 +110,7 @@ def verdict(port: int | None, task: dict, record: dict) -> dict:
     """The programmatic checks, then (with a judge server) the judge twice.
     Without a server (--checks-only: the judge failed its own validation) a
     conversation passes on the checks alone."""
-    found = failures(record, task.get("checks", []))
+    found = failures(record, family_checks(task["family"]))
     if found:
         return {"passed": False, "checks": found}
     if port is None:
@@ -183,7 +183,7 @@ def corrupt(trajectory: list[dict], other: list[dict], how: str) -> list[dict]:
 
 def validate(args: argparse.Namespace, server: run.Server) -> None:
     found = [(job, task, record) for job, task, record in records(args.run, args.task_root)
-             if answered(record["trajectory"]) and not failures(record, task.get("checks", []))][:args.limit]
+             if answered(record["trajectory"]) and not failures(record, family_checks(task["family"]))][:args.limit]
 
     def one(index: int) -> tuple[str, bool, int]:
         job, task, record = found[index]

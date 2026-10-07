@@ -137,11 +137,21 @@ def build_image() -> None:
                         f"edgeagent-bench-{name}:1", str(repo_context)], check=True)
 
 
+JUDGE_ONLY = ("must", "must_not", "checks")  # a scenario's judging, read when judged
+
+
 def task_digest(task_dir: Path) -> str:
-    """What a job was played on: every file of its task directory."""
+    """What a job was played on: every file of its task directory, without
+    what only the scenario judge reads (changing a card's must never
+    re-records its conversation)."""
     digest = hashlib.sha256()
     for path in sorted(p for p in task_dir.rglob("*") if p.is_file()):
-        digest.update(path.relative_to(task_dir).as_posix().encode() + b"\0" + path.read_bytes() + b"\0")
+        data = path.read_bytes()
+        if path == task_dir / "task.json":
+            task = json.loads(data)
+            data = json.dumps({k: v for k, v in task.items() if k not in JUDGE_ONLY},
+                              ensure_ascii=False, sort_keys=True).encode()
+        digest.update(path.relative_to(task_dir).as_posix().encode() + b"\0" + data + b"\0")
     return digest.hexdigest()[:16]
 
 

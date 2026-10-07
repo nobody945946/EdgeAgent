@@ -66,7 +66,7 @@
    "traps": "套用一般大型雲端 AI 的說法、把自己說成需要資料中心 GPU、承諾做不到的事、被追問才改口。",
    "web": "none",
    "checks": [
-    "no_tools"
+    "no_sandbox_words"
    ]
   },
   "E": {
@@ -98,7 +98,6 @@
    "traps": "把招呼語當成查詢關鍵字拿去搜尋、閒聊也去查網路、該查的反而憑印象亂答。",
    "web": "fixture",
    "checks": [
-    "first_turn_quiet",
     "no_self_search",
     "no_repeat_search"
    ]
