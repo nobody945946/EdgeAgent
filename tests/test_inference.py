@@ -111,6 +111,7 @@ def gateway_servers():
         def do_POST(self):
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append((self.path, payload))
+            assert payload.get("model") == "local", "router POST requires the model in its JSON body"
             if payload.get("fixture_overflow"):
                 self.send_response(400)
                 self.end_headers()

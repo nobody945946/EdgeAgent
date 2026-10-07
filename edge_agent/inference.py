@@ -144,7 +144,7 @@ class InferenceGateway:
                     self._identity = None
                     request = urllib.request.Request(
                         self.upstream_url + "/slots/0?action=erase&model=local",
-                        data=b"{}", headers={"Content-Type": "application/json"}, method="POST",
+                        data=b'{"model":"local"}', headers={"Content-Type": "application/json"}, method="POST",
                     )
                     with urllib.request.urlopen(request, timeout=15) as response:
                         response.read()
