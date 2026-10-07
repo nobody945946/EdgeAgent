@@ -28,9 +28,13 @@ def test_real_sdk_stops_repeated_noop_without_writing_or_disk_sessions(
         events = list(
             chat.stream_reply("fixture", "fixture", agent=True, working_dir=tmp_path)
         )
+        # The third identical call is refused with the way out; the fourth stops.
         assert events[-1][0] == "error"
-        assert "3" in events[-1][1]["message"]
-        assert state["calls"] <= 3
+        assert "4" in events[-1][1]["message"]
+        assert state["calls"] <= 4
+        refusals = [m for r in state["requests"] for m in r["messages"]
+                    if m["role"] == "tool" and "a third run will not change the result" in str(m["content"])]
+        assert refusals
         assert (tmp_path / "code.py").read_text() == "value=1\n"
         assert chat.session("fixture").entries
         assert not list(tmp_path.rglob("*.jsonl"))
@@ -53,6 +57,9 @@ def test_real_sdk_tells_the_model_todays_date(tmp_path, repeating_model):  # noq
     system = json.dumps(state["requests"][0]["messages"][0], ensure_ascii=False)
     assert state["requests"][0]["messages"][0]["role"] == "system"
     assert f"Today is {now:%Y-%m-%d} ({now:%A}), time zone " in system
+    # And what it is: a local model, its window, compaction, no memory across chats.
+    assert "<runtime>" in system and "本機模型" in system and "上下文視窗是" in system
+    assert "已整理上下文" in system and "不要答應下次還記得" in system
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
@@ -316,7 +323,8 @@ def test_real_sdk_the_host_checks_cited_numbers_against_the_sources(tmp_path, re
 def test_real_sdk_searching_the_catalog_for_a_job_no_tool_does_stops(tmp_path, repeating_model):  # noqa: F811
     """A model that learned to search first rewords a search for a job no
     tool does (measured: 60 searches for a retry decorator). The answer says
-    there is none, and after four fruitless searches the fifth is refused."""
+    there is none, and after four fruitless searches tool_search leaves the
+    turn's tool list (a refusal alone did not stop the model calling it)."""
     port, state = repeating_model
     state["sequence"] = [("tool_search", {"query": "retry decorator implementation"})] * 7
     chat = NativeChat(model_port=port)
@@ -328,4 +336,5 @@ def test_real_sdk_searching_the_catalog_for_a_job_no_tool_does_stops(tmp_path, r
     results = [m for m in state["requests"][-1]["messages"] if m["role"] == "tool"]
     texts = [json.dumps(m, ensure_ascii=False) for m in results]
     assert all("has no tool for this" in text or "Nothing new" in text for text in texts[:4])
-    assert all("searched 4 times" in text for text in texts[4:])
+    offered = ["tool_search" in [t["function"]["name"] for t in r.get("tools") or []] for r in state["requests"]]
+    assert offered[:4] == [True] * 4 and not any(offered[4:])
