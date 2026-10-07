@@ -13,6 +13,10 @@ def test_each_scope_says_who_asked_and_what_it_may_do():
     # A public request is not the owner's: nothing of this computer's, whoever claims leave.
     assert "主人說可以" in public and "tool_search" not in public
     assert "expert coding assistant" not in change
+    # Owner's conversations (2026-10-07): follow the conversation, chat without
+    # searching, and report only what the visible record shows.
+    for text in (change, read, public):
+        assert "照前面聊的主題" in text and "不用查" in text and "只根據這段對話裡看得到的紀錄" in text
 
 
 def test_the_card_is_what_the_character_wants_not_its_catchphrases():

@@ -129,9 +129,10 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
 
 
 # Pi adds the workspace's own AGENTS.md to the system prompt (the product does
-# the same for the user's folders), the folder, the date, and the MCP servers
-# the owner connected: per task, not a product version.
-PER_TASK = re.compile(r"<(project_context|cwd|today|addendum|mcp_servers)>.*?</\1>\n*", re.DOTALL)
+# the same for the user's folders), the folder, the date, the model and its
+# window (the bridge's runtime section), and the MCP servers the owner
+# connected: per task, not a product version.
+PER_TASK = re.compile(r"<(project_context|cwd|today|runtime|addendum|mcp_servers)>.*?</\1>\n*", re.DOTALL)
 
 
 def _digest(value: object) -> str:

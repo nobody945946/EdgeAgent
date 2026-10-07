@@ -115,6 +115,18 @@ function today(now = new Date()) {
     + 'Use this date for anything time-sensitive; never assume a date from training data.';
 }
 
+// What the model is and how its memory works, from the host's own settings:
+// without it a small local model describes itself as a cloud AI that needs a
+// data centre, promises to remember things next time, and says compaction is
+// invisible (owner's conversations, 2026-10-07).
+function modelFacts() {
+  const model = String(init.model_name || init.model || '').split(/[\\/]/).pop().replace(/\.gguf$/i, '');
+  return `你是在這台電腦上用 llama.cpp 執行的本機模型 ${model}，不是雲端服務。`
+    + `上下文視窗是 ${init.context_size} 個 token；對話太長時，主機會把較早的內容整理成摘要`
+    + '（聊天畫面會出現「已整理上下文」的提示），整理前的細節可能不見了。你看不到 token 用量。'
+    + '你沒有跨對話的記憶：開新對話就是空白的，所以不要答應下次還記得什麼。';
+}
+
 function policy(pi) {
   let turnApproved = false;
   // Set once web content enters the turn: a page can carry instructions, so
@@ -324,7 +336,7 @@ function policy(pi) {
     // The model cannot know the date and otherwise assumes one from its
     // training data. The date alone (no clock time) keeps the prompt prefix,
     // and llama.cpp's cache, unchanged until the day turns.
-    event.systemPromptOptions.sections = { ...event.systemPromptOptions.sections, today: today() };
+    event.systemPromptOptions.sections = { ...event.systemPromptOptions.sections, today: today(), runtime: modelFacts() };
   });
   pi.on('before_provider_request', (event, ctx) => {
     const payload = { ...event.payload, cache_prompt: true, ...(init.agent ? { temperature: 0.2 } : {}) };
