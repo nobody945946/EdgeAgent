@@ -129,3 +129,61 @@ def test_searching_a_whole_drive_never_becomes_a_row() -> None:
         assert "drive_scan" in scenario_checks.failures(record, [])
     record = {"dialogue": [turn("找到了", [fine])], "ended": "end", "trajectory": said("找到了")}
     assert scenario_checks.failures(record, []) == {}
+
+
+def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path: Path) -> None:
+    """judge and validate against a stand-in judge model that accepts an
+    answer only if it is that card's full answer: originals pass, cut and
+    swapped answers fail, and a conversation without an answer is left out."""
+    import re
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from types import SimpleNamespace
+
+    class Judge(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            prompt = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["messages"][0]["content"]
+            card = re.search(r"目標(\d+)", prompt).group(1)
+            last = ([line for line in prompt.splitlines() if line.startswith("助理：")] or [""])[-1]
+            ok = f"完整的結尾{card}" in last
+            items = [{"id": key, "pass": ok, "evidence": "無"} for key in re.findall(r"^([MN]\d+)\. ", prompt, re.M)]
+            body = json.dumps({"choices": [{"message": {"content": json.dumps({"items": items})}}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    run_dir, task_root = tmp_path / "run", tmp_path / "tasks"
+    (run_dir / "traj").mkdir(parents=True)
+    rows = []
+    for n in range(5):
+        name = f"train-C-{n:03d}"
+        (task_root / name).mkdir(parents=True)
+        (task_root / name / "task.json").write_text(json.dumps(
+            {"family": "C", "must": ["做完"], "must_not": ["反問"], "checks": [], "scenario": {"goal": f"目標{n}"}}))
+        answer = f"答{n}。完整的結尾{n}。" if n < 4 else None
+        trajectory = [{"role": "user", "content": "問"}, *(said(answer) if answer else [])]
+        (run_dir / "traj" / f"{name}-r0.json").write_text(json.dumps(trajectory, ensure_ascii=False))
+        rows.append({"task": name, "rep": 0, "kind": "scenario", "outcome": "done", "ended": "end",
+                     "dialogue": [turn(answer or "")]})
+    (run_dir / "results.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Judge)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        server = SimpleNamespace(port=httpd.server_address[1], parallel=3)
+        args = SimpleNamespace(run=run_dir, task_root=task_root, limit=30)
+        scenario_judge.validate(args, server)
+        summary = json.loads((run_dir / "judge-validation.json").read_text())
+        assert summary == {"conversations": 4, "originals_accepted": 4, "corrupted_rejected": 8,
+                           "corrupted": 8, "trusted": True}
+        scenario_judge.judge(args, server)
+        verdicts = {v["job"]: v for v in map(json.loads, (run_dir / "verdicts.jsonl").read_text().splitlines())}
+        assert len(verdicts) == 5
+        assert all(verdicts[f"train-C-{n:03d}-r0"]["passed"] for n in range(4))
+        assert len(verdicts["train-C-000-r0"]["judge"]) == 2
+        assert not verdicts["train-C-004-r0"]["passed"] and len(verdicts["train-C-004-r0"]["judge"]) == 1
+    finally:
+        httpd.shutdown()

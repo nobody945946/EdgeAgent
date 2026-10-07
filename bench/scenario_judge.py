@@ -23,7 +23,9 @@ import json
 import random
 import re
 import sys
+import threading
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -113,7 +115,11 @@ def verdict(port: int | None, task: dict, record: dict) -> dict:
         return {"passed": False, "checks": found}
     if port is None:
         return {"passed": True, "checks": {}, "judge": "checks-only"}
-    passes = [rule(port, task, record["trajectory"], seed) for seed in (1, 2)]
+    passes = []
+    for seed in (1, 2):  # the second pass only confirms a first pass
+        passes.append(rule(port, task, record["trajectory"], seed))
+        if not passes[-1]["passed"]:
+            break
     return {"passed": all(p["passed"] for p in passes), "checks": {}, "judge": passes}
 
 
@@ -138,13 +144,24 @@ def records(run_dir: Path, task_root: Path) -> list[tuple[str, dict, dict]]:
 def judge(args: argparse.Namespace, server: run.Server | None) -> None:
     out = args.run / "verdicts.jsonl"
     done = {json.loads(line)["job"] for line in out.read_text(encoding="utf-8").splitlines()} if out.is_file() else set()
-    for job, task, record in records(args.run, args.task_root):
-        if job in done:
-            continue
+    lock = threading.Lock()
+
+    def one(item: tuple[str, dict, dict]) -> None:
+        job, task, record = item
         found = verdict(server.port if server is not None else None, task, record)
-        with out.open("a", encoding="utf-8") as handle:
+        with lock, out.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"job": job, "family": task["family"], **found}, ensure_ascii=False) + "\n")
         print(f"{job}: {'PASS' if found['passed'] else 'fail'} {list(found['checks'])}", flush=True)
+
+    todo = [item for item in records(args.run, args.task_root) if item[0] not in done]
+    with ThreadPoolExecutor(server.parallel if server is not None else 1) as pool:
+        list(pool.map(one, todo))
+
+
+def answered(trajectory: list[dict]) -> bool:
+    return any(m.get("role") == "assistant" and any(isinstance(x, dict) and x.get("type") == "text"
+                                                    for x in m.get("content") or [])
+               for m in trajectory)
 
 
 def corrupt(trajectory: list[dict], other: list[dict], how: str) -> list[dict]:
@@ -166,16 +183,21 @@ def corrupt(trajectory: list[dict], other: list[dict], how: str) -> list[dict]:
 
 def validate(args: argparse.Namespace, server: run.Server) -> None:
     found = [(job, task, record) for job, task, record in records(args.run, args.task_root)
-             if not failures(record, task.get("checks", []))][:args.limit]
-    accepted = rejected = trials = 0
-    for index, (job, task, record) in enumerate(found):
-        accepted += verdict(server.port, task, record)["passed"]
+             if answered(record["trajectory"]) and not failures(record, task.get("checks", []))][:args.limit]
+
+    def one(index: int) -> tuple[str, bool, int]:
+        job, task, record = found[index]
         other = found[(index + 1) % len(found)][2]["trajectory"]
-        for how in ("cut", "swap"):
-            trials += 1
-            bad = {**record, "trajectory": corrupt(record["trajectory"], other, how)}
-            rejected += not verdict(server.port, task, bad)["passed"]
-        print(f"{job}: originals accepted {accepted}/{index + 1}, corrupted rejected {rejected}/{trials}", flush=True)
+        bad = [{**record, "trajectory": corrupt(record["trajectory"], other, how)} for how in ("cut", "swap")]
+        return (job, verdict(server.port, task, record)["passed"],
+                sum(not verdict(server.port, task, b)["passed"] for b in bad))
+
+    accepted = rejected = trials = 0
+    with ThreadPoolExecutor(server.parallel) as pool:
+        for job, kept, refused in pool.map(one, range(len(found))):
+            accepted, rejected, trials = accepted + kept, rejected + refused, trials + 2
+            print(f"{job}: originals accepted {accepted}/{trials // 2}, corrupted rejected {rejected}/{trials}",
+                  flush=True)
     rate = rejected / trials if trials else 0.0
     summary = {"conversations": len(found), "originals_accepted": accepted,
                "corrupted_rejected": rejected, "corrupted": trials, "trusted": rate >= REJECT_NEEDED}
@@ -193,6 +215,8 @@ def main() -> None:
     parser.add_argument("--config", required=True, help="the judge's bench config (configs.json)")
     parser.add_argument("--port", type=int, default=18489)
     parser.add_argument("--limit", type=int, default=30, help="validate: conversations to use")
+    parser.add_argument("--parallel", type=int, default=3,
+                        help="conversations judged side by side (fewer if the shared GPU holds fewer)")
     parser.add_argument("--checks-only", action="store_true",
                         help="judge: no judge model (it failed validation); the checks decide")
     args = parser.parse_args()
@@ -201,7 +225,7 @@ def main() -> None:
         return
     config = json.loads((run.BENCH / "configs.json").read_text(encoding="utf-8"))[args.config]
     (args.run / "judge").mkdir(exist_ok=True)
-    server = run.Server(config, args.run / "judge", 1, args.port)
+    server = run.Server(config, args.run / "judge", args.parallel, args.port, fit_slots=True)
     run.close_on_term(server)
     try:
         {"judge": judge, "validate": validate}[args.command](args, server)
