@@ -175,6 +175,11 @@ class Server:
         deadline = time.monotonic() + 600
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
+                # Another tenant took the GPU between our check and the load
+                # (2026-10-08: 21.8 GB free, gone 9 s later): not a failure
+                # of this run; the queue waits and starts it again.
+                if free_vram_mib() < need:
+                    raise SystemExit(VRAM_EXIT)
                 raise SystemExit(f"llama-server exited; see {run_dir / 'server.log'}")
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as r:
