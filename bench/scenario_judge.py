@@ -78,8 +78,11 @@ def items_for(task: dict, rng: random.Random) -> list[tuple[str, str]]:
 
 
 def ask(port: int, prompt: str) -> str:
+    # Without thinking: two passes over hundreds of conversations with thinking
+    # would take most of a night; validate() proves the judge still rejects
+    # corrupted conversations this way before its verdicts are used.
     body = json.dumps({"messages": [{"role": "user", "content": prompt}], "temperature": 0,
-                       "max_tokens": 8000, "chat_template_kwargs": {"enable_thinking": True}}).encode()
+                       "max_tokens": 3000, "chat_template_kwargs": {"enable_thinking": False}}).encode()
     request = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", body,
                                      {"Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=1800) as response:

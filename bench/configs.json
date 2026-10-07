@@ -232,5 +232,46 @@
   "vram_slot_mib": 2000,
   "search_tools": true,
   "lora": "agent-fw2.q8_0.gguf"
+ },
+ "teacher-38-sim": {
+  "_note": "The simulated user when a student plays scenario cards: the same teacher model, IQ3 so it fits beside E4B. Plays the user only (no tools).",
+  "model": "../teacher/Qwen3.8-27B-UD-IQ3_XXS.gguf",
+  "vision": false,
+  "context_size": 32768,
+  "max_output_tokens": 2048,
+  "working_context_size": 32768,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 11500,
+  "vram_slot_mib": 1200
+ },
+ "e4b-laptop-base-scen": {
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 1500,
+  "search_tools": true,
+  "_note": "e4b-laptop-base-high playing held-out scenario cards against the simulated user on its own server (teacher-38-sim).",
+  "simulator": "teacher-38-sim"
+ },
+ "e4b-laptop-fw2-scen": {
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 1500,
+  "search_tools": true,
+  "lora": "agent-fw2.q8_0.gguf",
+  "_note": "e4b-laptop-fw2-high playing held-out scenario cards against the simulated user on its own server (teacher-38-sim).",
+  "simulator": "teacher-38-sim"
  }
 }
