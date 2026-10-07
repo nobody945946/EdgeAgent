@@ -325,7 +325,7 @@ def selftest(pattern: str) -> None:
 
 def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: Path,
             sock_dir: Path, keep: bool, bridge: Path | None, product: Path,
-            record_port: int | None = None) -> dict:
+            record_port: int | None = None, simulator_sock: Path | None = None) -> dict:
     task = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
     job = f"{task_dir.name}-r{rep}"
     relay = None
@@ -349,7 +349,9 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
     timeout = round(task.get("timeout_s", 900) * config.get("time_scale", 1))
     spec = {**{k: config[k] for k in ("model", "context_size", "max_output_tokens",
                                       "working_context_size", "effort")},
-            "vision": config.get("vision", False), "prompt": task["prompt"],
+            "vision": config.get("vision", False), "prompt": task.get("prompt", ""),
+            # A scenario (bench/scenario_cards.py) is a conversation with a simulated user.
+            **({"scenario": task["scenario"]} if task.get("scenario") else {}),
             # Who asked (permissions.SCOPES): the owner's change or read task, or a public one.
             "scope": task.get("scope", "change"),
             "search_tools": config.get("search_tools", False),
@@ -360,6 +362,8 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
             "timeout_s": timeout}
     name = f"eab-{config_name}-{job}".replace("_", "-")[:120]
     mounts, env, hosts = web_fixture(task_dir, task)
+    if simulator_sock is not None and task.get("scenario"):
+        mounts = [*mounts, (simulator_sock, "/simsock", "ro")]
     command = sandbox(name, [(workspace, "/work", "rw"), (sock_dir, "/sock", "ro"),
                              *code_mounts(bridge, product), *mounts],
                       {"BENCH_SPEC": json.dumps(spec, ensure_ascii=False), **env},
@@ -503,10 +507,20 @@ def main() -> None:
                         ignore=shutil.ignore_patterns("__pycache__"))
     bridge = bridge_variant(config, run_dir, product)
     server = Server(config, run_dir, args.parallel, args.port, args.vram_wait)
+    # Scenarios measuring a student talk to a simulated user on a model of
+    # its own (config "simulator", another config's name); without it the
+    # teacher being recorded also plays the user, on its own server.
+    simulator = None
+    if config.get("simulator"):
+        (run_dir / "simulator").mkdir(exist_ok=True)
+        simulator = Server(configs[config["simulator"]], run_dir / "simulator", args.parallel,
+                           args.port + 1, args.vram_wait)
     # A stopped run must not leave llama-server holding VRAM. The main thread
     # sits in the worker pool, so exiting there would wait for every job.
     def stop(*_: object) -> None:
         server.close()
+        if simulator is not None:
+            simulator.close()
         os._exit(143)
 
     signal.signal(signal.SIGTERM, stop)
@@ -517,7 +531,8 @@ def main() -> None:
         def work(job: tuple[Path, int]) -> None:
             row = run_job(job[0], job[1], args.config, config, run_dir, server.sock_dir,
                           args.keep, bridge, product,
-                          record_port=server.port if args.record else None)
+                          record_port=server.port if args.record else None,
+                          simulator_sock=simulator.sock_dir if simulator is not None else None)
             row["revision"] = revision
             with lock, results.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -529,6 +544,8 @@ def main() -> None:
             list(pool.map(work, jobs))
     finally:
         server.close()
+        if simulator is not None:
+            simulator.close()
 
 
 if __name__ == "__main__":

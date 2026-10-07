@@ -11,8 +11,18 @@ requests with the same tools is one row (its last request plus the reply),
 trained only on the replies written in that stretch, under the tools the
 model saw when it wrote them.
 
-Eval tasks (bench/tasks) never become training rows: only runs over the
-tool training tasks (.runtime/agentdata/tool-tasks) are accepted.
+Eval tasks (bench/tasks, and scenario cards of the eval split) never become
+training rows: only runs over training tasks (.runtime/agentdata/tool-tasks,
+scenario train cards) are accepted.
+
+A scenario conversation (bench/scenario_cards.py) becomes rows only if the
+judge passed it (bench/scenario_judge.py, <run>/verdicts.jsonl). Each user
+turn ends a stretch: Gemma's template shows the model's reasoning only after
+the last user message, so a row never spans two turns. The teacher's
+reasoning comes with its replies (reasoning_content, as Pi sends it back);
+with --thinking both every row with reasoning also comes without it, so one
+adapter learns to answer with thinking on and off (the row's "thinking" tells
+train_lora.py which way to render it).
 
 One output holds one product version: per task scope (who asked), every
 row's system prompt must be the same and the current product's
@@ -53,8 +63,8 @@ except ImportError:  # no converter: keep the text as the teacher wrote it
 
 
 def final_answer(trajectory: list[dict]) -> dict | None:
-    """The Agent's last assistant message in wire format (text only: a
-    finished job ends with its report, not a tool call)."""
+    """The Agent's last assistant message in wire format (its text and the
+    reasoning before it: a finished job ends with its report, not a tool call)."""
     for message in reversed(trajectory):
         if message.get("role") != "assistant":
             continue
@@ -62,12 +72,29 @@ def final_answer(trajectory: list[dict]) -> dict | None:
         if any(isinstance(i, dict) and i.get("type") == "toolCall" for i in items):
             return None
         text = "".join(i.get("text", "") for i in items if isinstance(i, dict) and i.get("type") == "text")
-        return {"role": "assistant", "content": text} if text.strip() else None
+        reasoning = "\n".join(i.get("thinking", "") for i in items if isinstance(i, dict)
+                              and i.get("type") == "thinking" and i.get("thinking", "").strip())
+        if not text.strip():
+            return None
+        return {"role": "assistant", "content": text, **({"reasoning_content": reasoning} if reasoning else {})}
     return None
+
+
+def user_turns(request: dict) -> int:
+    return sum(m.get("role") == "user" for m in request["messages"])
+
+
+def verdicts(run_dir: Path) -> dict[str, bool]:
+    """The judge's verdict per scenario job (empty when the run has none)."""
+    path = run_dir / "verdicts.jsonl"
+    if not path.is_file():
+        return {}
+    return {row["job"]: bool(row["passed"]) for row in map(json.loads, path.read_text(encoding="utf-8").splitlines())}
 
 
 def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
     kept, why = [], {}
+    judged = verdicts(run_dir)
 
     def skip(reason: str) -> None:
         why[reason] = why.get(reason, 0) + 1
@@ -75,8 +102,11 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
     for line in (run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines():
         result = json.loads(line)
         job = f"{result['task']}-r{result['rep']}"
-        if result["task"] in EVAL_TASKS:
+        if result["task"] in EVAL_TASKS or result["task"].startswith("eval-"):
             skip("eval task")
+            continue
+        if result.get("kind") == "scenario" and not judged.get(job):
+            skip("scenario not passed by the judge")
             continue
         if not result["passed"] or result["grade"].get("problems") or result.get("outcome") != "done":
             skip("not a clean pass")
@@ -112,7 +142,8 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
                 start = index + 1
                 continue
             last_of_stretch = (index + 1 == len(requests) or replies[index + 1] is None
-                               or requests[index + 1]["tools"] != request["tools"])
+                               or requests[index + 1]["tools"] != request["tools"]
+                               or user_turns(requests[index + 1]) > user_turns(request))
             if not last_of_stretch:
                 continue
             messages = [dict(m) for m in request["messages"]] + [reply]
@@ -166,16 +197,29 @@ def mixed_versions(total: list[dict]) -> dict[str, dict[str, int]]:
             if len({version.split()[1] for version in runs}) > 1}
 
 
+def with_thinking_modes(row: dict, both: bool) -> list[dict]:
+    """The row marked with how train_lora.py renders it; with `both`, a row
+    that has reasoning also comes once without any."""
+    thinking = any(m.get("reasoning_content") for m in row["messages"])
+    marked = {**row, "thinking": thinking}
+    if not (thinking and both):
+        return [marked]
+    plain = [{k: v for k, v in m.items() if k != "reasoning_content"} for m in row["messages"]]
+    return [marked, {**row, "messages": plain, "thinking": False}]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("runs", nargs="+", type=Path)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--thinking", choices=("as-recorded", "both"), default="as-recorded",
+                        help="both: every row with reasoning also without it (thinking on and off)")
     args = parser.parse_args()
     total: list[dict] = []
     for run_dir in args.runs:
         kept, why = rows(run_dir)
         print(f"{run_dir.name}: {len(kept)} rows; skipped {why}")
-        total += kept
+        total += [marked for row in kept for marked in with_thinking_modes(row, args.thinking == "both")]
     stale = [row["source"]["job"] for row in total if scope_of(row) is None]
     if stale:
         print(f"REFUSED: {len(stale)} rows were made under another system prompt: {stale[:5]}")
@@ -194,6 +238,7 @@ def main() -> int:
     stamp = {"producer": "edgeagent-dataset",
              "version": _digest(versions),
              "runs": [run.name for run in args.runs],
+             "thinking": args.thinking,
              "rows_with_project_agents_md": with_project}
     args.out.with_name(args.out.name + ".version").write_text(json.dumps(stamp), encoding="utf-8")
     print(f"{len(total)} rows -> {args.out} (product version {stamp['version']})")
