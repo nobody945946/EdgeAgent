@@ -98,8 +98,10 @@ SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸�
 | Pi coding-agent SDK 1.0.0 | Agent 迴圈、工具、摘要、重試與取消 |
 | llama.cpp b11193 router | 模型子程序、載入／卸載、LoRA；最多一個完整模型 |
 | `edge_agent/agent_bridge.mjs` | 本機 provider、RAM session、批准與輸出政策 |
-| `edge_agent/chat.py` | SDK RPC 與 UI 事件轉接、RAM checkpoint |
-| `edge_agent/service.py` | UI／控制端點、模型設定、下載與租借協調 |
+| `edge_agent/chat.py`、`bridge.py`、`turn.py` | RAM 對話、SDK RPC 與 UI 事件轉接、RAM checkpoint |
+| `edge_agent/service.py`、`control.py` | 服務進入點、UI／控制端點 |
+| `edge_agent/core.py`、`router.py`、`load_plan.py` | 模型子程序、模型切換與租借協調 |
+| `edge_agent/config.py`、`model_jobs.py` | 模型設定、下載 |
 | `edge_agent/models.py` | GGUF 掃描與 Hub metadata |
 | `edge_agent/deploy.py` | 校驗資產與固定 runtime；npm lockfile 固定版本 |
 | SilentTalk `agent_lease.py` | 控制 API client、租借／歸還；不擁有推論引擎 |

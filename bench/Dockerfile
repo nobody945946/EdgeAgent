@@ -32,7 +32,7 @@ RUN f=/opt/edgeagent/.runtime/pi/node_modules/@earendil-works/pi-coding-agent/di
  && sed -i 's/findExecutableOnPath("pwsh.exe") ?? findExecutableOnPath("powershell.exe")/findExecutableOnPath("pwsh")/' "$f" \
  && grep -q 'findExecutableOnPath("pwsh")' "$f"
 
-# NativeChat starts Node from the Windows deployment path.
+# The Pi bridge (edge_agent/bridge.py) starts Node from the Windows deployment path.
 RUN mkdir -p /opt/edgeagent/.runtime/node/node-v22.23.3-win-x64 \
  && ln -s /opt/node/bin/node /opt/edgeagent/.runtime/node/node-v22.23.3-win-x64/node.exe
 

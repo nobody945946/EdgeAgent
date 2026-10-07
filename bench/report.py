@@ -70,7 +70,7 @@ ADMITS = re.compile(r"(沒通過|失敗|未通過|沒做到|做不到|無法|不
                     r"錯誤|不確定|fail|not done|unable|could not|cannot)", re.IGNORECASE)
 
 
-# What the host adds to an answer (chat.py), not the model's own words.
+# What the host adds to an answer (turn.py), not the model's own words.
 HOST_NOTICES = re.compile(r"（主機(提醒|核對來源)：[^）]*）")
 
 

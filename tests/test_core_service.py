@@ -1,93 +1,22 @@
+"""The core's model lease (core.py): who may switch or stop the model, what
+a lease loads, and the router loading it."""
+
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from edge_agent import api, records, runtime, service, web
-
-
-def test_model_help_uses_both_runtime_adapter_names():
-    assert f"<code>{runtime.AGENT_ADAPTER}</code>" in web.NATIVE_CHAT_HTML
-    assert f"<code>{runtime.CHARACTER_ADAPTER}</code>" in web.NATIVE_CHAT_HTML
-    assert "@@AGENT_ADAPTER@@" not in web.NATIVE_CHAT_HTML
-    assert "@@CHARACTER_ADAPTER@@" not in web.NATIVE_CHAT_HTML
-
-
-@pytest.mark.parametrize(
-    "exception", [BrokenPipeError, ConnectionResetError, ConnectionAbortedError]
-)
-def test_http_disconnect_ends_connection_without_server_traceback(
-    monkeypatch, exception
-):
-    def disconnected(handler):
-        raise exception("fixture")
-
-    monkeypatch.setattr(service.BaseHTTPRequestHandler, "handle", disconnected)
-    handler = object.__new__(service.Handler)
-    handler.handle()
-    assert handler.close_connection is True
-
-
-def test_http_handler_keeps_unexpected_failures_visible(monkeypatch):
-    def failed(handler):
-        raise RuntimeError("fixture")
-
-    monkeypatch.setattr(service.BaseHTTPRequestHandler, "handle", failed)
-    with pytest.raises(RuntimeError, match="fixture"):
-        object.__new__(service.Handler).handle()
-
-
-def test_records_prepare_and_status_follow_folder_availability(tmp_path):
-    missing = tmp_path / "missing"
-    with pytest.raises(OSError):
-        records.prepare_record_folder(str(missing))
-    assert not missing.exists()
-    assert records.recording_status(False, str(tmp_path)) == "關閉"
-    assert not records.save_session(str(tmp_path), "fixture", [])
-    records.prepare_record_folder(str(tmp_path))
-    assert records.recording_status(True, str(tmp_path)) == "記錄中"
-    assert records.save_session(str(tmp_path), "fixture", [])
-    (tmp_path / records.MARKER).unlink()
-    assert records.recording_status(True, str(tmp_path)).startswith("暫停")
-    assert not records.save_session(str(tmp_path), "missing-marker", [])
-    assert not (tmp_path / "edgeagent" / "missing-marker.jsonl").exists()
-
-
-def test_records_accept_a_local_ssd_folder(tmp_path):
-    assert records.prepare_record_folder(str(tmp_path)) == tmp_path.resolve()
-    assert records.save_session(
-        str(tmp_path), "fixture", [{"type": "fixture", "text": "LOCAL_SSD_FIXTURE"}]
-    )
-    assert "LOCAL_SSD_FIXTURE" in (tmp_path / "edgeagent" / "fixture.jsonl").read_text(
-        encoding="utf-8"
-    )
-    (tmp_path / records.MARKER).unlink()
-    assert not records.save_session(str(tmp_path), "paused", [{"text": "PAUSED_FIXTURE"}])
-    assert records.recording_status(True, str(tmp_path)).startswith("暫停")
-    records.prepare_record_folder(str(tmp_path))
-    assert records.recording_status(True, str(tmp_path)) == "記錄中"
-    assert records.save_session(str(tmp_path), "resumed", [{"text": "RESUMED_FIXTURE"}])
-    assert sorted(path.name for path in (tmp_path / "edgeagent").iterdir()) == [
-        "fixture.jsonl", "resumed.jsonl"
-    ]
-
-
-def test_records_reject_a_file(tmp_path):
-    file = tmp_path / "fixture.txt"
-    file.write_text("fixture", encoding="utf-8")
-    with pytest.raises(ValueError, match="紀錄資料夾"):
-        records.prepare_record_folder(str(file))
-    assert not (tmp_path / records.MARKER).exists()
+from edge_agent import api, core, load_plan
+from edge_agent.runtime import DEFAULT_MODEL
 
 
 def test_live_character_lease_cannot_be_stolen_or_stopped(tmp_path, monkeypatch):
-    manager = service.EdgeAgent(tmp_path)
+    manager = core.EdgeAgent(tmp_path)
     manager.mode = "character"
     manager.owner_pid = 123
-    monkeypatch.setattr(service, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(core, "pid_alive", lambda pid: True)
     cancellations = []
     monkeypatch.setattr(manager.chat, "cancel_all", lambda: cancellations.append(True))
     with pytest.raises(PermissionError):
@@ -100,13 +29,12 @@ def test_live_character_lease_cannot_be_stolen_or_stopped(tmp_path, monkeypatch)
 
 
 def test_character_takeover_reuses_running_server(tmp_path, monkeypatch):
-    manager = service.EdgeAgent(tmp_path)
+    manager = core.EdgeAgent(tmp_path)
     manager.mode = "character"
-    manager.port = 18088
     manager.owner_pid = 123
-    manager.process = SimpleNamespace(poll=lambda: None)
+    manager.router.process = SimpleNamespace(poll=lambda: None)
     monkeypatch.setattr(manager, "_model_ready", lambda: True)
-    monkeypatch.setattr(service, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(core, "pid_alive", lambda pid: False)
     status = manager.switch("character", 456)
     assert manager.owner_pid == 456
     assert status["ready"] is True
@@ -125,76 +53,46 @@ def test_slow_status_does_not_spawn_duplicate_manager(monkeypatch):
 
 
 def test_restart_handoff_suspends_crash_restore(tmp_path):
-    manager = service.EdgeAgent(tmp_path)
+    manager = core.EdgeAgent(tmp_path)
     manager.mode = "character"
     manager.hold_handoff()
     assert manager.handoff_until > 0
 
 
 def test_stop_releases_base_server(tmp_path, monkeypatch):
-    manager = service.EdgeAgent(tmp_path)
+    manager = core.EdgeAgent(tmp_path)
     manager.mode = "base"
-    manager.process = SimpleNamespace(
+    manager.router.process = SimpleNamespace(
         poll=lambda: None, terminate=lambda: None, wait=lambda *args, **kwargs: 0
     )
     monkeypatch.setattr(
-        manager, "_model_request", lambda *args, **kwargs: {"success": True}
+        manager.router, "request", lambda *args, **kwargs: {"success": True}
     )
     status = manager.stop_service()
-    assert manager.process is None
+    assert manager.router.process is None
     assert status["mode"] == "stopped"
     assert status["ready"] is False
 
 
-def test_reserved_port_never_kills_an_unrelated_process(monkeypatch):
-    monkeypatch.setattr(service, "_listening_pid", lambda port: 321)
-    monkeypatch.setattr(
-        service, "_process_image", lambda pid: Path("C:/Windows/other.exe")
-    )
-    with pytest.raises(RuntimeError, match="occupied by PID 321"):
-        service._clear_reserved_port(18089)
-
-
-def _value_after(args: list[str], flag: str) -> str:
-    return args[args.index(flag) + 1]
-
-
-def test_base_server_is_one_slot_without_an_extra_agent_loop() -> None:
-    args = runtime.build_server_args(
-        "llama-server",
-        Path("e4b.gguf"),
-        port=runtime.GENERAL_PORT,
-        context_size=runtime.GENERAL_CONTEXT_SIZE,
-        threads=4,
-        gpu_layers=99,
-        low_vram=True,
-    )
-
-    assert _value_after(args, "--ctx-size") == "131072"
-    assert _value_after(args, "--parallel") == "1"
-    assert "--kv-unified" not in args
-    assert _value_after(args, "--load-mode") == "mmap"
-    assert _value_after(args, "--lazy-mode") == "on"
-    assert "--tools" not in args
-
-
 def _lease_fixture(manager, monkeypatch, tmp_path, model_limit, reported):
-    manager.process = SimpleNamespace(poll=lambda: None)
-    monkeypatch.setattr(service, "find_llama_server", lambda: "llama-server")
-    monkeypatch.setattr(manager, "_model_path", lambda name: tmp_path / name)
+    manager.router.process = SimpleNamespace(poll=lambda: None)
+    monkeypatch.setattr(load_plan, "find_llama_server", lambda: "llama-server")
+    monkeypatch.setattr(load_plan, "model_file", lambda directory, name: tmp_path / name)
     monkeypatch.setattr(
-        service,
+        load_plan,
         "model_metadata",
         lambda path: {"architecture": "fixture", "adapter": False, "split": False,
                       "projector": False, "context_length": model_limit},
     )
     monkeypatch.setattr(
-        manager, "_adapter_path", lambda base, name: tmp_path / name if name else None
+        load_plan,
+        "adapter_file",
+        lambda directory, base, name: tmp_path / name if name else None,
     )
-    monkeypatch.setattr(manager, "_model_state", lambda: {"value": "loaded"})
+    monkeypatch.setattr(manager.router, "state", lambda: {"value": "loaded"})
     monkeypatch.setattr(
-        manager,
-        "_model_request",
+        manager.router,
+        "request",
         lambda *args, **kwargs: {"default_generation_settings": {"n_ctx": reported},
                                  "modalities": {}},
     )
@@ -226,7 +124,7 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
     is placed by EdgeAgent (--fit), mapped from disk, its cache bounded.
     The character's adapter is the lease's (index 0); the Agent keeps its own
     when its model is the leased one, and each request names only its own."""
-    manager = service.EdgeAgent(tmp_path)
+    manager = core.EdgeAgent(tmp_path)
     original = manager._save_config(
         {
             **manager.config,
@@ -276,10 +174,10 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
 
 def test_a_lease_brings_the_bases_projector_kept_off_the_gpu(tmp_path, monkeypatch):
     """Images posted in a chat reach the Agent during a lease (OCR)."""
-    manager = service.EdgeAgent(tmp_path)
+    manager = core.EdgeAgent(tmp_path)
     _lease_fixture(manager, monkeypatch, tmp_path, 131072, 131072)
     projector = tmp_path / "mmproj-fixture.gguf"
-    monkeypatch.setattr(service, "ensure_projector", lambda path, architecture: projector)
+    monkeypatch.setattr(load_plan, "ensure_projector", lambda path, architecture: projector)
     manager.switch(
         "character", 123,
         {"model": "base.gguf", "lora": "", "port": 18088, "context_size": 32768},
@@ -290,7 +188,7 @@ def test_a_lease_brings_the_bases_projector_kept_off_the_gpu(tmp_path, monkeypat
 
 
 def test_a_small_pool_bounds_the_lease_and_keeps_the_agent(tmp_path, monkeypatch):
-    manager = service.EdgeAgent(tmp_path)
+    manager = core.EdgeAgent(tmp_path)
     manager._save_config({**manager.config, "context_size": 16384})
     _lease_fixture(manager, monkeypatch, tmp_path, 131072, 16384)
     manager.switch(
@@ -305,7 +203,7 @@ def test_a_small_pool_bounds_the_lease_and_keeps_the_agent(tmp_path, monkeypatch
 
 
 def test_busy_stream_cannot_switch_models_but_does_not_hold_service_lock(tmp_path):
-    manager = service.EdgeAgent(tmp_path)
+    manager = core.EdgeAgent(tmp_path)
     manager.chat_in_progress = True
     with pytest.raises(PermissionError, match="工作正在進行"):
         manager.switch("character", 123, {})
@@ -315,177 +213,10 @@ def test_busy_stream_cannot_switch_models_but_does_not_hold_service_lock(tmp_pat
     manager.lock.release()
 
 
-def test_multimodal_projector_uses_canonical_server_and_low_vram_policy():
-    args = runtime.build_server_args(
-        "llama-server",
-        Path("base.gguf"),
-        port=runtime.GENERAL_PORT,
-        context_size=4096,
-        threads=4,
-        gpu_layers=99,
-        low_vram=True,
-        projector_path=Path("mmproj.gguf"),
-    )
-    assert _value_after(args, "--mmproj") == "mmproj.gguf"
-    assert "--no-mmproj-offload" in args
-    assert _value_after(args, "--parallel") == "1"
-
-
-@pytest.mark.parametrize("gpu_layers", [0, 33, 99])
-def test_manual_device_split_disables_automatic_fitting(gpu_layers):
-    args = runtime.build_server_args(
-        "llama-server", Path("base.gguf"), port=runtime.GENERAL_PORT,
-        context_size=98304, threads=4, gpu_layers=gpu_layers, low_vram=True,
-    )
-    assert _value_after(args, "--n-gpu-layers") == str(gpu_layers)
-    assert _value_after(args, "--ctx-size") == "98304"
-    assert _value_after(args, "--fit") == "off"
-    assert "--fit-ctx" not in args and "--fit-target" not in args
-    assert _value_after(args, "--load-mode") == "mmap"
-    assert _value_after(args, "--lazy-mode") == "on"
-
-
-def test_automatic_device_fitting_preserves_large_context_and_cache_precision():
-    args = runtime.build_server_args(
-        "llama-server",
-        Path("base.gguf"),
-        port=runtime.GENERAL_PORT,
-        context_size=131072,
-        threads=4,
-        gpu_layers=-1,
-        low_vram=True,
-    )
-    assert _value_after(args, "--n-gpu-layers") == "auto"
-    assert _value_after(args, "--ctx-size") == "131072"
-    assert _value_after(args, "--fit-ctx") == "131072"
-    assert _value_after(args, "--fit-target") == "512"
-    assert _value_after(args, "--cache-type-k") == "q8_0"
-    assert _value_after(args, "--cache-type-v") == "q8_0"
-    assert _value_after(args, "--cache-ram") == "256"
-    assert _value_after(args, "--ctx-checkpoints") == "2"
-
-
-def test_character_server_gets_two_slots_and_lora() -> None:
-    args = runtime.build_server_args(
-        "llama-server",
-        Path("e4b.gguf"),
-        port=18088,
-        context_size=32768,
-        threads=4,
-        gpu_layers=99,
-        low_vram=True,
-        lora_paths=[Path("character.gguf"), Path("agent.gguf")],
-        slots=2,
-    )
-
-    # One pool both slots draw from, the model mapped from its file, the prompt
-    # cache bounded in every mode (upstream keeps 8 GiB and 32 checkpoints).
-    assert _value_after(args, "--ctx-size") == "32768"
-    assert _value_after(args, "--parallel") == "2"
-    assert "--kv-unified" in args
-    assert _value_after(args, "--load-mode") == "mmap"
-    assert _value_after(args, "--lazy-mode") == "on"
-    assert _value_after(args, "--cache-ram") == "256"
-    assert _value_after(args, "--ctx-checkpoints") == "2"
-    # Both adapters loaded, none applied unless a request names it.
-    assert _value_after(args, "--lora") == "character.gguf,agent.gguf"
-    assert "--lora-init-without-apply" in args
-    assert "--tools" not in args
-
-
-def test_config_never_persists_workspace_or_chat(tmp_path: Path) -> None:
-    manager = service.EdgeAgent(tmp_path)
-
-    config = manager.update_config({"thinking_effort": "high", "agent": False})
-
-    assert config == {
-        **service.DEFAULT_CONFIG,
-        "thinking_effort": "high",
-        "agent": False,
-    }
-    saved = manager.config_path.read_text(encoding="utf-8")
-    assert "working_dir" not in saved
-    assert "messages" not in saved
-
-
-def test_output_budget_is_validated_and_leased_client_is_separate(tmp_path):
-    manager = service.EdgeAgent(tmp_path)
-    config = manager._validated_config(
-        {"context_size": 32768, "max_output_tokens": 16384}
-    )
-    assert config["max_output_tokens"] == 16384
-    for value in (True, 0, -1, 131073, "8192"):
-        with pytest.raises((ValueError, TypeError)):
-            manager._validated_config({"max_output_tokens": value})
-    manager.chat.configure_context(32768, max_output_tokens=16384)
-    manager.mode = "base"
-    assert manager.models_status()["max_output_tokens"] == 16384
-    manager.mode = "character"
-    assert manager.models_status()["max_output_tokens"] is None
-    with pytest.raises(ValueError):
-        manager.update_config({"max_output_tokens": 8192})
-
-
-def test_working_target_is_separate_from_physical_capacity_and_output(tmp_path):
-    manager = service.EdgeAgent(tmp_path)
-    for value in (True, 0, 4096, 262145, "32768"):
-        with pytest.raises((ValueError, TypeError)):
-            manager._validated_config({"working_context_size": value})
-    with pytest.raises(ValueError):
-        manager.update_config({"working_context_size": 32768})
-    manager.chat.configure_context(
-        131072, max_output_tokens=8192, working_context_size=32768
-    )
-    assert manager.chat.context_size == 131072
-    assert manager.chat.max_output_tokens == 8192
-    assert manager.chat.working_context_size == 32768
-    manager.chat.configure_context(131072, working_context_size=131072)
-    assert manager.chat.working_context_size == 131072
-    manager.chat.configure_context(
-        16384, max_output_tokens=8192, working_context_size=8192
-    )
-    assert manager.chat.working_context_size == 16384
-    manager.mode = "character"
-    assert manager.models_status()["working_context_size"] is None
-
-
-def test_legacy_low_agent_context_migrates_without_resetting_other_settings(tmp_path):
-    import json
-
-    path = tmp_path / "config.json"
-    old = {
-        "model": "custom.gguf",
-        "lora": "personal.gguf",
-        "context_size": 4096,
-        "gpu_layers": 12,
-    }
-    path.write_text(json.dumps(old), encoding="utf-8")
-    manager = service.EdgeAgent(tmp_path)
-    assert manager.config["context_size"] == 8192
-    assert manager.config["model"] == old["model"]
-    assert manager.config["lora"] == old["lora"]
-    assert manager.config["gpu_layers"] == old["gpu_layers"]
-    assert json.loads(path.read_text(encoding="utf-8")) == old
-    with pytest.raises(ValueError):
-        manager._validated_config({"context_size": 4096})
-
-
-def test_directory_picker_lists_real_unicode_directories(tmp_path: Path) -> None:
-    manager = service.EdgeAgent(tmp_path)
-    (tmp_path / "故事").mkdir()
-    (tmp_path / "not-a-folder.txt").write_text("x", encoding="utf-8")
-
-    listing = manager.list_directories(str(tmp_path))
-
-    assert {item["name"] for item in listing["directories"]} == {"故事"}
-    with pytest.raises(ValueError, match="directory does not exist"):
-        manager.list_directories(str(tmp_path / "missing"))
-
-
 def test_stop_cancels_approval_waits_before_waiting_for_core_lock(
     tmp_path: Path,
 ) -> None:
-    manager = service.EdgeAgent(tmp_path)
+    manager = core.EdgeAgent(tmp_path)
     session = manager.chat.session("pending-work")
     session.approvals["pending-write"] = {"type": "fixture"}
     manager.stop_service()
@@ -493,69 +224,14 @@ def test_stop_cancels_approval_waits_before_waiting_for_core_lock(
     assert session.approvals == {}
 
 
-def test_listener_lookup_ignores_time_wait_pid_zero(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    listing = SimpleNamespace(
-        stdout=b"  TCP    127.0.0.1:18089    127.0.0.1:65030    TIME_WAIT    0\r\n"
-    )
-    monkeypatch.setattr(service.subprocess, "run", lambda *args, **kwargs: listing)
-
-    assert service._listening_pid(18089) is None
-
-
-def test_listener_lookup_returns_only_exact_listening_port(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    listing = subprocess.CompletedProcess(
-        args=[],
-        returncode=0,
-        stdout=(
-            b"  TCP    127.0.0.1:18087    0.0.0.0:0    LISTENING    111\r\n"
-            b"  TCP    127.0.0.1:18089    0.0.0.0:0    LISTENING    222\r\n"
-        ),
-    )
-    monkeypatch.setattr(service.subprocess, "run", lambda *args, **kwargs: listing)
-
-    assert service._listening_pid(18089) == 222
-
-
-def test_worktree_is_real_and_original_workspace_is_preserved(tmp_path: Path) -> None:
-    project = tmp_path / "專案"
-    project.mkdir()
-
-    def git(*args):
-        return subprocess.run(
-            ["git", "-C", str(project), *args],
-            capture_output=True,
-            encoding="utf-8",
-            check=True,
-        )
-
-    git("init", "-b", "copilot-story-mode")
-    git("config", "user.name", "Fixture")
-    git("config", "user.email", "fixture@example.invalid")
-    (project / "code.py").write_text("value = 1\n", encoding="utf-8")
-    git("add", "code.py")
-    git("commit", "-m", "fixture")
-    manager = service.EdgeAgent(tmp_path / "core")
-    result = manager.create_worktree(str(project))
-    worktree = Path(result["path"])
-    assert worktree.is_dir()
-    assert manager.workspace_info(str(worktree))["branch"] == result["branch"]
-    assert (worktree / "code.py").read_text() == "value = 1\n"
-    (worktree / "code.py").write_text("value = 2\n", encoding="utf-8")
-    assert (project / "code.py").read_text() == "value = 1\n"
-
-
 def test_router_acceptance_is_not_model_readiness(tmp_path, monkeypatch):
     from test_models import gguf
 
-    manager = service.EdgeAgent(tmp_path)
+    manager = core.EdgeAgent(tmp_path)
     manager.model_dir.mkdir()
-    (manager.model_dir / service.DEFAULT_MODEL).write_bytes(gguf())
-    manager.process = SimpleNamespace(poll=lambda: None)
-    monkeypatch.setattr(service, "find_llama_server", lambda: "llama-server")
+    (manager.model_dir / DEFAULT_MODEL).write_bytes(gguf())
+    manager.router.process = SimpleNamespace(poll=lambda: None)
+    monkeypatch.setattr(load_plan, "find_llama_server", lambda: "llama-server")
     states = iter(
         [
             {"value": "unloaded"},
@@ -563,9 +239,9 @@ def test_router_acceptance_is_not_model_readiness(tmp_path, monkeypatch):
             {"value": "unloaded", "failed": True, "exit_code": 1},
         ]
     )
-    monkeypatch.setattr(manager, "_model_state", lambda: next(states))
+    monkeypatch.setattr(manager.router, "state", lambda: next(states))
     monkeypatch.setattr(
-        manager, "_model_request", lambda *args, **kwargs: {"success": True}
+        manager.router, "request", lambda *args, **kwargs: {"success": True}
     )
     with pytest.raises(RuntimeError, match="failed to load"):
         manager._start_child("base", None, None)
@@ -580,17 +256,17 @@ def test_router_keeps_parent_and_verifies_loaded_context(
 ):
     from test_models import gguf
 
-    manager = service.EdgeAgent(tmp_path)
+    manager = core.EdgeAgent(tmp_path)
     manager.model_dir.mkdir()
-    (manager.model_dir / service.DEFAULT_MODEL).write_bytes(gguf())
+    (manager.model_dir / DEFAULT_MODEL).write_bytes(gguf())
     parent = SimpleNamespace(poll=lambda: None)
-    manager.process = parent
-    monkeypatch.setattr(service, "find_llama_server", lambda: "llama-server")
+    manager.router.process = parent
+    monkeypatch.setattr(load_plan, "find_llama_server", lambda: "llama-server")
     states = iter([{"value": "unloaded"}, {"value": "loading"}, {"value": "loaded"}])
-    monkeypatch.setattr(manager, "_model_state", lambda: next(states))
+    monkeypatch.setattr(manager.router, "state", lambda: next(states))
     monkeypatch.setattr(
-        manager,
-        "_model_request",
+        manager.router,
+        "request",
         lambda path, *args, **kwargs: (
             {"default_generation_settings": {"n_ctx": reported_context}}
             if path.startswith("/props")
@@ -603,6 +279,6 @@ def test_router_keeps_parent_and_verifies_loaded_context(
         assert manager.active_model == ""
         return
     manager._start_child("base", None, None)
-    assert manager.process is parent
-    assert manager.active_model == service.DEFAULT_MODEL
-    assert manager.chat.model == service.DEFAULT_MODEL
+    assert manager.router.process is parent
+    assert manager.active_model == DEFAULT_MODEL
+    assert manager.chat.model == DEFAULT_MODEL

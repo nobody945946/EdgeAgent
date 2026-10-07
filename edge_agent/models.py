@@ -1,4 +1,5 @@
-"""Model discovery and Hub metadata; inference and downloads keep their owners."""
+"""Model discovery, the model folder's files and Hub metadata; inference and
+downloads keep their owners."""
 
 from __future__ import annotations
 
@@ -126,6 +127,37 @@ def _read_model_metadata(path: Path, size: int, mtime_ns: int) -> dict[str, obje
         "tool_template": "tools" in template or "tool_calls" in template,
         "error": "",
     }
+
+
+def model_file(directory: Path, filename: str) -> Path:
+    model_filename(filename)
+    path = (directory / filename).resolve()
+    if path.parent != directory or not path.is_file():
+        raise FileNotFoundError(path)
+    return path
+
+
+def adapter_file(
+    directory: Path, base: dict[str, object], filename: str
+) -> Path | None:
+    """The LoRA `filename` for the base model described by `base`, if any."""
+    if not filename:
+        return None
+    path = model_file(directory, filename)
+    adapter = model_metadata(path)
+    if not adapter["adapter"] or adapter["split"]:
+        raise ValueError("selected LoRA must be a single adapter GGUF")
+    if adapter["architecture"] != base["architecture"]:
+        raise ValueError("LoRA architecture does not match the selected base model")
+    return path
+
+
+def projector_file(directory: Path, filename: str) -> Path:
+    path = model_file(directory, filename)
+    metadata = model_metadata(path)
+    if not metadata["projector"] or metadata["split"]:
+        raise ValueError("多模態配件必須是單檔 projector GGUF")
+    return path
 
 
 def list_models(directory: Path) -> list[dict[str, object]]:

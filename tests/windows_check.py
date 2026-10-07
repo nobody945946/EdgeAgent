@@ -15,14 +15,17 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from edge_agent.control import Handler
+from edge_agent.core import EdgeAgent
 from edge_agent.permissions import validate_permissions
 from edge_agent.runtime import (
+    CONTROL_PORT,
     CORE_ROOT,
     DEFAULT_MODEL,
     NODE_VERSION,
     QWEN_MODEL,
 )
-from edge_agent.service import CONTROL_PORT, EdgeAgent, ExclusiveHTTPServer, Handler
+from edge_agent.service import ExclusiveHTTPServer
 
 
 def vram() -> int:
@@ -42,9 +45,9 @@ def vram() -> int:
 def launch_edge(profile: Path) -> subprocess.Popen:
     """A hidden Edge with its own throwaway profile and CDP on 9223; the caller
     closes it by this PID and the profile goes with the temporary directory."""
-    from edge_agent.service import _listening_pid
+    from edge_agent.processes import listening_pid
 
-    if _listening_pid(9223) is not None:
+    if listening_pid(9223) is not None:
         raise RuntimeError("CDP port 9223 is occupied")
     candidates = [
         Path(os.environ.get(name, "")) / "Microsoft/Edge/Application/msedge.exe"
@@ -237,7 +240,7 @@ def concurrent_control_probe(core: EdgeAgent) -> dict[str, object]:
 
 def role_probe(core: EdgeAgent) -> dict[str, object]:
     started = time.monotonic()
-    result = core._model_request(
+    result = core.router.request(
         "/v1/chat/completions",
         {
             "model": "local",
@@ -265,13 +268,13 @@ def main() -> int:
     parser.add_argument("--interview-models", action="store_true")
     parser.add_argument("--inference-port", type=int, default=18089)
     args = parser.parse_args()
-    from edge_agent import service
+    from edge_agent import router
 
-    service.GENERAL_PORT = args.inference_port
+    router.GENERAL_PORT = args.inference_port
     for port in (18087, args.inference_port):
-        from edge_agent.service import _listening_pid
+        from edge_agent.processes import listening_pid
 
-        if _listening_pid(port) is not None:
+        if listening_pid(port) is not None:
             raise RuntimeError(f"integration port {port} is occupied")
     temporary = tempfile.TemporaryDirectory(prefix="edge-integration-")
     with temporary as directory:
@@ -281,7 +284,7 @@ def main() -> int:
         (workspace / "probe.py").write_text("fixture_marker = 1\n")
         core = EdgeAgent(root)
         core.model_dir = CORE_ROOT / "models"
-        core.chat.core_dir = CORE_ROOT
+        core.chat.bridge.core_dir = CORE_ROOT
         core.config = {
             **core.config,
             "model": QWEN_MODEL,
@@ -508,7 +511,7 @@ def main() -> int:
                 "listeners": [
                     port
                     for port in (18087, args.inference_port, 9223)
-                    if _listening_pid(port) is not None
+                    if listening_pid(port) is not None
                 ],
             }
         ),

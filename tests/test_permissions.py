@@ -1,8 +1,9 @@
+import os
 from pathlib import Path
 
 import pytest
 
-from edge_agent import service
+from edge_agent.core import EdgeAgent
 from edge_agent.permissions import (
     DEFAULT_PERMISSIONS,
     bridge_rules,
@@ -15,7 +16,7 @@ from edge_agent.permissions import (
 
 
 def test_defaults_ask_before_changes_and_keep_discord_off(tmp_path):
-    config = service.EdgeAgent(tmp_path).config["permissions"]
+    config = EdgeAgent(tmp_path).config["permissions"]
     assert bridge_rules(config["ui"]) == {"edit": "ask", "shell": "ask", "web": "allow"}
     assert config["discord"]["enabled"] is False
     with pytest.raises(PermissionError):
@@ -23,7 +24,7 @@ def test_defaults_ask_before_changes_and_keep_discord_off(tmp_path):
 
 
 def test_partial_profiles_merge_over_defaults_and_persist(tmp_path):
-    manager = service.EdgeAgent(tmp_path)
+    manager = EdgeAgent(tmp_path)
     saved = manager.update_config(
         {"permissions": {"discord": {"enabled": True, "shell": "deny"}}}
     )
@@ -34,7 +35,7 @@ def test_partial_profiles_merge_over_defaults_and_persist(tmp_path):
         "shell": "deny",
     }
     assert (
-        service.EdgeAgent(tmp_path).config["permissions"]["discord"]["shell"] == "deny"
+        EdgeAgent(tmp_path).config["permissions"]["discord"]["shell"] == "deny"
     )
 
 
@@ -72,14 +73,14 @@ def test_workspace_roots_limit_folders(tmp_path: Path):
 
 
 def test_routine_shell_profile_persists_without_enabling_writes(tmp_path):
-    manager = service.EdgeAgent(tmp_path)
+    manager = EdgeAgent(tmp_path)
     manager.update_config({"permissions": {"discord": {"shell": "routine"}}})
-    profile = service.EdgeAgent(tmp_path).config["permissions"]["discord"]
+    profile = EdgeAgent(tmp_path).config["permissions"]["discord"]
     assert bridge_rules(profile) == {"edit": "ask", "shell": "routine", "web": "allow"}
     assert not profile["enabled"]
 
 
-@pytest.mark.skipif(service.os.name != "nt", reason="native Windows PowerShell policy")
+@pytest.mark.skipif(os.name != "nt", reason="native Windows PowerShell policy")
 @pytest.mark.parametrize(
     "command,expected",
     [
