@@ -30,7 +30,7 @@ def test_real_sdk_stops_repeated_noop_without_writing_or_disk_sessions(
         )
         # The third identical call is refused with the way out; the fourth stops.
         assert events[-1][0] == "error"
-        assert "4" in events[-1][1]["message"]
+        assert "4" in events[-1][1]["message"] and events[-1][1]["reason"] == "repeat_limit"
         assert state["calls"] <= 4
         refusals = [m for r in state["requests"] for m in r["messages"]
                     if m["role"] == "tool" and "a third run will not change the result" in str(m["content"])]

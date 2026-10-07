@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import re
 from collections.abc import Iterator
 from functools import cache
 from pathlib import Path
@@ -45,6 +46,23 @@ def taiwan_traditional(text: str) -> str:
     return str(taiwan.convert(text))  # type: ignore[attr-defined]
 
 
+# Model request failures by what the server or the transport said, as stable
+# codes a client may log without the message (which can quote a request).
+MODEL_FAILURES = (
+    ("inference_busy", re.compile(r"inference_busy|\b423\b")),
+    ("context_overflow", re.compile(r"context|too (?:long|many tokens)|exceed", re.IGNORECASE)),
+    ("model_timeout", re.compile(r"time(?:d)? ?out", re.IGNORECASE)),
+    ("model_unreachable", re.compile(r"ECONNREFUSED|ECONNRESET|connection (?:refused|reset)|fetch failed|socket",
+                                     re.IGNORECASE)),
+    ("model_http_error", re.compile(r"\b[45]\d\d\b")),
+)
+
+
+def model_failure(message: str) -> str:
+    """The stable code for a failed model request."""
+    return next((code for code, pattern in MODEL_FAILURES if pattern.search(message)), "model_error")
+
+
 class Turn:
     """What one turn has done so far, read from the events it streams."""
 
@@ -58,6 +76,7 @@ class Turn:
         self.last_assistant_budget: int | None = None
         self.failure = ""
         self.stop_reason = ""
+        self.stop_code = ""
         self.unverified: list[str] = []
         self.source_problems: list[str] = []
         self.converted = 0
@@ -78,7 +97,8 @@ class Turn:
             self.source_problems = json.loads(notice.removeprefix("edge-sources:"))
             return []
         if isinstance(notice, str) and notice.startswith("edge-stop:"):
-            self.stop_reason = notice.removeprefix("edge-stop:")
+            stop = json.loads(notice.removeprefix("edge-stop:"))
+            self.stop_code, self.stop_reason = str(stop["code"]), str(stop["message"])
             return [("status", {"message": self.stop_reason})]
         return None
 
@@ -179,7 +199,7 @@ class Turn:
         if self.session.cancelled.is_set():
             yield "cancelled", {}
         elif self.stop_reason:
-            yield "error", {"message": self.stop_reason}
+            yield "error", {"message": self.stop_reason, "reason": self.stop_code}
         elif self.last_stop == "aborted":
             yield "cancelled", {}
         elif self.last_stop == "length":
@@ -214,12 +234,14 @@ class Turn:
         elif self.failure or self.last_stop == "error":
             yield (
                 "error",
-                {"message": self.failure or "模型請求失敗；已完成的工作仍然保留。"},
+                {"message": self.failure or "模型請求失敗；已完成的工作仍然保留。",
+                 "reason": model_failure(self.failure)},
             )
         elif self.last_stop != "stop":
             yield (
                 "error",
-                {"message": "Agent 未完成回覆；已完成的工作仍然保留。"},
+                {"message": "Agent 未完成回覆；已完成的工作仍然保留。",
+                 "reason": "incomplete_reply", "stop": self.last_stop[:40]},
             )
         else:
             if self.unverified:

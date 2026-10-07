@@ -362,8 +362,10 @@ function policy(pi) {
     }), 'info');
     return payload;
   });
-  function stop(ctx, reason) {
-    ctx.ui.notify('edge-stop:' + reason, 'warning');
+  // `code` is a stable name the host logs (SilentTalk keeps only codes, never
+  // the text); `reason` is what the user and the model read.
+  function stop(ctx, code, reason) {
+    ctx.ui.notify('edge-stop:' + JSON.stringify({ code, message: reason }), 'warning');
     ctx.abort();
     return { block: true, reason };
   }
@@ -386,7 +388,7 @@ function policy(pi) {
   });
   pi.on('tool_call', async (event, ctx) => {
     const { toolName, input } = event;
-    if (++calls > 64) return stop(ctx, '本輪已執行 64 次工具操作；停止並保留進度，請縮小範圍或繼續下一輪。');
+    if (++calls > 64) return stop(ctx, 'tool_limit', '本輪已執行 64 次工具操作；停止並保留進度，請縮小範圍或繼續下一輪。');
     if (toolName === 'tool_search' && fruitlessSearches >= 4) {
       return { block: true, reason: 'The catalog was searched 4 times this turn without finding a new tool: there is none '
         + 'for this. Finish with the tools you have, or say what cannot be done.' };
@@ -398,7 +400,7 @@ function policy(pi) {
       // The third identical call is refused with the way out; only a fourth
       // ends the turn, so a model that can still answer gets the chance to
       // (the bench's repo tasks: 7 of 15 failures ended here with nothing said).
-      if (count >= 4) return stop(ctx, '同一操作重複 4 次而未推進工作；已停止，修改與上下文仍保留。');
+      if (count >= 4) return stop(ctx, 'repeat_limit', '同一操作重複 4 次而未推進工作；已停止，修改與上下文仍保留。');
       if (count === 3) {
         return { block: true, reason: 'You already ran exactly this twice; a third run will not change the result. '
           + 'Use what it returned, try a different approach, or tell the user what is done and what is not.' };

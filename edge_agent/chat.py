@@ -30,6 +30,17 @@ from edge_agent.turn import Turn
 APPROVAL_TIMEOUT_SECONDS = 300
 
 
+def transport_failure(exc: BaseException) -> str:
+    """The stable code for a turn that failed between the host and Pi."""
+    if isinstance(exc, TimeoutError):
+        return "bridge_timeout"
+    if isinstance(exc, OSError):
+        return "bridge_io"
+    if isinstance(exc, RuntimeError):
+        return "bridge_error"
+    return "invalid_request"
+
+
 class NativeChat:
     """Adapt Pi's official RPC stream to the existing UI. Pi owns the agent loop."""
 
@@ -375,7 +386,7 @@ class NativeChat:
                 yield (
                     ("cancelled", {})
                     if was_cancelled
-                    else ("error", {"message": str(exc)})
+                    else ("error", {"message": str(exc), "reason": transport_failure(exc)})
                 )
             finally:
                 if not settled and session is self.bridge.active:

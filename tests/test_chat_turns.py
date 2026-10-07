@@ -183,13 +183,13 @@ def test_progress_stop_survives_aborted_assistant(tmp_path):
             {
                 "type": "extension_ui_request",
                 "method": "notify",
-                "message": "edge-stop:fixture limit",
+                "message": 'edge-stop:{"code": "tool_limit", "message": "fixture limit"}',
             },
             *ending("aborted"),
         ]
     )
     events = list(chat.stream_reply("fixture", "fixture", working_dir=tmp_path))
-    assert events[-1] == ("error", {"message": "fixture limit"})
+    assert events[-1] == ("error", {"message": "fixture limit", "reason": "tool_limit"})
 
 
 def test_approval_explains_a_powershell_command(tmp_path, monkeypatch):
@@ -250,3 +250,17 @@ def test_simplified_that_slips_through_is_shown_in_taiwan_traditional():
     pytest.importorskip("opencc")
     assert taiwan_traditional("这个软件已经安装好了") == "這個軟體已經安裝好了"
     assert taiwan_traditional("測試通過，檔案已存好") == "測試通過，檔案已存好"
+
+
+def test_failed_turns_carry_a_stable_code_a_client_can_log() -> None:
+    from edge_agent.chat import transport_failure
+    from edge_agent.turn import model_failure
+
+    assert model_failure("423 inference_busy") == "inference_busy"
+    assert model_failure("the request exceeds the available context size") == "context_overflow"
+    assert model_failure("fetch failed: ECONNREFUSED") == "model_unreachable"
+    assert model_failure("HTTP 500 from server") == "model_http_error"
+    assert model_failure("") == "model_error"
+    assert transport_failure(TimeoutError()) == "bridge_timeout"
+    assert transport_failure(RuntimeError("Pi rejected this task")) == "bridge_error"
+    assert transport_failure(ValueError("bad")) == "invalid_request"
