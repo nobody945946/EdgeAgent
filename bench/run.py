@@ -212,11 +212,17 @@ class Server:
         self.log.close()
 
 
+STOPPING = threading.Event()
+
+
 def close_on_term(*servers: Server | None) -> None:
     """A stopped step must not leave llama-server holding VRAM: the queue
     stops a step with SIGTERM, and Python's default action skips `finally`
-    (2026-10-07: a stopped card writer left 21 GB to an orphan server)."""
+    (2026-10-07: a stopped card writer left 21 GB to an orphan server).
+    While it closes, jobs that fail against the closing servers are not
+    results (STOPPING)."""
     def stop(*_: object) -> None:
+        STOPPING.set()
         for server in servers:
             if server is not None:
                 server.close()
@@ -507,7 +513,9 @@ def main() -> None:
     if results.is_file():
         for line in results.read_text(encoding="utf-8").splitlines():
             row = json.loads(line)
-            done.add((row["task"], row["rep"]))
+            # A crash is the sandbox failing to report, not a result: rerun it.
+            if row.get("outcome") != "crash":
+                done.add((row["task"], row["rep"]))
     jobs = [(t, r) for t in load_tasks(args.tasks) for r in range(args.repeats)
             if (t.name, r) not in done]
     print(f"{len(jobs)} jobs, {len(done)} already done", flush=True)
@@ -547,6 +555,8 @@ def main() -> None:
             # A model server that died mid-run (2026-10-07: another tenant took
             # the GPU) fails every later job in seconds; those are not the
             # model's results. Stop without recording: the next start resumes.
+            if STOPPING.is_set():
+                raise SystemExit(f"stopping; {row['task']} r{row['rep']} not recorded")
             for name, owner in (("model", server), ("simulator", simulator)):
                 if owner is not None and owner.process.poll() is not None:
                     raise SystemExit(f"the {name} server exited ({owner.process.returncode}) during the run; "
