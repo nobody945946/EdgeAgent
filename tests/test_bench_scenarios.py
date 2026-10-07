@@ -71,6 +71,17 @@ def test_card_validation() -> None:
     assert scenario_cards.file_problems({"C:/logs/a.txt": "x"}, "C")
     assert scenario_cards.file_problems({"logs\\..\\..\\a.txt": "x"}, "C")
     assert scenario_cards.file_problems({"logs/a.txt": "x", "b.csv": "y"}, "H") == []
+    assert scenario_cards.file_problems({"法規.pdf": "x"}, "D") == ["not a text format: 法規.pdf"]
+
+
+def test_the_teachers_files_are_read_from_marked_blocks() -> None:
+    answer = ('=== 檔案：logs/app.log ===\n[ERROR] C:\\Users\\a "x"\n第二行\n=== 結束 ===\n'
+              '=== 檔案：notes.md ===\n# 筆記\n=== 結束 ===')
+    assert scenario_cards.parse_files(answer) == {"logs/app.log": '[ERROR] C:\\Users\\a "x"\n第二行',
+                                                  "notes.md": "# 筆記"}
+    assert scenario_cards.parse_files("沒有檔案") == {}
+    assert scenario_cards.parse_files("「沒有檔案」。") == {}
+    assert scenario_cards.parse_files("我想想……") is None
 
 
 def test_near_duplicate_cards_are_dropped() -> None:

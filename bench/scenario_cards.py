@@ -86,12 +86,26 @@ FILES_PROMPT = """下面是一張情境卡：另一個模型會照卡扮演使�
 {card}
 
 對話開始時，工作資料夾裡要有哪些檔案？只算使用者會要助理讀、檢查、修改或整理的「已經存在」的檔案；助理被要求新建的檔案不算。
-只輸出一個 JSON 物件：{{"files": {{"相對路徑": "檔案完整內容"}}}}
-- {count}；純文字，每個不超過 1500 字。路徑用卡片裡的檔名；卡片說檔案在桌面或別的地方，也一樣放進工作資料夾。
+{count}。每個檔案照這個格式寫，前後不要加別的說明：
+=== 檔案：相對路徑 ===
+檔案完整內容
+=== 結束 ===
+- 只能是純文字格式（.txt .md .csv .json .log .py .ps1 之類），每個不超過 1500 字。卡片提到 PDF、Word、Excel、圖片這類檔案時，改用內容相同、主檔名相同的 .txt、.md 或 .csv。
+- 路徑用卡片裡的檔名；卡片說檔案在桌面或別的地方，也一樣放進工作資料夾。
 - 內容要具體，而且和卡片一致：卡片說有幾筆錯誤、哪些欄位、什麼數字，檔案裡就真的是那樣，讓 must 的每一條都做得到。
 - 文字用台灣繁體中文；程式碼、設定檔、紀錄檔照該格式的慣例。虛構的人名、公司、數字照卡片。"""
 FILE_COUNTS = {"H": "這是電腦雜事，給 2 到 6 個檔案",
-               None: "卡片沒用到既有檔案就輸出 {\"files\": {}}；用到了就給 1 到 6 個檔案"}
+               None: "卡片沒用到既有檔案就只輸出「沒有檔案」四個字；用到了就給 1 到 6 個檔案"}
+FILE_BLOCK = re.compile(r"^=== 檔案：(.+?) ===\n(.*?)\n=== 結束 ===", re.MULTILINE | re.DOTALL)
+BINARY = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".zip", ".png", ".jpg", ".jpeg", ".gif", ".exe"}
+
+
+def parse_files(text: str) -> dict | None:
+    """The files of a FILES_PROMPT answer: {} for 「沒有檔案」, None when unreadable."""
+    blocks = {path.strip(): body for path, body in FILE_BLOCK.findall(text)}
+    if blocks:
+        return blocks
+    return {} if text.strip().strip("。.「」") == "沒有檔案" else None
 
 
 def families() -> dict:
@@ -176,6 +190,9 @@ def file_problems(files: object, family_id: str) -> list[str]:
     if not all(isinstance(path, str) and path.strip() and isinstance(text, str) and 0 < len(text) <= 3000
                and inside(path) for path, text in files.items()):
         return ["each file needs a relative path and 1-3000 characters of text"]
+    binary = [path for path in files if PureWindowsPath(path).suffix.lower() in BINARY]
+    if binary:  # text under a .pdf name teaches reading a real PDF as text
+        return [f"not a text format: {binary[0]}"]
     return []
 
 
@@ -289,9 +306,9 @@ def files(args: argparse.Namespace) -> None:
                                      count=FILE_COUNTS.get(card["family"], FILE_COUNTS[None]))
         why = ["not answered"]
         for _ in range(3):
-            answer = parse_card(ask(server.port, prompt, max_tokens=12000))
-            found = traditional(answer.get("files")) if isinstance(answer, dict) else None
-            why = ["not JSON"] if found is None else file_problems(found, card["family"])
+            found = parse_files(ask(server.port, prompt, max_tokens=12000))
+            found = traditional(found) if found is not None else None
+            why = ["unreadable answer"] if found is None else file_problems(found, card["family"])
             if not why:
                 break
         with lock:
