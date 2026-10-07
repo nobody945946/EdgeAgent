@@ -30,6 +30,20 @@ def repeated_calls(calls: list[dict]) -> list[str]:
     return [call for call, count in seen.items() if count > 1]
 
 
+# Searching a whole drive from its root (a missing file made the teacher run
+# Get-ChildItem / -Recurse): slow and intrusive on the owner's laptop.
+ROOT_PATH = re.compile(r"""^\s*['"]?(?:/|[A-Za-z]:[\\/]?)['"]?\s*$""")
+ROOT_SCAN = re.compile(r"""(?i)(?:get-childitem|gci|dir|ls)\s+(?:-(?:literal)?path\s+)?['"]?(?:/|[a-z]:[\\/]?)['"]?(?:\s|$)""")
+
+
+def scans_a_drive(call: dict) -> bool:
+    arguments = call.get("arguments") or {}
+    if call.get("name") in ("find", "grep", "ls") and ROOT_PATH.match(str(arguments.get("path", ""))):
+        return True
+    command = str(arguments.get("command", ""))
+    return bool(ROOT_SCAN.search(command)) and "-recurse" in command.lower()
+
+
 def check(name: str, dialogue: dict) -> str | None:
     """None when the dialogue passes check `name`, else why it does not."""
     turns = dialogue.get("dialogue") or []
@@ -57,9 +71,13 @@ def check(name: str, dialogue: dict) -> str | None:
 
 
 def failures(dialogue: dict, names: list[str]) -> dict[str, str]:
-    """Every listed check the dialogue fails, plus turns that did not end
-    normally (a crash, a cancel or a timeout is never a clean example)."""
+    """Every listed check the dialogue fails, plus what no family allows:
+    turns that did not end normally (a crash, a cancel or a timeout is never
+    a clean example) and searching a whole drive."""
     found = {name: why for name in names if (why := check(name, dialogue)) is not None}
+    scans = [c for turn in dialogue.get("dialogue") or [] for c in turn.get("calls") or [] if scans_a_drive(c)]
+    if scans:
+        found["drive_scan"] = f"searched a whole drive: {scans[0].get('name')}"
     broken = [i + 1 for i, turn in enumerate(dialogue.get("dialogue") or []) if turn.get("outcome") != "done"]
     if broken:
         found["outcome"] = f"turns not done: {broken}"

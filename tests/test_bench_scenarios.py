@@ -117,3 +117,15 @@ def test_the_judge_sees_tool_calls_and_results_but_not_thinking() -> None:
 def test_a_card_with_simplified_characters_is_converted_not_dropped() -> None:
     converted = scenario_cards.traditional({"goal": "查询这个软件", "plan": ["先问", "这个"], "max_turns": 3})
     assert converted == {"goal": "查詢這個軟體", "plan": ["先問", "這個"], "max_turns": 3}
+
+
+def test_searching_a_whole_drive_never_becomes_a_row() -> None:
+    scan = {"name": "powershell", "arguments": {"command": "Get-ChildItem / -Recurse -Filter 'app_logs*'"}}
+    windows = {"name": "powershell", "arguments": {"command": "gci C:\\ -Recurse -File"}}
+    tool = {"name": "find", "arguments": {"path": "/", "pattern": "*.log"}}
+    fine = {"name": "powershell", "arguments": {"command": "Get-ChildItem /work -Recurse"}}
+    for call in (scan, windows, tool):
+        record = {"dialogue": [turn("找不到", [call])], "ended": "end", "trajectory": said("找不到")}
+        assert "drive_scan" in scenario_checks.failures(record, [])
+    record = {"dialogue": [turn("找到了", [fine])], "ended": "end", "trajectory": said("找到了")}
+    assert scenario_checks.failures(record, []) == {}
