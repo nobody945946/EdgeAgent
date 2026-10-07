@@ -154,8 +154,9 @@
   "lora": "machine-spirit-v1.q8_0.gguf"
  },
  "teacher-38": {
-  "_note": "The one teacher (owner, 2026-10-07): Qwen3.8-27B (Apache 2.0) UD-Q4_K_XL, all on GPU, the Agent's 64K window, thinking high so its reasoning is recorded with its answers. Also plays the simulated user in scenario cards it records. Dev box only.",
+  "_note": "The one teacher (owner, 2026-10-07): Qwen3.8-27B (Apache 2.0) UD-Q4_K_XL, all on GPU, the Agent's 64K window, thinking high so its reasoning is recorded with its answers. Also plays the simulated user in scenario cards it records. Dev box only. Says it is the product's model (self_model) so its rows teach the student what it is.",
   "model": "../teacher/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+  "self_model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
   "vision": false,
   "context_size": 65536,
   "max_output_tokens": 16384,
