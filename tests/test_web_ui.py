@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+from edge_agent import runtime, web
 from edge_agent.web import NATIVE_CHAT_HTML
+
+
+def test_model_help_uses_both_runtime_adapter_names():
+    assert f"<code>{runtime.AGENT_ADAPTER}</code>" in web.NATIVE_CHAT_HTML
+    assert f"<code>{runtime.CHARACTER_ADAPTER}</code>" in web.NATIVE_CHAT_HTML
+    assert "@@AGENT_ADAPTER@@" not in web.NATIVE_CHAT_HTML
+    assert "@@CHARACTER_ADAPTER@@" not in web.NATIVE_CHAT_HTML
 
 
 def test_native_web_ui_handles_compaction_notice() -> None:

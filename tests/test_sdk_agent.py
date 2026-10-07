@@ -114,8 +114,10 @@ def test_browser_exports_conversations_and_displays_native_tool_errors(
     import subprocess
     import threading
 
-    from edge_agent import service
+    from edge_agent.control import Handler
+    from edge_agent.core import EdgeAgent
     from edge_agent.runtime import CORE_ROOT, NODE_VERSION
+    from edge_agent.service import ExclusiveHTTPServer
     from tests.windows_check import launch_edge
 
     port, state = repeating_model
@@ -143,15 +145,15 @@ def test_browser_exports_conversations_and_displays_native_tool_errors(
     downloads.mkdir()
     core_dir = tmp_path / "core"
     core_dir.mkdir()
-    core = service.EdgeAgent(core_dir)
+    core = EdgeAgent(core_dir)
     core.chat.close()
     core.chat = NativeChat(model_port=port)
     core.active_model = "synthetic UI fixture"
     core.agent_slot = 0
     # Only model readiness is synthetic; HTTP, SDK, tools and files are real.
     monkeypatch.setattr(core, "status", lambda: {"ready": True})
-    handler = type("UIFixtureHandler", (service.Handler,), {"core": core})
-    server = service.ExclusiveHTTPServer(("127.0.0.1", 0), handler)
+    handler = type("UIFixtureHandler", (Handler,), {"core": core})
+    server = ExclusiveHTTPServer(("127.0.0.1", 0), handler)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     edge = None
