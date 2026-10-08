@@ -213,6 +213,7 @@ def validate(args: argparse.Namespace) -> None:
     marker = root / ".validated"
     done = set(marker.read_text().split()) if marker.is_file() else set()
     lock = threading.Lock()
+    dropped: list[str] = []
 
     def one(name: str) -> None:
         try:
@@ -222,6 +223,7 @@ def validate(args: argparse.Namespace) -> None:
             ok = False
         with lock:
             if not ok:
+                dropped.append(name)
                 rejected.mkdir(exist_ok=True)
                 shutil.move(str(root / name), str(rejected / name))
             else:
@@ -231,7 +233,9 @@ def validate(args: argparse.Namespace) -> None:
     with ThreadPoolExecutor(args.parallel) as pool:
         list(pool.map(one, [t for t in tasks if t not in done]))
     kept = len([d for d in root.iterdir() if (d / "task.json").is_file()])
-    print(f"{kept} tasks hold in {root}; rejected in {rejected}", flush=True)
+    checked = len([t for t in tasks if t not in done])
+    # The yield is what the session's wake reads: a high rejection rate is a bug to find, not a result.
+    print(f"{kept} tasks hold in {root}; {len(dropped)} of {checked} checked now rejected (in {rejected})", flush=True)
 
 
 def main() -> None:
