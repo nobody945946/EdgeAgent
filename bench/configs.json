@@ -227,7 +227,7 @@
   "simulator": "teacher-38-sim"
  },
  "teacher-38-iq3": {
-  "_note": "teacher-38 at IQ3_XXS so four conversations run side by side (measured 2026-10-08: 12,720 MiB with one 64K slot, 15,302 with two; four fit an idle GPU, five do not) (2026-10-07: at Q4 two slots made 12-15 conversations an hour, one stuck conversation halved it). The 27B IQ3 ranked within the threshold of Q4 as a teacher before (dev box 2026-09-29: 1.54 vs 1.46). A conversation past 15 minutes (time_scale 0.5 of the cards' 30) is a loop that never becomes a row.",
+  "_note": "teacher-38 at IQ3_XXS so four conversations run side by side (measured 2026-10-08: 12,720 MiB with one 64K slot, 15,302 with two; four fit an idle GPU, five do not) (2026-10-07: at Q4 two slots made 12-15 conversations an hour, one stuck conversation halved it). The 27B IQ3 ranked within the threshold of Q4 as a teacher before (dev box 2026-09-29: 1.54 vs 1.46). A turn gets the cards' own 30 minutes (time_scale 1): at 0.5 the 2026-10-09 pilot cut 7-8 of 40 conversations, mostly long work rather than loops (the owner's build cards write 8-15K-character files at about 14 tokens a second per conversation).",
   "model": "../teacher/Qwen3.8-27B-UD-IQ3_XXS.gguf",
   "self_model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
   "vision": false,
@@ -243,7 +243,7 @@
    "--reasoning-budget",
    "1024"
   ],
-  "time_scale": 0.5
+  "time_scale": 1
  },
  "teacher-38-mini": {
   "_note": "The teacher (teacher-38-iq3) in the mini-swe-agent harness on SWE-bench Verified: is it a good enough Python teacher? (E4B: 4/60 in the same harness). Same sampling as e4b-mini.",
@@ -378,7 +378,7 @@
    "--reasoning-budget",
    "4096"
   ],
-  "time_scale": 0.5
+  "time_scale": 1
  },
  "e4b-laptop-ms3": {
   "_note": "e4b-laptop-fw3 with machine-spirit-fw3: one adapter for the Agent and the machine spirit, trained on agent-fw3's rows and the character's chats, so the character can speak while the Agent works (two slots, one adapter); it ships only if it loses nothing to agent-fw3 here.",
