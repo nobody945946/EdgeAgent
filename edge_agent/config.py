@@ -20,7 +20,10 @@ from edge_agent.runtime import (
 )
 
 DEFAULT_CONFIG: dict[str, object] = {
-    "thinking_effort": "off",
+    # Thinking on, no budget: base E4B on spec v2, 63 tasks x2, 89 of 126
+    # against 64 off and 83/85/82 with 512/1024/2048 tokens a step, and no
+    # slower (2026-10-08); the character no longer waits for it (inference.py).
+    "thinking_effort": "high",
     "agent": True,
     "model": DEFAULT_MODEL,
     "lora": "",
