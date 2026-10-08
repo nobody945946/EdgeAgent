@@ -266,5 +266,48 @@
    "top_p": 0.95,
    "step_limit": 100
   }
+ },
+ "e4b-laptop-fw3": {
+  "_note": "The base E4B with agent-fw3, trained on spec v2's recordings; as e4b-laptop-fw2 otherwise.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "agent-fw3.q8_0.gguf"
+ },
+ "e4b-laptop-fw3-high": {
+  "_note": "The base E4B with agent-fw3, trained on spec v2's recordings; as e4b-laptop-fw2-high otherwise.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "agent-fw3.q8_0.gguf"
+ },
+ "e4b-laptop-fw3-scen": {
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 5000,
+  "vram_slot_mib": 1200,
+  "search_tools": true,
+  "lora": "agent-fw3.q8_0.gguf",
+  "_note": "The base E4B with agent-fw3, trained on spec v2's recordings; as e4b-laptop-fw2-scen otherwise.",
+  "simulator": "teacher-38-sim"
  }
 }
