@@ -16,6 +16,7 @@ import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
+from edge_agent import hardware
 from edge_agent.runtime import (
     AGENT_ADAPTER,
     CHARACTER_ADAPTER,
@@ -226,12 +227,7 @@ def extract_zip(archive: Path, destination: Path) -> None:
 
 
 def has_nvidia() -> bool:
-    command = shutil.which("nvidia-smi")
-    if not command:
-        candidate = (
-            Path(os.environ.get("WINDIR", "C:/Windows")) / "System32/nvidia-smi.exe"
-        )
-        command = str(candidate) if candidate.is_file() else None
+    command = hardware.nvidia_smi()
     if not command:
         return False
     try:

@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 
+from edge_agent import hardware
 from edge_agent.chat import NativeChat
 from edge_agent.config import MODEL_SETTINGS, load_config, save_config, validated_config
 from edge_agent.inference import InferenceGateway
@@ -295,6 +296,7 @@ class EdgeAgent:
             self.capabilities,
             int(self.config["max_output_tokens"]),
             int(self.config["working_context_size"]),
+            hardware.describe(int(self.config["gpu_layers"])),
         )
         self.chat.slot_id = agent_slot
         self.chat.lora_id = plan.loras.index(plan.agent_lora) if plan.agent_lora else None

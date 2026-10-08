@@ -6,8 +6,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from edge_agent import undo
 from edge_agent.lingua import powershell as lingua_powershell
-from edge_agent.permissions import routine_shell
+from edge_agent.permissions import REVERSIBLE, reversible_shell, routine_shell
 
 
 def explain_approval(details: dict, cwd: Path) -> dict[str, str]:
@@ -26,20 +27,27 @@ def explain_approval(details: dict, cwd: Path) -> dict[str, str]:
 
 
 def host_answer(details: dict, rules: dict[str, str], cwd: Path) -> bool | None:
-    """The host's own answer to a shell approval under the "routine" and
-    "read" rules (allow a provable read, or refuse), or None when the owner
-    is asked."""
-    shell = rules.get("shell")
-    if details.get("tool") == "powershell" and shell in ("routine", "read"):
-        provable = (
-            not details.get("after_web")
-            and details.get("explicit", "") in {"", "destructive"}
-            and isinstance(details.get("arguments"), dict)
-            and isinstance(details["arguments"].get("command"), str)
-            and routine_shell(details["arguments"]["command"], cwd)
-        )
-        # "read" never asks the owner: a provable read
-        # runs, anything else is refused.
-        if provable or shell == "read":
-            return provable
-    return None
+    """The host's own answer to an approval, or None when the owner is asked.
+    Under "read" a provable read runs and anything else is refused; under
+    "reversible" a change that can be put back runs once what it touches is
+    copied (edge_agent.undo), and the owner decides the rest."""
+    tool, arguments = details.get("tool"), details.get("arguments")
+    if not isinstance(arguments, dict):
+        return None
+    if tool == "powershell" and rules.get("shell") == "read":
+        # "read" never asks the owner: a provable read runs, anything else is refused.
+        return (not details.get("after_web") and details.get("explicit", "") in {"", "destructive"}
+                and isinstance(arguments.get("command"), str) and routine_shell(arguments["command"], cwd))
+    if details.get("explicit"):  # deleting, protected settings, an address the model built
+        return None
+    if tool in ("edit", "write") and rules.get("edit") == REVERSIBLE and isinstance(arguments.get("path"), str):
+        paths: list[Path] | None = [Path(arguments["path"])]
+    elif tool == "powershell" and rules.get("shell") == REVERSIBLE and isinstance(arguments.get("command"), str):
+        paths = reversible_shell(arguments["command"], cwd, bool(details.get("after_web")))
+    else:
+        return None
+    if paths is None or not undo.coverable(cwd, paths):
+        return None
+    if paths:
+        undo.checkpoint(cwd, paths, f"{tool}: {arguments.get('command') or arguments.get('path')}")
+    return True
