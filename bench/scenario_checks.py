@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections import Counter
 from pathlib import Path
 
 FAMILIES = Path(__file__).resolve().parent / "scenarios" / "families.json"
@@ -27,10 +26,26 @@ SELF_SEARCH = re.compile(
 
 
 
+# Calls that can change what a later local call returns. Running a test again
+# after editing the code is what family I asks for (2026-10-08: the teacher's
+# reruns after a fix failed this check); a web lookup never changes that way.
+CHANGES = {"write", "edit", "powershell"}
+WEB = RESEARCH | {"web_fetch"}
+
+
 def repeated_calls(calls: list[dict]) -> list[str]:
-    seen = Counter(f"{c.get('name')} {json.dumps(c.get('arguments'), ensure_ascii=False, sort_keys=True)}"
-                   for c in calls)
-    return [call for call, count in seen.items() if count > 1]
+    """Calls made again in one turn with nothing in between that could change
+    their result: any repeated web lookup, or a local call with no write, edit
+    or command since its last run."""
+    last: dict[str, int] = {}
+    found: list[str] = []
+    for index, call in enumerate(calls):
+        key = f"{call.get('name')} {json.dumps(call.get('arguments'), ensure_ascii=False, sort_keys=True)}"
+        if key in last and key not in found and (
+                call.get("name") in WEB or not any(c.get("name") in CHANGES for c in calls[last[key] + 1:index])):
+            found.append(key)
+        last[key] = index
+    return found
 
 
 # Searching a whole drive from its root (a missing file made the teacher run
@@ -42,9 +57,10 @@ ROOT_SCAN = re.compile(r"""(?i)(?:get-childitem|gci|dir|ls)\s+(?:-(?:literal)?pa
 # Reading the machine itself (hardware, OS, processes, disks): in the bench
 # that is the dev box's sandbox (2026-10-08: answers told the owner he runs
 # Docker on an RTX 3090), so the facts in the answer are false on the laptop.
+# Get-Process -Id checks a process the Agent started itself, not the machine.
 SYSTEM_PROBE = re.compile(
     r"(?i)get-ciminstance|get-wmiobject|win32_|nvidia-smi|lscpu|systeminfo|get-computerinfo|/proc/|/sys/"
-    r"|\buname\b|get-psdrive|\$psversiontable|get-process|\bdf\s|\bfree\s+-|\[(?:system\.)?environment\]"
+    r"|\buname\b|get-psdrive|\$psversiontable|get-process(?!\s+-id\b)|\bdf\s|\bfree\s+-|\[(?:system\.)?environment\]"
     r"|osversion|\$env:(?:processor|computername|os|number_of)|\bhostname\b|docker|nproc|\bps\s+(?:aux|-e)"
     r"|get-hotfix|get-netadapter|ipconfig|\bip\s+a")
 SYSTEM_PATH = re.compile(r"^/(?:proc|sys|etc|var|usr)\b")

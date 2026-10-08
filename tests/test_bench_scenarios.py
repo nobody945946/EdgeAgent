@@ -41,12 +41,31 @@ def test_the_same_call_twice_in_one_turn_fails() -> None:
     assert scenario_checks.check("no_repeat_search", {"dialogue": [turn("好", [call]), turn("好", [call])]}) is None
 
 
+def test_a_rerun_after_a_change_passes_but_the_same_lookup_again_fails() -> None:
+    def check(*calls: dict) -> str | None:
+        return scenario_checks.check("no_repeat_search", {"dialogue": [turn("好", list(calls))]})
+
+    run = {"name": "powershell", "arguments": {"command": "python test_report.py"}}
+    edit = {"name": "edit", "arguments": {"path": "/work/report.py", "edits": []}}
+    read = {"name": "read", "arguments": {"path": "/work/report.py"}}
+    fetch = {"name": "web_fetch", "arguments": {"url": "https://example.org/"}}
+    assert check(run, edit, run) is None
+    assert check(read, edit, read) is None
+    assert check(run, run)
+    assert check(read, {"name": "ls", "arguments": {"path": "/work"}}, read)
+    assert check(fetch, edit, fetch)
+
+
 def test_reading_the_machine_itself_never_passes_and_sandbox_words_only_when_unasked() -> None:
     probe = {"name": "powershell", "arguments": {"command": "Get-CimInstance Win32_VideoController"}}
     found = scenario_checks.failures({"dialogue": [turn("你跑在 GPU 上", [probe])], "ended": "end"}, [])
     assert set(found) == {"system_probe"}
     work = {"name": "read", "arguments": {"path": "/work/notes.md"}}
     assert scenario_checks.failures({"dialogue": [turn("讀完了", [work])], "ended": "end"}, []) == {}
+    listing = {"name": "powershell", "arguments": {"command": "Get-Process | Sort-Object CPU -Descending"}}
+    assert set(scenario_checks.failures({"dialogue": [turn("好", [listing])], "ended": "end"}, [])) == {"system_probe"}
+    own = {"name": "powershell", "arguments": {"command": "$p = Start-Process python -PassThru; Get-Process -Id $p.Id"}}
+    assert scenario_checks.failures({"dialogue": [turn("還在跑", [own])], "ended": "end"}, []) == {}
     assert scenario_checks.check("no_sandbox_words", {"dialogue": [turn("我跑在 Docker 容器裡")]})
     linux = {"user": "我在 Linux 上跑 .NET", "answer": "Linux 上要裝憑證", "calls": [], "outcome": "done"}
     assert scenario_checks.check("no_sandbox_words", {"dialogue": [linux]}) is None
@@ -124,13 +143,17 @@ def test_cards_become_tasks_with_the_stand_in_web(tmp_path: Path, monkeypatch) -
     assert pages[0]["url"] == "http://news.example.tw:8081/a"
 
 
-def test_corrupted_controls_change_only_the_last_answer() -> None:
+def test_corrupted_controls_break_the_answers_for_sure() -> None:
     trajectory = [{"role": "user", "content": "問"}, *said("第一句。第二句。"),
-                  {"role": "user", "content": "再問"}, *said("完整的答案。還有細節。")]
-    cut = scenario_judge.corrupt(trajectory, said("別張卡的答案"), "cut")
-    assert cut[:3] == trajectory[:3] and cut[-1]["content"][-1]["text"] == "完整的答案。"
-    swapped = scenario_judge.corrupt(trajectory, said("別張卡的答案"), "swap")
-    assert swapped[-1]["content"][-1]["text"] == "別張卡的答案"
+                  {"role": "user", "content": "再問"}, *said("完整的答案，還有很多細節要講。")]
+    other = [{"role": "user", "content": "別的問題"}, *said("別張卡的第一答"), *said("別張卡的答案")]
+    cut = scenario_judge.corrupt(trajectory, other, "cut")
+    assert cut[:3] == trajectory[:3] and cut[-1]["content"][-1]["text"] == "完整的答案，"
+    swapped = scenario_judge.corrupt(trajectory, other, "swap")
+    assert swapped[:3] == trajectory[:3] and swapped[-1]["content"][-1]["text"] == "別張卡的答案"
+    every = scenario_judge.corrupt(trajectory, other, "swap_all")
+    assert [scenario_judge.texts(m) for m in every if m["role"] == "assistant"] == [["別張卡的第一答"], ["別張卡的答案"]]
+    assert trajectory[-1]["content"][-1]["text"] == "完整的答案，還有很多細節要講。"  # the original is untouched
 
 
 def test_the_judge_sees_tool_calls_and_results_but_not_thinking() -> None:
@@ -171,12 +194,16 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
     from types import SimpleNamespace
 
     class Judge(BaseHTTPRequestHandler):
+        strict = False  # a judge that rejects everything
+
         def do_POST(self) -> None:
             prompt = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["messages"][0]["content"]
             card = re.search(r"目標(\d+)", prompt).group(1)
-            last = ([line for line in prompt.splitlines() if line.startswith("助理：")] or [""])[-1]
-            ok = f"完整的結尾{card}" in last
-            items = [{"id": key, "pass": ok, "evidence": "無"} for key in re.findall(r"^([MN]\d+)\. ", prompt, re.M)]
+            said = [line for line in prompt.splitlines() if line.startswith("助理：")]
+            ok = not Judge.strict and said == [f"助理：答{card}。完整的結尾{card}。"]
+            keys = re.findall(r"^([MNU]\d+)\. ", prompt, re.M)
+            assert "U1" in keys
+            items = [{"id": key, "pass": ok, "evidence": "無"} for key in keys]
             body = json.dumps({"choices": [{"message": {"content": json.dumps({"items": items})}}]}).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
@@ -189,12 +216,13 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
     run_dir, task_root = tmp_path / "run", tmp_path / "tasks"
     (run_dir / "traj").mkdir(parents=True)
     rows = []
-    for n in range(5):
+    count = scenario_judge.MIN_ACCEPTED + 1  # the last has no answer
+    for n in range(count):
         name = f"train-C-{n:03d}"
         (task_root / name).mkdir(parents=True)
         (task_root / name / "task.json").write_text(json.dumps(
             {"family": "C", "must": ["做完"], "must_not": ["反問"], "scenario": {"goal": f"目標{n}"}}))
-        answer = f"答{n}。完整的結尾{n}。" if n < 4 else None
+        answer = f"答{n}。完整的結尾{n}。" if n < count - 1 else None
         trajectory = [{"role": "user", "content": "問"}, *(said(answer) if answer else [])]
         (run_dir / "traj" / f"{name}-r0.json").write_text(json.dumps(trajectory, ensure_ascii=False))
         rows.append({"task": name, "rep": 0, "kind": "scenario", "outcome": "done", "ended": "end",
@@ -205,16 +233,23 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
     try:
         server = SimpleNamespace(port=httpd.server_address[1], parallel=3)
         args = SimpleNamespace(run=run_dir, task_root=task_root, limit=30)
+        Judge.strict = True
+        with pytest.raises(SystemExit, match="accepted only 0 originals"):
+            scenario_judge.validate(args, server)
+        Judge.strict = False
         scenario_judge.validate(args, server)
         summary = json.loads((run_dir / "judge-validation.json").read_text())
-        assert summary == {"conversations": 4, "originals_accepted": 4, "corrupted_rejected": 8,
-                           "corrupted": 8, "trusted": True}
+        accepted = count - 1
+        assert {k: v for k, v in summary.items() if k != "details"} == {
+            "conversations": accepted, "originals_accepted": accepted, "corrupted": 3 * accepted,
+            "corrupted_rejected": 3 * accepted, "slipped": {"cut": 0, "swap": 0, "swap_all": 0}, "trusted": True}
         scenario_judge.judge(args, server)
         verdicts = {v["job"]: v for v in map(json.loads, (run_dir / "verdicts.jsonl").read_text().splitlines())}
-        assert len(verdicts) == 5
-        assert all(verdicts[f"train-C-{n:03d}-r0"]["passed"] for n in range(4))
+        assert len(verdicts) == count
+        assert all(verdicts[f"train-C-{n:03d}-r0"]["passed"] for n in range(accepted))
         assert len(verdicts["train-C-000-r0"]["judge"]) == 2
-        assert not verdicts["train-C-004-r0"]["passed"] and len(verdicts["train-C-004-r0"]["judge"]) == 1
+        last = verdicts[f"train-C-{accepted:03d}-r0"]
+        assert not last["passed"] and len(last["judge"]) == 1 and "U1" in last["judge"][0]["failed"]
     finally:
         httpd.shutdown()
 
