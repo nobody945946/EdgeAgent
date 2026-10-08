@@ -47,6 +47,10 @@ VRAM_EXIT = 3  # gave up waiting for free VRAM
 # laptop: what the Agent states about itself, not the bench box it runs on.
 LAPTOP_HARDWARE = "Windows、NVIDIA GeForce RTX 3050 Ti Laptop GPU（4 GB 顯示記憶體）、8 GB RAM；模型有 41 層放在顯示卡，其餘在 CPU"
 CONVERSATION_TURNS = 2  # a scenario conversation may take two turns' budget in all
+# What llama.cpp writes at the end of a thought the reasoning budget cut short
+# (a config with --reasoning-budget): 21% of teacher-cards-1024's thoughts
+# stopped mid-sentence. bench/dataset.py never trains on such a thought.
+BUDGET_CUT = "[思考預算用完]"
 REFIT_MIN = 30  # --fit-slots: minutes a run with fewer slots than asked keeps going
 SERVER = Path(os.environ.get(
     "BENCH_LLAMA_SERVER",
@@ -234,6 +238,8 @@ class Server:
         args[args.index("--parallel") + 1] = str(parallel)
         args[args.index("--ctx-size") + 1] = str(config["context_size"] * parallel)
         args += ["--fit", "off", *config.get("extra_args", [])]
+        if "--reasoning-budget" in args:
+            args += ["--reasoning-budget-message", BUDGET_CUT]
         self.log = open(run_dir / "server.log", "ab")
         self.process = subprocess.Popen(args, stdout=self.log, stderr=subprocess.STDOUT)
         deadline = time.monotonic() + 600

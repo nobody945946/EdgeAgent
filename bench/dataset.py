@@ -22,7 +22,8 @@ the last user message, so a row never spans two turns. The teacher's
 reasoning comes with its replies (reasoning_content, as Pi sends it back);
 with --thinking both every row with reasoning also comes without it, so one
 adapter learns to answer with thinking on and off (the row's "thinking" tells
-train_lora.py which way to render it).
+train_lora.py which way to render it). A row with a thought the reasoning
+budget cut short (run.BUDGET_CUT) comes only without reasoning.
 
 One output holds one product version: per task scope (who asked), every
 row's system prompt must be the same and the current product's
@@ -52,6 +53,7 @@ from edge_agent import prompt as agent_prompt  # noqa: E402
 from edge_agent.turn import taiwan_traditional  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "bench"))
+from run import BUDGET_CUT  # noqa: E402
 
 EVAL_TASKS = {p.name for p in (ROOT / "bench/tasks").iterdir() if p.is_dir()}
 
@@ -194,13 +196,17 @@ def mixed_versions(total: list[dict]) -> dict[str, dict[str, int]]:
 
 def with_thinking_modes(row: dict, both: bool) -> list[dict]:
     """The row marked with how train_lora.py renders it; with `both`, a row
-    that has reasoning also comes once without any."""
+    that has reasoning also comes once without any. A thought cut short by
+    the budget is never a target: that row comes only without reasoning."""
     thinking = any(m.get("reasoning_content") for m in row["messages"])
+    plain = {**row, "messages": [{k: v for k, v in m.items() if k != "reasoning_content"} for m in row["messages"]],
+             "thinking": False}
+    if any(BUDGET_CUT in (m.get("reasoning_content") or "") for m in row["messages"]):
+        return [plain]
     marked = {**row, "thinking": thinking}
     if not (thinking and both):
         return [marked]
-    plain = [{k: v for k, v in m.items() if k != "reasoning_content"} for m in row["messages"]]
-    return [marked, {**row, "messages": plain, "thinking": False}]
+    return [marked, plain]
 
 
 def main() -> int:

@@ -53,6 +53,16 @@ def test_both_thinking_modes_from_one_row() -> None:
         {"messages": [{"role": "user", "content": "問"}], "thinking": False}]
 
 
+def test_a_thought_the_budget_cut_short_is_never_a_target() -> None:
+    row = {"messages": [{"role": "user", "content": "問"},
+                        {"role": "assistant", "content": "", "reasoning_content": "先讀檔"},
+                        {"role": "assistant", "content": "答", "reasoning_content": f"想到一半{dataset.BUDGET_CUT}"}],
+           "tools": []}
+    for both in (True, False):
+        (only,) = dataset.with_thinking_modes(row, both=both)
+        assert not only["thinking"] and not any("reasoning_content" in m for m in only["messages"])
+
+
 def test_a_new_user_turn_ends_a_stretch() -> None:
     first = {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "一"}]}
     second = {"messages": [*first["messages"], {"role": "assistant", "content": "答"},
