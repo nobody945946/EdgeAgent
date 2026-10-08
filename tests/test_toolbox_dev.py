@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from edge_agent.toolbox import IS_WINDOWS, ToolError
+from edge_agent.toolbox.checks import execute
 from tests.toolbox_helpers import preview, run, snapshot, write
 
 # ---------------------------------------------------------------- git_overview
@@ -71,27 +72,37 @@ def test_run_checks_pass_and_fail(tmp_path: Path) -> None:
         run("run_checks", tmp_path, path=".")
 
 
-def test_run_checks_returns_when_the_command_ends_though_a_program_it_started_runs_on(tmp_path: Path) -> None:
-    """`code .` opening VS Code: the window inherits the output pipe and stays
-    open; the tool answers when the command ends, and leaves the window open."""
+def shell(command: str) -> list[str]:
+    return ["powershell", "-NoProfile", "-NonInteractive", "-Command", command] if IS_WINDOWS \
+        else ["/bin/sh", "-c", command]
+
+
+def test_a_test_run_returns_when_it_ends_though_a_program_it_started_runs_on(tmp_path: Path) -> None:
+    """A test suite that starts a server, or `code .` opening VS Code: the
+    program inherits the output pipe and keeps it open; the run is over when
+    the command ends, and the program is left running."""
     launcher = ("Start-Process powershell -ArgumentList '-Command','Start-Sleep 20' -NoNewWindow; 'opened'"
                 if IS_WINDOWS else "sleep 20 & echo opened")
     started = time.monotonic()
-    out = run("run_checks", tmp_path, command=launcher, timeout_s=60)
+    outcome = execute(shell(launcher), tmp_path, 60)
     assert time.monotonic() - started < 10
-    assert "檢查通過" in out and "opened" in out
+    assert outcome.code == 0 and "opened" in outcome.output and not outcome.timed_out
     if not IS_WINDOWS:
-        assert "還在執行，沒有被關掉" in out
+        assert outcome.left_running
 
 
-def test_run_checks_command_and_timeout(tmp_path: Path) -> None:
-    out = run("run_checks", tmp_path, command="echo 你好")
-    assert out.startswith("檢查通過") and "你好" in out
-    assert run("run_checks", tmp_path, command="exit 3").startswith("檢查沒通過（結束代碼 3）")
+def test_a_test_run_past_its_limit_is_stopped(tmp_path: Path) -> None:
+    assert execute(shell("exit 3"), tmp_path, 30).code == 3
     sleeper = "Start-Sleep 30" if IS_WINDOWS else "sleep 30 & sleep 30; wait"
     start = time.monotonic()
-    out = run("run_checks", tmp_path, command=sleeper, timeout_s=1)
-    assert out.startswith("檢查沒通過：超過 1 秒") and time.monotonic() - start < 20
+    outcome = execute(shell(sleeper), tmp_path, 1)
+    assert outcome.timed_out and time.monotonic() - start < 20
+
+
+def test_run_checks_runs_only_the_projects_tests(tmp_path: Path) -> None:
+    """Any other command is the powershell tool's: one way to run a command."""
+    with pytest.raises(ToolError, match="不認得的參數：command"):
+        run("run_checks", tmp_path, command="code --new-window")
 
 
 # ---------------------------------------------------------------- code_outline

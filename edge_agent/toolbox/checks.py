@@ -1,8 +1,10 @@
-"""run_checks: a project's own tests, or a given command, with a time limit.
+"""run_checks: a project's own tests, with a time limit.
 
 It finds the project's test runner, so the model does not have to guess the
 command, and says 「檢查通過」 only on exit code 0. A run past its time limit
-is stopped together with every program it started.
+is stopped together with every program it started. Any other command is the
+powershell tool's (2026-10-08: with a command parameter here too, the model
+took "測試" for this tool and opened VS Code through it).
 """
 
 from __future__ import annotations
@@ -94,23 +96,10 @@ def detect_runner(folder: Path) -> tuple[list[str], str]:
                 raise ToolError(f"有 {marker}，但這台電腦沒有 {tool}")
             return [exe, *args], marker
     raise ToolError("找不到這個專案的測試設定（pytest、package.json 的 test、Cargo.toml、go.mod 都沒有）；"
-                    "請用 command 指定要跑的指令")
+                    "要跑其他指令就用 powershell 工具")
 
 
-def _command_for(params: dict, folder: Path) -> tuple[list[str], str]:
-    command = params["command"]
-    if not command:
-        return detect_runner(folder)
-    if IS_WINDOWS:
-        exe = shutil.which("powershell") or shutil.which("pwsh") or "powershell"
-        prefix = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; "
-        return [exe, "-NoProfile", "-NonInteractive", "-Command", prefix + command], "指定的指令，用 PowerShell 執行"
-    return ["/bin/sh", "-c", command], "指定的指令，用 sh 執行"
-
-
-def _shown_command(argv: list[str], params: dict) -> str:
-    if params["command"]:
-        return params["command"]
+def _shown_command(argv: list[str]) -> str:
     return subprocess.list2cmdline(argv) if IS_WINDOWS else shlex.join(argv)
 
 
@@ -224,14 +213,14 @@ def _check_folder(params: dict, root: Path) -> Path:
 
 def checks_preview(params: dict, root: Path) -> str:
     folder = _check_folder(params, root)
-    argv, how = _command_for(params, folder)
-    return (f"會在「{shown(root, folder)}」裡執行：{_shown_command(argv, params)}\n"
+    argv, how = detect_runner(folder)
+    return (f"會在「{shown(root, folder)}」裡執行：{_shown_command(argv)}\n"
             f"（{how}；最多等 {params['timeout_s']} 秒，超過就連同它開的程式一起停止）")
 
 
 def checks_run(params: dict, root: Path) -> str:
     folder = _check_folder(params, root)
-    argv, how = _command_for(params, folder)
+    argv, how = detect_runner(folder)
     outcome = execute(argv, folder, params["timeout_s"])
     if outcome.timed_out:
         head = f"檢查沒通過：超過 {params['timeout_s']} 秒還沒結束，已經停止（連同它開的程式）。"
@@ -239,11 +228,11 @@ def checks_run(params: dict, root: Path) -> str:
         head = "檢查通過（結束代碼 0）。"
     else:
         head = f"檢查沒通過（結束代碼 {outcome.code}）。"
-    lines = [head, f"指令：{_shown_command(argv, params)}", f"資料夾：「{shown(root, folder)}」（{how}）",
+    lines = [head, f"指令：{_shown_command(argv)}", f"資料夾：「{shown(root, folder)}」（{how}）",
              f"花了 {outcome.seconds:.1f} 秒"]
     if outcome.left_running:
         lines.append("指令本身已經結束；它開啟的程式（例如視窗程式或伺服器）還在執行，沒有被關掉。")
-    if argv[1:3] == ["-m", "pytest"] or "pytest" in (params["command"] or ""):
+    if argv[1:3] == ["-m", "pytest"]:
         lines += pytest_summary(outcome.output)
     lines += ["輸出的最後部分：", _tail(outcome.output) or "（沒有輸出）"]
     return "\n".join(lines)
@@ -251,13 +240,12 @@ def checks_run(params: dict, root: Path) -> str:
 
 register(Tool(
     name="run_checks",
-    summary="Run the project's tests (auto-detects pytest, npm test, cargo test, go test) or a given command.",
-    keywords="測試 跑測試 檢查 驗證 單元測試 pytest npm test cargo go 確認有沒有壞 run tests check verify build CI",
+    summary="Run the project's own tests (auto-detects pytest, npm test, cargo test, go test). "
+            "Any other command: the powershell tool.",
+    keywords="跑測試 單元測試 專案測試 pytest npm test cargo go 確認程式有沒有改壞 run tests unit tests CI",
     parameters={
         "type": "object",
         "properties": {
-            "command": {"type": "string",
-                        "description": "要執行的指令（Windows 用 PowerShell）；不填就自動找專案的測試指令"},
             "path": {"type": "string", "default": ".", "description": "專案資料夾，預設是工作區"},
             "timeout_s": {"type": "integer", "default": 600, "minimum": 1, "maximum": 7200,
                           "description": "最多等幾秒，超過就停止"},
