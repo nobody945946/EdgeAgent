@@ -196,7 +196,7 @@ def pytest_summary(output: str) -> list[str]:
     if final:
         counts = [f"{n} {COUNT_WORDS[word]}" for n, word in _COUNTS.findall(final)]
         result.append("結果：" + ("、".join(counts) if counts else "沒有跑到任何測試"))
-    failed = re.findall(r"^(FAILED|ERROR) (\S+)(?: - (.*))?$", output, re.M)
+    failed = re.findall(r"^(FAILED|ERROR) (\S+)(?: - (.*))?$", output, re.MULTILINE)
     if failed:
         result.append(f"沒過的測試 {len(failed)} 個：")
         # Windows' pytest writes tests\test_b.py; the summary reads the same everywhere.

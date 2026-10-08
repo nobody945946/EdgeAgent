@@ -105,8 +105,8 @@ def zip_run(params: dict, root: Path) -> str:
     except BaseException:
         tmp.unlink(missing_ok=True)  # our own half-written file
         raise
-    lines = [f"已建立壓縮檔，裡面有 {human_count(count)} 個檔案，壓縮後 {human_size(plan.output.stat().st_size)}；"
-             "已檢查過每個檔案都讀得回來。", *_zip_head(plan, root), *plan.notes]
+    lines = [(f"已建立壓縮檔，裡面有 {human_count(count)} 個檔案，壓縮後 {human_size(plan.output.stat().st_size)}；"
+             "已檢查過每個檔案都讀得回來。"), *_zip_head(plan, root), *plan.notes]
     if failed:
         lines += [f"沒能放進去的 {len(failed)} 個：", *cap(failed, 15)]
     return "\n".join(lines)

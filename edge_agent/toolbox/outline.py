@@ -38,7 +38,7 @@ JS_RULES = (
 JS_METHOD = re.compile(r"^(\s+)(?:(?:public|private|protected|static|async|get|set|readonly|override)\s+)*"
                        r"\*?([A-Za-z_$#][\w$]*)\s*\([^;]*\)\s*(?::\s*[^{]+)?\{\s*$")
 JS_KEYWORDS = {"if", "for", "while", "switch", "catch", "function", "return", "else", "with", "constructor"}
-PS_RULE = re.compile(r"^\s*(function|filter|class)\s+([\w-]+)", re.I)
+PS_RULE = re.compile(r"^\s*(function|filter|class)\s+([\w-]+)", re.IGNORECASE)
 
 
 @dataclass

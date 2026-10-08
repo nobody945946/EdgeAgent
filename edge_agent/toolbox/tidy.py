@@ -305,8 +305,8 @@ def archive_preview(params: dict, root: Path) -> str:
     dest, plan = _archive_plan(params, root)
     if not plan.moves:
         return "\n".join(["沒有要封存的東西。", *_move_tail(plan)])
-    return "\n".join([f"預計把 {len(plan.moves)} 個項目移到封存資料夾「{shown(root, dest)}」（還沒有做）："
-                      "保留原本的資料夾結構，不刪除任何東西。",
+    return "\n".join([(f"預計把 {len(plan.moves)} 個項目移到封存資料夾「{shown(root, dest)}」（還沒有做）："
+                      "保留原本的資料夾結構，不刪除任何東西。"),
                       *cap(_move_lines(plan, root)), *_move_tail(plan)])
 
 

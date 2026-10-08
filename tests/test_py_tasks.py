@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
 
-import py_tasks  # noqa: E402
+import py_tasks
 
 ANSWER = """=== 標題 ===
 移動平均算錯

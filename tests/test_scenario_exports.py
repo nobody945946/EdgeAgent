@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
 
-import scenario_cards  # noqa: E402
-import scenario_exports  # noqa: E402
+import scenario_cards
+import scenario_exports
 
 EXPORT = """﻿EdgeAgent 對話紀錄
 匯出時間：2026/10/8 上午9:25:50
@@ -63,12 +63,12 @@ def test_conversations_become_a_card_and_variants_or_a_held_out_card(tmp_path: P
     monkeypatch.setattr(sys, "argv", ["scenario_exports", "--config", "teacher-38-iq3", "--variants", "2",
                                       *map(str, exports)])
     scenario_exports.main()
-    train = [json.loads(line) for line in (tmp_path / "train-cards.jsonl").read_text().splitlines()]
-    evaluation = [json.loads(line) for line in (tmp_path / "eval-cards.jsonl").read_text().splitlines()]
+    train = [json.loads(line) for line in (tmp_path / "train-cards.jsonl").read_text(encoding="utf-8").splitlines()]
+    evaluation = [json.loads(line) for line in (tmp_path / "eval-cards.jsonl").read_text(encoding="utf-8").splitlines()]
     held = [p for p in exports if scenario_exports.held_out(p.read_bytes())]
     assert len(evaluation) == len(held) > 0 and len(train) == 3 * (len(exports) - len(held))
     assert all(c["source"]["variant_of"] is None for c in evaluation)
     assert all(c["id"].split("-")[1] == "I" and c["source"]["from"] == "owner" for c in train + evaluation)
     assert not {c["source"]["export"] for c in train} & {c["source"]["export"] for c in evaluation}
     scenario_exports.main()  # resumes: nothing twice
-    assert len((tmp_path / "train-cards.jsonl").read_text().splitlines()) == len(train)
+    assert len((tmp_path / "train-cards.jsonl").read_text(encoding="utf-8").splitlines()) == len(train)
