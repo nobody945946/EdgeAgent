@@ -123,6 +123,12 @@ def main() -> None:
     # server picks a free slot for each, as it did before the pinning.
     chat.slot_id = None
     chat.hardware = spec.get("hardware", "")  # the laptop's, for the runtime section (products that have it)
+    # A scenario's registered APIs, as edge_agent.apis.for_session gives them: listed without the key,
+    # the key in the shell's environment (products that have it).
+    chat.api_session = ([{k: api[k] for k in ("name", "purpose", "base_url", "docs", "key_in", "key_name")}
+                         | ({"key_env": api["key_env"]} if api["key_in"] != "none" else {})
+                         for api in spec.get("apis", [])],
+                        {api["key_env"]: api["key"] for api in spec.get("apis", []) if api["key_in"] != "none"})
     chat.configure_context(
         spec["context_size"],
         model=spec["model"],

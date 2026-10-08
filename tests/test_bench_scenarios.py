@@ -268,3 +268,55 @@ def test_one_family_is_written_by_several_workers_without_duplicate_ids(tmp_path
     scenario_cards.generate(args)
     ids = [json.loads(line)["id"] for line in (tmp_path / "train-cards.jsonl").read_text().splitlines()]
     assert sorted(ids) == [f"train-I-{n:03d}" for n in range(1, 7)]
+
+
+def api_card() -> dict:
+    docs = {"url": "https://api.gameprice.example/docs", "title": "GamePrice API 說明",
+            "text": "GET https://api.gameprice.example/v1/lowest?app=123 回傳 {\"lowest\": 價格}。金鑰放在標頭 X-Key。" * 2}
+    endpoint = {"url": "https://api.gameprice.example/v1/lowest?app=123", "title": "lowest",
+                "type": "application/json", "text": '{"app": 123, "lowest": 499, "currency": "TWD"}'}
+    noise = {"url": "https://forum.example.tw/t/1", "title": "網友說史低 299", "text": "我記得史低好像是 299 元吧" * 5}
+    api = {"name": "GamePrice", "purpose": "遊戲史低價", "base_url": "https://api.gameprice.example/v1",
+           "docs": "https://api.gameprice.example/docs", "key_in": "header", "key_name": "X-Key", "key": "k-123456"}
+    return {**card(goal="知道遊戲史低價", plan=["問史低", "要它做成腳本"]), "pages": [docs, endpoint, noise], "apis": [api]}
+
+
+def test_an_api_card_needs_its_docs_and_a_json_endpoint() -> None:
+    family = {"web": "api"}
+    assert scenario_cards.problems(api_card(), "J", family) == []
+    broken = api_card()
+    broken["pages"][1] = {**broken["pages"][1], "text": "this endpoint answers with plain words, not json"}
+    assert scenario_cards.problems(broken, "J", family) == ["api GamePrice: an endpoint's text is not JSON"]
+    assert scenario_cards.problems({**api_card(), "apis": []}, "J", family)
+
+
+def test_api_tasks_point_at_the_stand_in_web_and_endpoints_carry_their_key(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(scenario_cards, "OUT", tmp_path)
+    one = {**api_card(), "id": "train-J-001", "family": "J", "topic": "遊戲", "files": {}}
+    (tmp_path / "train-cards.jsonl").write_text(json.dumps(one, ensure_ascii=False) + "\n", encoding="utf-8")
+    scenario_cards.tasks(type("Args", (), {"split": "train"})())
+    task_dir = tmp_path / "train-tasks" / "train-J-001"
+    task = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
+    pages = json.loads((task_dir / "web" / "pages.json").read_text(encoding="utf-8"))
+    api = task["apis"][0]
+    assert api["base_url"] == "http://api.gameprice.example:8081/v1" and api["key_env"] == "EDGE_API_GAMEPRICE"
+    assert "http://api.gameprice.example:8081/v1/lowest?app=123" in pages[0]["text"]
+    assert pages[1]["key"] == {"in": "header", "name": "X-Key", "value": "k-123456"} and "key" not in pages[2]
+
+
+def test_the_stand_in_web_finds_an_endpoint_whatever_the_order_of_its_parameters() -> None:
+    import web_fixture
+
+    pages = [{"url": "http://h:8081/v1/day?date=20250101&stock=2330", "type": "application/json", "text": "{}"},
+             {"url": "http://h:8081/about", "text": "x"}]
+    assert web_fixture.find(pages, "http://h:8081/v1/day?stock=2330&date=20250101&token=k") is pages[0]
+    assert web_fixture.find(pages, "http://h:8081/v1/day?stock=2330") is None
+    assert web_fixture.find(pages, "http://h:8081/about") is pages[1]
+
+
+def test_calling_an_api_is_seen_in_the_calls() -> None:
+    fetch = {"name": "web_fetch", "arguments": {"url": "http://h:8081/v1/day"}}
+    shell = {"name": "powershell", "arguments": {"command": "Invoke-RestMethod -Uri $u -Headers @{ 'X-Key' = $env:EDGE_API_H }"}}
+    assert scenario_checks.check("called_api", {"dialogue": [turn("查到了", [fetch])]}) is None
+    assert scenario_checks.check("called_api", {"dialogue": [turn("查到了", [shell])]}) is None
+    assert scenario_checks.check("called_api", {"dialogue": [turn("我猜是 499")]})

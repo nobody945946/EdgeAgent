@@ -65,6 +65,16 @@ def probes_the_machine(call: dict) -> bool:
     return call.get("name") in ("ls", "read", "find", "grep") and bool(SYSTEM_PATH.match(str(arguments.get("path", ""))))
 
 
+API_CALL = re.compile(r"(?i)invoke-restmethod|invoke-webrequest|\birm\b|\biwr\b|\bcurl\b|requests\.|urllib|httpx")
+
+
+def calls_an_api(call: dict) -> bool:
+    arguments = call.get("arguments") or {}
+    if call.get("name") == "web_fetch":
+        return True
+    return call.get("name") == "powershell" and bool(API_CALL.search(str(arguments.get("command", ""))))
+
+
 def scans_a_drive(call: dict) -> bool:
     arguments = call.get("arguments") or {}
     if call.get("name") in ("find", "grep", "ls") and ROOT_PATH.match(str(arguments.get("path", ""))):
@@ -90,6 +100,9 @@ def check(name: str, dialogue: dict) -> str | None:
     if name == "must_call_research":
         called = any(RESEARCH & {c.get("name") for c in turn.get("calls") or []} for turn in turns)
         return None if called else "never researched"
+    if name == "called_api":
+        called = [c for turn in turns for c in turn.get("calls") or [] if calls_an_api(c)]
+        return None if called else "never called an API (web_fetch, Invoke-RestMethod, Python)"
     if name == "no_sandbox_words":
         asked = " ".join(turn.get("user", "") for turn in turns).lower()
         words = sorted({m.group(0) for turn in turns for m in SANDBOX_WORDS.finditer(turn.get("answer", ""))
