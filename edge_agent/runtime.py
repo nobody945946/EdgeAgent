@@ -114,7 +114,10 @@ def build_server_args(
         str(target_slot_dir).replace("\\", "/"),
     ]
     if slots > 1:
-        args += ["--kv-unified"]
+        # One pool for every slot; and one micro-batch per server step, so a
+        # long prompt yields to the other slot every 512 tokens (same prompt
+        # speed: 18.84 s against 18.78 s for 36K tokens, dev box).
+        args += ["--kv-unified", "--batch-size", "512"]
     if gpu_layers == -1:
         # Upstream owns device-memory fitting. Explicit context plus fit-ctx
         # preserves the chosen window while weights can move to CPU.

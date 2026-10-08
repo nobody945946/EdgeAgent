@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
@@ -131,7 +132,7 @@ def test_exception_and_reload_release_access_without_restarting_clients():
 
 @contextmanager
 def gateway_servers():
-    requests = []
+    requests, prefilled = [], []
     access = InferenceGateway(1)
     access.configure(os.getpid(), 2, 1, pool=65536)
 
@@ -148,6 +149,15 @@ def gateway_servers():
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(json.dumps({"tokens": [1] * len(payload["content"])}).encode())
+            elif payload.get("fixture_prefill") and not prefilled:
+                # A long prompt: nothing comes back until it is read, unless the client leaves.
+                prefilled.append(self.path)
+                time.sleep(1.5)
+                try:
+                    self.send_response(200)
+                    self.end_headers()
+                except OSError:
+                    pass
             elif payload.get("fixture_overflow"):
                 self.send_response(400)
                 self.end_headers()
@@ -252,3 +262,31 @@ def test_http_does_not_allow_a_character_to_take_the_agent_adapter():
                 post(url, payload, headers)
             assert error.value.code == code
         assert requests == []
+
+
+def test_an_agent_request_still_reading_its_prompt_lets_the_character_speak_first():
+    """llama-server fills a batch slot by slot: a long prompt would hold back
+    each of the character's tokens (19.6 s for a first token, dev box). The
+    request steps aside and is sent again; its client sees one stream."""
+    with gateway_servers() as (gateway, url, requests):
+        role = {"X-Character-Owner": str(os.getpid())}
+        agent = {"Authorization": f"Bearer {gateway.access.agent_key}"}
+        result = {}
+
+        def task():
+            with gateway.access.agent_turn():
+                with post(url, {"stream": True, "fixture_prefill": True, "max_tokens": 200}, agent) as response:
+                    result["agent"] = list(response)
+
+        thread = threading.Thread(target=task)
+        thread.start()
+        time.sleep(0.3)
+        started = time.monotonic()
+        with post(url, {"lora": [{"id": 0, "scale": 1}], "max_tokens": 50}, role) as response:
+            assert response.status == 200
+        assert time.monotonic() - started < 1.0  # not behind the 1.5 s prompt
+        thread.join(5)
+        assert result["agent"] == [b'data: {"fixture":true}\n', b'\n', b'data: [DONE]\n', b'\n']
+        sent = [value.get("id_slot") for path, value in requests
+                if path == "/v1/chat/completions" and value.get("fixture_prefill")]
+        assert sent == [1, 1]

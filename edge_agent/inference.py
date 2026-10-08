@@ -10,7 +10,11 @@ tokenized by the server, plus the most it may generate): when the Agent needs
 cells the character's cache holds, that cache is erased (a few seconds to
 rebuild); a character request that does not fit waits while an Agent task
 runs, and erases the Agent's cache when none does. A new Agent request waits
-while the character is speaking (up to VOICE_FIRST_SECONDS).
+while the character is speaking, and one still reading its prompt (nothing
+generated yet) steps aside when the character starts: llama-server fills a
+batch slot by slot, so a long prompt would hold the character's every token
+back. The prompt read so far stays cached and the request resumes after the
+character, up to VOICE_FIRST_SECONDS in all; after that both run side by side.
 
 No conversation or task state lives here. Clients resend their own RAM history
 after a handover; only the engine's disposable prompt cache is cleared.
@@ -18,10 +22,13 @@ after a handover; only the engine's disposable prompt cache is cleared.
 
 from __future__ import annotations
 
+import http.client
 import json
+import socket
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -127,6 +134,12 @@ class InferenceAccess:
                 self._active[lane] = False
                 self._condition.notify_all()
 
+    def character_done(self, deadline: float) -> None:
+        """Wait until the character's lane is idle, or the deadline."""
+        with self._condition:
+            while self._active[CHARACTER] and time.monotonic() < deadline:
+                self._condition.wait(timeout=0.5)
+
     def evicted(self, lane: str) -> None:
         """The gateway erased `lane`'s cache: its cells are free, its lane open."""
         with self._condition:
@@ -168,6 +181,10 @@ class InferenceGateway:
         self.agent_adapter: int | None = None
         self.slots = {AGENT: 0, CHARACTER: 0}
         self._identity: dict[str, tuple[object, ...] | None] = {AGENT: None, CHARACTER: None}
+        # The Agent's request still reading its prompt, which a character request preempts.
+        self._reading: http.client.HTTPConnection | None = None
+        self._preempted = False
+        self._reading_lock = threading.Lock()
 
     def configure(self, owner_pid: int | None, adapters: int, agent_adapter: int | None, pool: int = 0) -> None:
         """`pool`: the cells the two slots share under a character lease; 0
@@ -231,6 +248,44 @@ class InferenceGateway:
                       if type(value.get(key)) is int and value[key] > 0), pool)
         return min(pool, tokens + media * MEDIA_CELLS + limit + MARGIN_CELLS)
 
+    def _preempt(self) -> None:
+        """A character request started: an Agent request still reading its
+        prompt steps aside (llama-server cancels it within a second, keeping
+        what it read in the slot's cache)."""
+        with self._reading_lock:
+            if self._reading is not None and self._reading.sock is not None:
+                self._preempted = True
+                try:
+                    self._reading.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    def _agent_response(self, path: str, value: dict[str, object]) -> http.client.HTTPResponse:
+        """The Agent's upstream response, once its first token is out; while
+        the prompt is read a character request may preempt it, and it is
+        sent again after the character (the cached part is not read twice)."""
+        upstream = urllib.parse.urlsplit(self.upstream_url)
+        body = json.dumps(value).encode("utf-8")
+        deadline = time.monotonic() + VOICE_FIRST_SECONDS
+        while True:
+            connection = http.client.HTTPConnection(upstream.hostname, upstream.port, timeout=1800)
+            preemptable = bool(self.access.pool) and value.get("stream") is True and time.monotonic() < deadline
+            with self._reading_lock:
+                self._reading, self._preempted = (connection if preemptable else None), False
+            try:
+                connection.request("POST", path, body=body, headers={"Content-Type": "application/json"})
+                return connection.getresponse()
+            except (OSError, http.client.HTTPException):
+                with self._reading_lock:
+                    preempted = self._preempted
+                connection.close()
+                if not preempted:
+                    raise
+                self.access.character_done(deadline)
+            finally:
+                with self._reading_lock:
+                    self._reading = None
+
     def _erase(self, lane: str) -> None:
         """Erase memory only. Never save/restore a KV cache to disk."""
         self._identity[lane] = None
@@ -276,12 +331,17 @@ class InferenceGateway:
                     # Another adapter in this slot: its cache means nothing now.
                     self._erase(lane)
                     self._identity[lane] = identity
-                request = urllib.request.Request(
-                    self.upstream_url + handler.path,
-                    data=json.dumps(value).encode("utf-8"),
-                    headers={"Content-Type": "application/json"}, method="POST",
-                )
-                with urllib.request.urlopen(request, timeout=1800 if agent else 30) as response:
+                if agent:
+                    response = self._agent_response(handler.path, value)
+                    if response.status >= 400:
+                        raise urllib.error.HTTPError(handler.path, response.status, response.reason,
+                                                     response.headers, response)
+                else:
+                    self._preempt()
+                    response = urllib.request.urlopen(urllib.request.Request(
+                        self.upstream_url + handler.path, data=json.dumps(value).encode("utf-8"),
+                        headers={"Content-Type": "application/json"}, method="POST"), timeout=30)
+                with response:
                     handler.send_response(response.status)
                     handler.send_header("Content-Type", response.headers.get("Content-Type", "application/json"))
                     # HTTP/1.0 close delimits the streaming body; no buffering.
