@@ -19,16 +19,6 @@ export function today(now = new Date()) {
 // model describes itself as a cloud AI, promises to remember things, probes
 // the machine for its hardware and invents a "safety protocol" when asked why
 // it keeps asking for approval (owner's conversations, 2026-10-07/08).
-const EDIT = {
-  reversible: '直接進行，改之前主機會先備份，主人可以在 EdgeAgent 網頁的「還原」一步步復原',
-  allow: '直接進行', ask: '每次都要先經主人批准', deny: '不允許',
-};
-const SHELL = {
-  reversible: '只讀檔案、或只寫入工作資料夾裡指定檔名的指令直接進行（先備份，可還原）；'
-    + '執行程式、連網和其他指令要先經主人批准，他可以一次允許這一輪',
-  allow: '直接進行', ask: '每次都要先經主人批准', read: '只能讀，不能改', deny: '不允許',
-};
-
 export function modelFacts(init) {
   const model = String(init.model_name || init.model || '').split(/[\\/]/).pop().replace(/\.gguf$/i, '');
   const system = process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'Linux';
@@ -42,10 +32,12 @@ export function modelFacts(init) {
   ];
   const rules = init.permissions ?? {};
   if (init.agent && !init.public) {
-    facts.push('權限（主人在 EdgeAgent 網頁的「權限」設定）：'
-      + `改檔案${EDIT[rules.edit] ?? EDIT.ask}；執行指令${SHELL[rules.shell] ?? SHELL.ask}。`
-      + '刪除東西和改受保護的設定檔每次都要問；讀過網頁之後，主人的「本輪允許」會失效。'
-      + '主人嫌批准太多，就告訴他可以在那裡調整。');
+    // Told as what the host does, not as when to ask: listing what needs
+    // approval made the small model ask first (bench, 2026-10-08).
+    facts.push('需要主人批准的操作，主機會自己跳出來問他；你直接呼叫工具，不用先問。'
+      + (rules.edit === 'reversible' || rules.shell === 'reversible'
+        ? '改檔案前主機會先備份，主人可以在 EdgeAgent 網頁的「還原」復原。' : '')
+      + '主人想調整哪些要批准，可以在 EdgeAgent 網頁的「權限」設定。');
   }
   const apis = init.public ? [] : (init.apis ?? []);
   if (apis.length) {

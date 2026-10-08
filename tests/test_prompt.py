@@ -16,16 +16,19 @@ def test_each_scope_says_who_asked_and_what_it_may_do():
     assert "expert coding assistant" not in change
     # Greetings and chat need no search; data comes from APIs and sources, never from the asker.
     for text in (change, read, public):
-        assert "不用查" in text and "API" in text and "不叫對方自己去查" in text
+        assert "不用查" in text and "API" in text and "都試過才說查不到" in text
 
 
 def test_the_working_method_is_the_mature_agents_one():
-    """Spec v2 (2026-10-08), written whole: persist, look up instead of
-    guessing, defaults instead of questions, verify before reporting, deliver
-    clearly, and the owner's observations first."""
+    """Spec v2 (2026-10-08): act in the same turn, defaults instead of
+    questions, verify before reporting, deliver clearly, the owner's
+    observations first; said positively, never quoting the wrong behaviour
+    (a quoted "please wait" or a list of what needs approval made the base
+    E4B, thinking off, stop on a plan or ask first)."""
     change = prompt.system_prompt("change")
-    for rule in ("不要結束這一輪", "請稍候", "合理的預設", "驗證了才算完成", "完整路徑", "以他的觀察為準", "Start-Process"):
+    for rule in ("同一輪裡做完", "不用先問", "合理的預設", "看到結果對了才說完成", "完整路徑", "以他的觀察為準", "Start-Process"):
         assert rule in change
+    assert "請稍候" not in change and "請確認" not in change
 
 
 def test_the_card_is_what_the_character_wants_not_its_fears_or_catchphrases():
