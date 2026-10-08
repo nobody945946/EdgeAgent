@@ -89,7 +89,13 @@ def test_a_command_proven_to_touch_only_named_files_runs_after_they_are_copied(j
     "Get-Date && Set-Content -Path a.txt -Value 1", "'x' > out.txt",
     # Leaving the workspace, or naming files that cannot be told.
     "cd ..; Set-Content -Path notes.txt -Value x", "Set-Location ..", "Set-Content -Path ../out.txt -Value x",
-    "Set-Content -Path *.txt -Value x", "Set-Content -Path . -Value x", "Copy-Item -Path sub -Destination elsewhere -Recurse",
+    "Set-Content -Path *.txt -Value x", "Set-Content -Path . -Value x",
+    # Links, Windows path forms and names Windows rewrites.
+    "New-Item -ItemType SymbolicLink -Path l2 -Value /etc", "New-Item -ItemType HardLink -Path h.txt -Value app.py",
+    "New-Item -ItemType Junction -Path j -Value /tmp", "Set-Content -Path \\\\server\\share\\x.txt -Value x",
+    "Set-Content -Path //server/share/x.txt -Value x", "Set-Content -Path C:foo.txt -Value x",
+    "Set-Content -Path 'app.py.' -Value x", "Set-Content -Path 'app.py ' -Value x", "Set-Content -Path 'a.txt:evil' -Value x",
+    "Set-Content -Path a.txt -Value x -Stream evil", "Set-Content -Path env:EVIL -Value x", "Copy-Item -Path sub -Destination elsewhere -Recurse",
     "Expand-Archive -Path a.zip -DestinationPath .",
     # Redirections and archive functions are not proven by the parser: Set-Content and Out-File are.
     "Get-ChildItem > notes.txt", "Get-ChildItem > 'notes.txt'", "Compress-Archive -Path app.py -DestinationPath out",

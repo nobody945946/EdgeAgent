@@ -325,3 +325,32 @@ def test_real_sdk_routine_count_runs_without_approval_but_write_still_asks(tmp_p
     results = [data["result"] for name, data in events if name == "tool" and data["phase"] == "finished" and data["tool"] == "powershell"]
     assert results and "2" in json.dumps(results[0])
     assert not (tmp_path / "result.txt").exists()
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_an_api_key_reaches_the_shell_but_never_the_model(tmp_path, repeating_model):  # noqa: F811
+    """edge_agent.apis: the shell gets the key as EDGE_API_<ID>; whatever prints it
+    (a command, a file the Agent reads back) shows *** to the model."""
+    port, state = repeating_model
+    key = "live-key-7f3a9c21"
+    (tmp_path / "saved.txt").write_text(f"token={key}\n")
+    state["sequence"] = [
+        ("powershell", {"command": "Write-Output \"key=$env:EDGE_API_DEMO\""}),
+        ("read", {"path": "saved.txt"}),
+    ]
+    chat = NativeChat(model_port=port)
+    chat.api_session = ([{"name": "Demo", "purpose": "x", "base_url": "https://api.example/v1", "docs": "",
+                          "key_in": "header", "key_name": "X-Key", "key_env": "EDGE_API_DEMO"}],
+                        {"EDGE_API_DEMO": key})
+    try:
+        permission_run(chat, tmp_path, {"edit": "allow", "shell": "allow", "web": "deny"}, approve=True)
+    finally:
+        chat.close()
+    sent = json.dumps(state["requests"], ensure_ascii=False)
+    assert key not in sent
+    results = [m for m in state["requests"][-1]["messages"] if m["role"] == "tool"]
+    assert "token=***" in json.dumps(results)
+    # Pi's PowerShell tool runs on Windows only; there the command's own output is masked too.
+    if "only available on Windows" not in json.dumps(results[0]):
+        assert "key=***" in json.dumps(results)
+    assert "EDGE_API_DEMO" in json.dumps(state["requests"][0], ensure_ascii=False)  # the model knows the variable

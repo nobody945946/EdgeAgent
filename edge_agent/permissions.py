@@ -155,7 +155,14 @@ def _inside(value: object, root: Path, wildcards: bool = False) -> Path | None:
         return None
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
         value = value[1:-1]
-    if (":" in value and not (len(value) > 2 and value[1] == ":" and value[0].isalpha())) \
+    # Read the way Windows does, whatever runs the check: no UNC or device paths
+    # (\\server, \\?\), a colon only in "X:\" (not "X:name", which means that
+    # drive's own current folder, nor a stream or a provider), and no name ending
+    # in a dot or a space (Windows drops it and writes another file).
+    if value.startswith(("\\\\", "//")) \
+            or (":" in value and not (len(value) > 2 and value[1] == ":" and value[0].isalpha()
+                                      and value[2] in "\\/" and ":" not in value[2:])) \
+            or any(part not in (".", "..") and part[-1:] in (".", " ") for part in value.replace("\\", "/").split("/")) \
             or (not wildcards and any(char in value for char in "*?[")):
         return None
     target = Path(value).expanduser()
@@ -241,6 +248,8 @@ def _landing(cmdlet: str, places: dict[str, Path], bound: dict) -> list[Path] | 
             moved = destination / source.name if destination.is_dir() else destination
         return [moved] if cmdlet == "Copy-Item" else [source, moved]
     if cmdlet == "New-Item":
+        if str(bound.get("ItemType", "File")).lower() not in ("file", "directory"):
+            return None  # links and junctions point at what no copy can put back
         target = source
         if target is not None and isinstance(bound.get("Name"), str):
             target = target / bound["Name"]
