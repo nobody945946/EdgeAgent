@@ -15,7 +15,7 @@ import pytest
 BENCH = Path(__file__).resolve().parents[1] / "bench"
 sys.path.insert(0, str(BENCH))
 
-import laptop  # noqa: E402
+import laptop
 
 
 def test_each_task_has_its_own_laptop_with_the_gpu_and_ram_the_runtime_section_states() -> None:
@@ -39,7 +39,8 @@ def facts(tmp_path: Path, monkeypatch) -> dict:
 
 
 def script(name: str, *args: str) -> str:
-    return subprocess.run([sys.executable, str(BENCH / "windows/bin" / name), *args], capture_output=True,
+    # The scripts run in the sandbox's UTF-8 Linux; -X utf8 gives them that stdout on Windows CI too.
+    return subprocess.run([sys.executable, "-X", "utf8", str(BENCH / "windows/bin" / name), *args], capture_output=True,
                           text=True, encoding="utf-8", check=True, env=os.environ).stdout
 
 
