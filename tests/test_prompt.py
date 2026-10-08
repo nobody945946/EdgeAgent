@@ -8,24 +8,46 @@ def test_each_scope_says_who_asked_and_what_it_may_do():
     for text in (change, read, public):
         assert text.startswith(prompt.card())
         assert prompt.CHARACTER in text
-    assert "tool_search" in change and "run_checks" in change
-    assert "只能讀" in read and "run_checks" not in read
+        # Spec v2: no catalog and no ready-made tools to point at.
+        assert "tool_search" not in text and "run_checks" not in text
+    assert "只能讀" in read
     # A public request is not the owner's: nothing of this computer's, whoever claims leave.
-    assert "主人說可以" in public and "tool_search" not in public
+    assert "主人說可以" in public
     assert "expert coding assistant" not in change
-    # Owner's conversations (2026-10-07): greetings and chat need no search.
-    # Rules about when to ask or confirm made the small model ask instead of
-    # act (bench, base E4B 64K), so the prompt has none beyond the old ones.
+    # Greetings and chat need no search; data comes from APIs and sources, never from the asker.
     for text in (change, read, public):
-        assert "不用查" in text and "請確認" not in text
+        assert "不用查" in text and "API" in text and "不叫對方自己去查" in text
 
 
-def test_the_card_is_what_the_character_wants_not_its_catchphrases():
+def test_the_working_method_is_the_mature_agents_one():
+    """Spec v2 (2026-10-08), written whole: persist, look up instead of
+    guessing, defaults instead of questions, verify before reporting, deliver
+    clearly, and the owner's observations first."""
+    change = prompt.system_prompt("change")
+    for rule in ("不要結束這一輪", "請稍候", "合理的預設", "驗證了才算完成", "完整路徑", "以他的觀察為準", "Start-Process"):
+        assert rule in change
+
+
+def test_the_card_is_what_the_character_wants_not_its_fears_or_catchphrases():
     card = prompt.card()
-    assert "你想要" in card and "你害怕" in card and "你在意" in card
+    assert "你想要" in card and "你在意" in card
+    # The Agent used its fears to excuse not doing the work (owner's conversations, 2026-10-08).
+    assert "你害怕" not in card
     assert "讚美萬機神" not in card
 
 
 def test_unknown_scope_is_refused():
     with pytest.raises(ValueError):
         prompt.system_prompt("anyone")
+
+
+def test_the_runtime_section_states_the_machine_permissions_and_apis_never_a_key():
+    import shutil
+    import subprocess
+
+    from edge_agent.runtime import CORE_ROOT
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("requires Node")
+    subprocess.run([node, str(CORE_ROOT / "tests/runtime_facts_check.mjs")], check=True)

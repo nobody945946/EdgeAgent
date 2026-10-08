@@ -28,7 +28,8 @@ def test_real_sdk_cancel_while_waiting_for_approval_does_not_write(
     chat = NativeChat(model_port=port)
     try:
         reply = chat.stream_reply(
-            "fixture", "fixture", agent=True, working_dir=tmp_path
+            "fixture", "fixture", agent=True, working_dir=tmp_path,
+            permissions={"edit": "ask", "shell": "ask", "web": "allow"},
         )
         for name, _payload in reply:
             if name == "approval":
@@ -136,9 +137,8 @@ def test_real_sdk_public_lookup_has_the_web_alone_and_never_asks(tmp_path, repea
             ):
                 events.append((name, data))
             tools = sorted(t["function"]["name"] for t in state["requests"][0].get("tools", []))
-            # The web, and the tools that work on given text alone; no catalog.
-            assert tools == ["calculate", "date_calc", "translate_machine", "web_fetch",
-                             "web_research", "web_search"]
+            # The web, and the translator that works on given text alone.
+            assert tools == ["translate_machine", "web_fetch", "web_research"]
             results = json.dumps([m for m in state["requests"][-1]["messages"] if m["role"] == "tool"])
             assert "Tool read not found" in results and "Tool powershell not found" in results
             assert "public lookup" in results
@@ -177,15 +177,14 @@ def test_real_sdk_allowed_edits_run_without_asking(tmp_path, repeating_model):  
         chat.close()
     assert not any(name == "approval" for name, _ in events)
     assert (tmp_path / "new.txt").read_text() == "x"
-    tools = [t["function"]["name"] for t in state["requests"][0].get("tools", [])]
-    assert "write" in tools and "web_fetch" not in tools and "web_research" not in tools
-    # The rest of the Agent's tools wait in the catalog behind tool_search.
-    assert {"grep", "find", "ls", "run_checks", "tool_search"} <= set(tools)
-    assert "translate_machine" not in tools and "organize_folder" not in tools
+    tools = sorted(t["function"]["name"] for t in state["requests"][0].get("tools", []))
+    # Spec v2: the native tools, history and the translator, all up front; the web is off here.
+    assert tools == ["edit", "find", "grep", "ls", "powershell", "read", "search_history",
+                     "translate_machine", "write"]
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
-@pytest.mark.parametrize("operation,shell", [("write", "ask"), ("powershell", "routine")])
+@pytest.mark.parametrize("operation,shell", [("write", "ask"), ("powershell", "reversible")])
 def test_real_sdk_web_content_turns_allow_back_into_ask(
     tmp_path, repeating_model, monkeypatch, operation, shell  # noqa: F811
 ):
@@ -208,7 +207,8 @@ def test_real_sdk_web_content_turns_allow_back_into_ask(
     port, state = repeating_model
     state["sequence"] = [
         ("web_fetch", {"url": f"http://127.0.0.1:{page.server_port}/"}),
-        (operation, {"path": "new.txt", "content": "x"} if operation == "write" else {"command": "Get-ChildItem . | Measure-Object"}),
+        # After a page, running a program waits for the owner even where it would run on its own.
+        (operation, {"path": "new.txt", "content": "x"} if operation == "write" else {"command": "python new.py"}),
     ]
     chat = NativeChat(model_port=port)
     try:
@@ -325,24 +325,3 @@ def test_real_sdk_routine_count_runs_without_approval_but_write_still_asks(tmp_p
     results = [data["result"] for name, data in events if name == "tool" and data["phase"] == "finished" and data["tool"] == "powershell"]
     assert results and "2" in json.dumps(results[0])
     assert not (tmp_path / "result.txt").exists()
-
-
-@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
-def test_real_sdk_a_tool_that_changes_files_shows_its_plan_for_approval(tmp_path, repeating_model):  # noqa: F811
-    """The owner approves what a ready-made tool will do, worked out by the
-    tool itself (its preview), and a denial leaves the files where they were."""
-    port, state = repeating_model
-    (tmp_path / "下載").mkdir()
-    (tmp_path / "下載" / "相片.jpg").write_bytes(bytes(10))
-    state["sequence"] = [("tool_search", {"query": "整理 資料夾 分類"}),
-                         ("organize_folder", {"folder": "下載"})]
-    chat = NativeChat(model_port=port)
-    try:
-        events = permission_run(chat, tmp_path, {"edit": "ask", "shell": "ask", "web": "deny"},
-                                 approve=False, prompt="整理下載資料夾")
-    finally:
-        chat.close()
-    approvals = [data for name, data in events if name == "approval"]
-    assert len(approvals) == 1 and approvals[0]["tool"] == "organize_folder"
-    assert "相片.jpg" in approvals[0]["explain"] and "工具自己算出的計畫" in approvals[0]["explain_title"]
-    assert (tmp_path / "下載" / "相片.jpg").is_file()

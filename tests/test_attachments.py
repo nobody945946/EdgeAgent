@@ -35,31 +35,13 @@ def test_attachments_decode_in_memory_and_validate_limits() -> None:
 
 
 def test_pdf_attachment_and_malformed_documents() -> None:
-    from pypdf import PdfWriter
-    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+    from tests.pdf_fixture import pdf_bytes
 
-    writer = PdfWriter()
-    page = writer.add_blank_page(200, 200)
-    font = DictionaryObject(
-        {
-            NameObject("/Type"): NameObject("/Font"),
-            NameObject("/Subtype"): NameObject("/Type1"),
-            NameObject("/BaseFont"): NameObject("/Helvetica"),
-        }
-    )
-    page[NameObject("/Resources")] = DictionaryObject(
-        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})}
-    )
-    stream = DecodedStreamObject()
-    stream.set_data(b"BT /F1 12 Tf 10 100 Td (PDF_TEST_42) Tj ET")
-    page[NameObject("/Contents")] = stream
-    output = io.BytesIO()
-    writer.write(output)
     result = attachment_context(
         [
             {
                 "name": "reference.pdf",
-                "data": base64.b64encode(output.getvalue()).decode(),
+                "data": base64.b64encode(pdf_bytes("PDF_TEST_42")).decode(),
             }
         ]
     )
