@@ -144,7 +144,7 @@ def git_run(params: dict, root: Path) -> str:
     repo = resolve_inside(root, params["repo"])
     if not repo.is_dir():
         raise ToolError(f"「{params['repo']}」不是資料夾")
-    code, top, err = _git(repo, "rev-parse", "--show-toplevel")
+    code, _top, err = _git(repo, "rev-parse", "--show-toplevel")
     if code != 0:
         raise ToolError(f"「{shown(root, repo)}」不是 git 儲存庫（{_first_line(err)}）")
     what, limit = params["what"], params["limit"]
@@ -382,7 +382,7 @@ def pytest_summary(output: str) -> list[str]:
     if final:
         counts = [f"{n} {COUNT_WORDS[word]}" for n, word in _COUNTS.findall(final)]
         result.append("結果：" + ("、".join(counts) if counts else "沒有跑到任何測試"))
-    failed = re.findall(r"^(FAILED|ERROR) (\S+)(?: - (.*))?$", output, re.M)
+    failed = re.findall(r"^(FAILED|ERROR) (\S+)(?: - (.*))?$", output, re.MULTILINE)
     if failed:
         result.append(f"沒過的測試 {len(failed)} 個：")
         # Windows' pytest writes tests\test_b.py; the summary reads the same everywhere.
@@ -477,7 +477,7 @@ JS_RULES = (
 JS_METHOD = re.compile(r"^(\s+)(?:(?:public|private|protected|static|async|get|set|readonly|override)\s+)*"
                        r"\*?([A-Za-z_$#][\w$]*)\s*\([^;]*\)\s*(?::\s*[^{]+)?\{\s*$")
 JS_KEYWORDS = {"if", "for", "while", "switch", "catch", "function", "return", "else", "with", "constructor"}
-PS_RULE = re.compile(r"^\s*(function|filter|class)\s+([\w-]+)", re.I)
+PS_RULE = re.compile(r"^\s*(function|filter|class)\s+([\w-]+)", re.IGNORECASE)
 
 
 @dataclass

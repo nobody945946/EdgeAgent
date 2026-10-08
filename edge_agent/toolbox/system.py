@@ -68,7 +68,7 @@ def ps_json(script: str, timeout: float = 30) -> list[dict]:
 def _part(lines: list[str], missing: list[str], title: str, fn) -> None:
     try:
         lines += fn()
-    except Exception as exc:  # one unreadable part must not hide the rest
+    except Exception as exc:  # noqa: BLE001 - one unreadable part must not hide the rest
         missing.append(f"- {title}：{exc}")
 
 
@@ -90,7 +90,7 @@ def _os_line() -> list[str]:
     pretty = platform.system()
     try:
         text = Path("/etc/os-release").read_text(encoding="utf-8")
-        pretty = re.search(r'^PRETTY_NAME="?([^"\n]*)', text, re.M).group(1)
+        pretty = re.search(r'^PRETTY_NAME="?([^"\n]*)', text, re.MULTILINE).group(1)
     except (OSError, AttributeError):
         pass
     return [f"作業系統：{pretty}（核心 {platform.release()}），{platform.machine()}"]
@@ -110,9 +110,9 @@ def _cpu_line() -> list[str]:
             cores = ""
     else:
         info = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
-        names = re.findall(r"^model name\s*:\s*(.+)$", info, re.M)
+        names = re.findall(r"^model name\s*:\s*(.+)$", info, re.MULTILINE)
         name = names[0].strip() if names else platform.processor() or "不明"
-        pairs = set(re.findall(r"^physical id\s*:\s*(\d+)$.*?^core id\s*:\s*(\d+)$", info, re.M | re.S))
+        pairs = set(re.findall(r"^physical id\s*:\s*(\d+)$.*?^core id\s*:\s*(\d+)$", info, re.MULTILINE | re.DOTALL))
         cores = str(len(pairs)) if pairs else ""
     return [f"CPU：{name}（" + (f"{cores} 核心、" if cores else "") + f"{logical} 執行緒）"]
 
@@ -132,7 +132,7 @@ def _memory_line() -> list[str]:
             raise OSError("GlobalMemoryStatusEx 失敗")
         total, avail = status.total, status.avail
     else:
-        info = dict(re.findall(r"^(\w+):\s+(\d+) kB", Path("/proc/meminfo").read_text(), re.M))
+        info = dict(re.findall(r"^(\w+):\s+(\d+) kB", Path("/proc/meminfo").read_text(), re.MULTILINE))
         total, avail = int(info["MemTotal"]) * 1024, int(info["MemAvailable"]) * 1024
     return [f"記憶體：總共 {human_size(total)}，可用 {human_size(avail)}（已用 {100 - avail * 100 // total}%）"]
 
@@ -193,8 +193,8 @@ def process_memory() -> dict[str, tuple[int, int]]:
                 text = status.read_text(errors="replace")
             except OSError:
                 continue  # the process ended while we looked
-            name = re.search(r"^Name:\s*(.*)$", text, re.M)
-            rss = re.search(r"^VmRSS:\s*(\d+) kB", text, re.M)
+            name = re.search(r"^Name:\s*(.*)$", text, re.MULTILINE)
+            rss = re.search(r"^VmRSS:\s*(\d+) kB", text, re.MULTILINE)
             if name and rss:
                 groups[name.group(1)][0] += 1
                 groups[name.group(1)][1] += int(rss.group(1)) * 1024

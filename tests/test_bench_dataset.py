@@ -8,9 +8,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
 
-import dataset  # noqa: E402
+import dataset
 
-from edge_agent import prompt  # noqa: E402
+from edge_agent import prompt
 
 READ = {"name": "read", "description": "Read a file", "parameters": {"type": "object"}}
 WEB = {"name": "web_fetch", "description": "Read web page", "parameters": {"type": "object"}}

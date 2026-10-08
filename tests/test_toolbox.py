@@ -12,6 +12,7 @@ import time
 import zipfile
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Self
 
 import pytest
 
@@ -500,17 +501,7 @@ def test_merge_csv_union_of_headers(tmp_path: Path) -> None:
 
 
 def test_log_summary_counts_and_groups(tmp_path: Path) -> None:
-    write(tmp_path / "logs" / "app.log", "\n".join([
-        "2026-10-01 10:00:01 INFO start",
-        "2026-10-01 10:00:02 ERROR Connection refused to 10.0.0.5:5432",
-        "2026-10-01 10:00:03 [error] Connection refused to 10.0.0.6:5432",
-        "2026-10-01 10:00:04 WARN slow request 1234ms",
-        "2026-10-01 10:00:05 INFO retry after error",
-        "2026-10-01 10:00:06 FATAL out of memory at 0x7fff1234",
-        "Traceback (most recent call last):",
-        "2026-10-01 10:00:07 DEBUG id=550e8400-e29b-41d4-a716-446655440000",
-        "2026-10-01 10:00:08 ERROR Connection refused to 10.0.0.7:5432",
-    ]))
+    write(tmp_path / "logs" / "app.log", "2026-10-01 10:00:01 INFO start\n2026-10-01 10:00:02 ERROR Connection refused to 10.0.0.5:5432\n2026-10-01 10:00:03 [error] Connection refused to 10.0.0.6:5432\n2026-10-01 10:00:04 WARN slow request 1234ms\n2026-10-01 10:00:05 INFO retry after error\n2026-10-01 10:00:06 FATAL out of memory at 0x7fff1234\nTraceback (most recent call last):\n2026-10-01 10:00:07 DEBUG id=550e8400-e29b-41d4-a716-446655440000\n2026-10-01 10:00:08 ERROR Connection refused to 10.0.0.7:5432")
     write(tmp_path / "logs" / "other.txt", "ERROR not a log by pattern")
     out = run("log_summary", tmp_path, path="logs")
     assert "共 9 行" in out
@@ -540,7 +531,7 @@ class FakeKey:
     def __init__(self, hive: str, view: int, path: str) -> None:
         self.hive, self.view, self.path = hive, view, path
 
-    def __enter__(self) -> FakeKey:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> bool:
@@ -556,7 +547,7 @@ class FakeReg:
     def __init__(self, keys: dict[tuple[str, int, str], dict]) -> None:
         self.keys = keys
 
-    def OpenKey(self, parent, sub: str, reserved: int = 0, access: int = 0x20019) -> FakeKey:  # noqa: N802
+    def OpenKey(self, parent, sub: str, reserved: int = 0, access: int = 0x20019) -> FakeKey:
         if isinstance(parent, FakeKey):
             hive, view, path = parent.hive, parent.view, f"{parent.path}\\{sub}"
         else:
@@ -565,20 +556,20 @@ class FakeReg:
             raise FileNotFoundError(path)
         return FakeKey(hive, view, path)
 
-    def EnumKey(self, key: FakeKey, i: int) -> str:  # noqa: N802
+    def EnumKey(self, key: FakeKey, i: int) -> str:
         children = sorted({k[2][len(key.path) + 1:].split("\\")[0] for k in self.keys
                            if k[:2] == (key.hive, key.view) and k[2].startswith(key.path + "\\")})
         if i >= len(children):
             raise OSError("no more keys")
         return children[i]
 
-    def QueryValueEx(self, key: FakeKey, name: str):  # noqa: N802
+    def QueryValueEx(self, key: FakeKey, name: str):
         values = self.keys.get((key.hive, key.view, key.path), {})
         if name not in values:
             raise FileNotFoundError(name)
         return values[name], 1
 
-    def EnumValue(self, key: FakeKey, i: int):  # noqa: N802
+    def EnumValue(self, key: FakeKey, i: int):
         items = list(self.keys.get((key.hive, key.view, key.path), {}).items())
         if i >= len(items):
             raise OSError("no more values")
