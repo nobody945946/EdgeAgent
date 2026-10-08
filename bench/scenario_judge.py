@@ -35,7 +35,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run  # noqa: E402  (the one way to start a model server)
 from scenario_checks import failures, family_checks  # noqa: E402
 
-TOOL_RESULT_CHARS = 700
+# Tool calls and results as the Agent saw them, up to a long web page each: at
+# 700 characters (a third of all results ran past it) and 300 for a call's
+# arguments (a written file's contents) the judge took what an answer cited
+# from the rest for made up (teacher-cards-4096 train-E-009, 2026-10-08) and
+# could not see what a file got. The longest pilot conversation is then 25K
+# tokens; the judge has 48K (configs.json judge-gemma).
+TOOL_CHARS = 8000
 REJECT_NEEDED = 0.9
 # Fewer accepted originals than this leave too few corrupted copies to tell
 # a judge that tells them apart from one that rejects everything.
@@ -63,13 +69,20 @@ JUDGE_PROMPT = """你是嚴格的評審，要判斷一個 AI 助理在一段對�
 
 使用者的目標（使用者沒有原句說出來）：{goal}
 
-對話紀錄（「工具」是助理呼叫的工具和結果，使用者看不到工具結果，只看得到助理的回答）：
+對話紀錄（「工具」是助理呼叫的工具和結果，使用者看不到工具結果，只看得到助理的回答；很長的工具內容後段會標明省略，助理說的內容可能出自省略的部分時，不能算編造）：
 {transcript}
 
 逐條判斷下列規定。「必須」類：紀錄裡明確做到才算通過；「不可」類：紀錄裡完全沒有發生才算通過。
 {items}
 
 只輸出一個 JSON 物件：{{"items": [{{"id": "規定編號", "pass": true 或 false, "evidence": "引用紀錄中的原文（20 字內），沒有就寫 無"}}]}}，每條規定都要有。"""
+
+
+def shown(text: str) -> str:
+    """A tool call's arguments or result, up to TOOL_CHARS, the rest marked as left out."""
+    if len(text) <= TOOL_CHARS:
+        return text
+    return f"{text[:TOOL_CHARS]}……（後面還有 {len(text) - TOOL_CHARS} 字，這裡省略，助理看得到全文）"
 
 
 def transcript(trajectory: list[dict]) -> str:
@@ -88,11 +101,11 @@ def transcript(trajectory: list[dict]) -> str:
                 if item.get("type") == "text" and item.get("text", "").strip():
                     lines.append(f"助理：{item['text']}")
                 elif item.get("type") == "toolCall":
-                    arguments = json.dumps(item.get("arguments"), ensure_ascii=False)[:300]
+                    arguments = shown(json.dumps(item.get("arguments"), ensure_ascii=False))
                     lines.append(f"工具（呼叫 {item.get('name')}）：{arguments}")
         elif role == "toolResult":
             text = "".join(i.get("text", "") for i in content or [] if isinstance(i, dict))
-            lines.append(f"工具（結果{'，失敗' if message.get('isError') else ''}）：{text[:TOOL_RESULT_CHARS]}")
+            lines.append(f"工具（結果{'，失敗' if message.get('isError') else ''}）：{shown(text)}")
     return "\n".join(lines)
 
 

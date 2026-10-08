@@ -167,6 +167,15 @@ def test_the_judge_sees_tool_calls_and_results_but_not_thinking() -> None:
     text = scenario_judge.transcript(trajectory)
     assert "秘密思考" not in text
     assert "web_research" in text and "結果" in text and "答案 [1]" in text
+    # Long results and a written file's contents are shown whole (an answer
+    # citing past 700 characters read as made up), the rest marked as left out.
+    page = "前段" * 400 + "第1300字以後才有的AES細節" + "尾" * 9000
+    long = [{"role": "assistant", "content": [{"type": "toolCall", "name": "write",
+                                               "arguments": {"path": "a.csv", "content": "x," * 1000 + "末欄"}}]},
+            {"role": "toolResult", "content": [{"type": "text", "text": page}]}]
+    text = scenario_judge.transcript(long)
+    assert "末欄" in text and "AES細節" in text
+    assert f"後面還有 {len(page) - scenario_judge.TOOL_CHARS} 字" in text
 
 
 def test_a_card_with_simplified_characters_is_converted_not_dropped() -> None:
@@ -395,8 +404,16 @@ def test_calling_an_api_is_seen_in_the_calls() -> None:
 def test_cards_naming_v1_tools_or_asking_for_jargon_are_retired(tmp_path, monkeypatch) -> None:
     family = {"web": "fixture"}
     assert "names a tool of spec v1" in scenario_cards.problems(card(goal="用 tool_search 找工具"), "F", family)
-    assert scenario_cards.problems(card(must=["保持機魂的角色語氣，提到萬機之神"]), "B", family) == [
-        "a must item asks for the character's tone or jargon"]
+    tone = ["an item asks for the character's tone or jargon"]
+    assert scenario_cards.problems(card(must=["保持機魂的角色語氣，提到萬機之神"]), "B", family) == tone
+    for item in ("在回應閒聊時，語氣符合戰鎚 40K 背景", "使用符合戰錘40K語境的詞彙", "必須展現機魂的角色特質（如提及帝皇、忠誠）"):
+        assert scenario_cards.problems(card(must=[item]), "B", family) == tone, item
+    assert scenario_cards.problems(card(must_not=["不可客套，應保持機魂冷峻的角色語氣"]), "B", family) == tone
+    # The user's 40K words, and searching them, are no tone of the assistant's.
+    assert scenario_cards.problems(card(must=["對使用者的戰鎚風格打招呼自然回應，不可拿去搜尋"],
+                                        must_not=["不得把使用者的口頭禪「帝皇保佑」當關鍵字搜尋"]), "B", family) == []
+    assert scenario_cards.problems(card(must_not=["不能混入簡體字（如「運轉」寫成「運轉」）"]), "B", family) == [
+        "an item is about Simplified Chinese (every row becomes Traditional)"]
     monkeypatch.setattr(scenario_cards, "OUT", tmp_path)
     good = {**card(), "id": "train-B-001", "family": "B", "topic": "t", "files": {}}
     bad = {**card(must=["語氣要有口頭禪"]), "id": "train-B-002", "family": "B", "topic": "t", "files": {}}

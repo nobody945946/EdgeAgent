@@ -165,6 +165,19 @@ def _strings(value: object, low: int, high: int) -> bool:
 # character comes from what it wants and how it decides).
 V1_TOOLS = re.compile(r"tool_search|現成工具|run_checks")
 JARGON = re.compile(r"角色的?(語氣|口吻|風格)|口頭禪|萬機之?神")
+# The same in either list, worded around the character or 40K (teacher pilot,
+# 2026-10-08: 「語氣符合戰鎚 40K 背景」, 「使用符合戰錘40K語境的詞彙」, 「如提及
+# 帝皇、機靈、忠誠」 passed JARGON, and a must_not can ask for a tone too). The
+# user's own 40K words (「使用者的戰鎚風格打招呼」) are not the assistant's tone.
+TONE = re.compile(r"(機魂|人設|人格|角色)[」』]?的?[^。；，、]{0,6}(語氣|口吻|腔調)"
+                  r"|(語氣|口吻|腔調|敬語)[^。；]{0,10}(機魂|戰[鎚錘]|40K|帝皇)"
+                  r"|(符合|使用(?!者)|(?<!使)用)[^。；，]{0,6}(戰[鎚錘]|40K)[^。；，]{0,6}(語境|風格|語氣|背景)"
+                  r"|(如|例如)(提及|使用|用)[^。；]{0,4}(靈能|機械之?神|帝皇|亞空間|混沌|泰拉|忠誠)")
+# Every row is turned into Taiwan Traditional Chinese (dataset.py), so writing
+# no Simplified Chinese is not an ability a conversation shows; and converting
+# a card to Traditional turned its Simplified examples into nonsense the judge
+# then enforced (「如「運轉」寫成「運轉」」, train-B-018, 2026-10-08).
+SIMPLIFIED = re.compile(r"簡體|简体")
 
 
 def problems(card: dict, family_id: str, family: dict) -> list[str]:
@@ -173,8 +186,12 @@ def problems(card: dict, family_id: str, family: dict) -> list[str]:
              if not isinstance(card.get(key), str) or not card[key].strip()]
     if V1_TOOLS.search(json.dumps(card, ensure_ascii=False)):
         found.append("names a tool of spec v1")
-    if any(JARGON.search(item) for item in card.get("must") or [] if isinstance(item, str)):
-        found.append("a must item asks for the character's tone or jargon")
+    items = [item for item in (card.get("must") or []) + (card.get("must_not") or []) if isinstance(item, str)]
+    if any(JARGON.search(item) for item in card.get("must") or [] if isinstance(item, str)) \
+            or any(TONE.search(item) for item in items):
+        found.append("an item asks for the character's tone or jargon")
+    if any(SIMPLIFIED.search(item) for item in items):
+        found.append("an item is about Simplified Chinese (every row becomes Traditional)")
     if not _strings(card.get("plan"), 2, 5):
         found.append("plan must be 2-5 steps")
     if not _strings(card.get("must"), 1, 5):

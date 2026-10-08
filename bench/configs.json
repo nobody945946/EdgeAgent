@@ -146,16 +146,16 @@
   ]
  },
  "judge-gemma": {
-  "_note": "The scenario judge (owner, 2026-10-07): Gemma 4 31B, another family than the teacher so it does not grade its own kind's answers; IQ3_XXS agreed 99% with Q4 as the character pipeline's checker.",
+  "_note": "The scenario judge (owner, 2026-10-07): Gemma 4 31B, another family than the teacher so it does not grade its own kind's answers; IQ3_XXS agreed 99% with Q4 as the character pipeline's checker. 48K a slot: it reads whole conversations with their tool results (the longest pilot one 25K tokens, 2026-10-08); three 32K slots took 18,506 MiB, so about 1,840 a 32K slot, 3,000 a 48K one with room.",
   "model": "../teacher/gemma-4-31B-it-UD-IQ3_XXS.gguf",
   "vision": false,
-  "context_size": 32768,
+  "context_size": 49152,
   "max_output_tokens": 8192,
-  "working_context_size": 32768,
+  "working_context_size": 49152,
   "effort": "high",
   "low_vram": true,
   "vram_base_mib": 13000,
-  "vram_slot_mib": 2500
+  "vram_slot_mib": 3000
  },
  "e4b-laptop-fw2": {
   "_note": "The urgent agent-fw2 (owner 2026-10-07: distil Qwen3.8 at thinking high now): tool tasks and scenario conversations the teacher recorded, with and without its reasoning; E4B 64K, thinking off.",
