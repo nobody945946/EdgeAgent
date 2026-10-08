@@ -309,5 +309,75 @@
   "lora": "agent-fw3.q8_0.gguf",
   "_note": "The base E4B with agent-fw3, trained on spec v2's recordings; as e4b-laptop-fw2-scen otherwise.",
   "simulator": "teacher-38-sim"
+ },
+ "e4b-laptop-base-think512": {
+  "_note": "The base E4B, thinking on with at most 512 tokens a step: how long E4B should think (owner, 2026-10-08: measure before recording; off and unlimited are e4b-laptop-base and -high).",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "extra_args": [
+   "--reasoning-budget",
+   "512"
+  ]
+ },
+ "e4b-laptop-base-think1024": {
+  "_note": "The base E4B, thinking on with at most 1024 tokens a step: how long E4B should think (owner, 2026-10-08: measure before recording; off and unlimited are e4b-laptop-base and -high).",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "extra_args": [
+   "--reasoning-budget",
+   "1024"
+  ]
+ },
+ "e4b-laptop-base-think2048": {
+  "_note": "The base E4B, thinking on with at most 2048 tokens a step: how long E4B should think (owner, 2026-10-08: measure before recording; off and unlimited are e4b-laptop-base and -high).",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "extra_args": [
+   "--reasoning-budget",
+   "2048"
+  ]
+ },
+ "teacher-38-iq3-think4096": {
+  "_note": "teacher-38-iq3 with four times the thinking budget: does a longer teacher trace make better demonstrations?",
+  "model": "../teacher/Qwen3.8-27B-UD-IQ3_XXS.gguf",
+  "self_model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": false,
+  "context_size": 65536,
+  "max_output_tokens": 16384,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 10200,
+  "vram_slot_mib": 2600,
+  "search_tools": true,
+  "extra_args": [
+   "--reasoning-budget",
+   "4096"
+  ],
+  "time_scale": 0.5
  }
 }
