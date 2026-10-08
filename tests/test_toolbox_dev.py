@@ -71,6 +71,19 @@ def test_run_checks_pass_and_fail(tmp_path: Path) -> None:
         run("run_checks", tmp_path, path=".")
 
 
+def test_run_checks_returns_when_the_command_ends_though_a_program_it_started_runs_on(tmp_path: Path) -> None:
+    """`code .` opening VS Code: the window inherits the output pipe and stays
+    open; the tool answers when the command ends, and leaves the window open."""
+    launcher = ("Start-Process powershell -ArgumentList '-Command','Start-Sleep 20' -NoNewWindow; 'opened'"
+                if IS_WINDOWS else "sleep 20 & echo opened")
+    started = time.monotonic()
+    out = run("run_checks", tmp_path, command=launcher, timeout_s=60)
+    assert time.monotonic() - started < 10
+    assert "檢查通過" in out and "opened" in out
+    if not IS_WINDOWS:
+        assert "還在執行，沒有被關掉" in out
+
+
 def test_run_checks_command_and_timeout(tmp_path: Path) -> None:
     out = run("run_checks", tmp_path, command="echo 你好")
     assert out.startswith("檢查通過") and "你好" in out

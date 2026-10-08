@@ -15,6 +15,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -144,6 +145,7 @@ class Outcome:
     output: str
     seconds: float
     timed_out: bool
+    left_running: bool = False  # the command ended, a program it started (a window, a server) did not
 
 
 def execute(argv: list[str], cwd: Path, timeout: float) -> Outcome:
@@ -157,18 +159,32 @@ def execute(argv: list[str], cwd: Path, timeout: float) -> Outcome:
                                 stderr=subprocess.STDOUT, env=env, **group)
     except OSError as exc:
         raise ToolError(f"沒辦法執行 {argv[0]}：{exc}") from exc
+    # Wait for the command itself, not for its output pipe to close: a
+    # program it starts (`code .` opening VS Code, a dev server) inherits the
+    # pipe and keeps it open while it runs (2026-10-08: the tool waited until
+    # the owner closed VS Code by hand, minutes later).
+    chunks: list[bytes] = []
+
+    def pump() -> None:
+        assert proc.stdout is not None
+        while chunk := proc.stdout.read1(65536):
+            chunks.append(chunk)
+
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
     timed_out = False
     try:
-        out, _ = proc.communicate(timeout=timeout)
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
         _kill_tree(proc)
         try:
-            out, _ = proc.communicate(timeout=15)
-        except subprocess.TimeoutExpired:  # a grandchild outside the group still holds the pipe
-            out = b""
-    return Outcome(None if timed_out else proc.returncode, _decode_output(out or b""),
-                   time.monotonic() - start, timed_out)
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            pass
+    reader.join(timeout=2)  # what is still buffered; a program left running keeps the pipe
+    return Outcome(None if timed_out else proc.returncode, _decode_output(b"".join(chunks)),
+                   time.monotonic() - start, timed_out, left_running=reader.is_alive() and not timed_out)
 
 
 def pytest_summary(output: str) -> list[str]:
@@ -225,6 +241,8 @@ def checks_run(params: dict, root: Path) -> str:
         head = f"檢查沒通過（結束代碼 {outcome.code}）。"
     lines = [head, f"指令：{_shown_command(argv, params)}", f"資料夾：「{shown(root, folder)}」（{how}）",
              f"花了 {outcome.seconds:.1f} 秒"]
+    if outcome.left_running:
+        lines.append("指令本身已經結束；它開啟的程式（例如視窗程式或伺服器）還在執行，沒有被關掉。")
     if argv[1:3] == ["-m", "pytest"] or "pytest" in (params["command"] or ""):
         lines += pytest_summary(outcome.output)
     lines += ["輸出的最後部分：", _tail(outcome.output) or "（沒有輸出）"]
