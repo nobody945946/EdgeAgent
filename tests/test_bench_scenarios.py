@@ -183,6 +183,16 @@ def test_a_card_with_simplified_characters_is_converted_not_dropped() -> None:
     assert converted == {"goal": "查詢這個軟體", "plan": ["先問", "這個"], "max_turns": 3}
 
 
+def test_a_turn_whose_last_message_did_not_finish_never_becomes_a_row() -> None:
+    cut = [{"role": "user", "content": "寫個遊戲"},
+           {"role": "assistant", "content": [{"type": "text", "text": "好，程式如下：\nimport pyg"}], "stopReason": "length"},
+           {"role": "user", "content": "然後呢"}, {"role": "assistant", "content": [], "stopReason": "stop"}]
+    record = {"dialogue": [turn("好"), turn("完成")], "ended": "end", "trajectory": cut}
+    assert scenario_checks.failures(record, [])["cut_off"] == "turns whose last message did not finish: [1]"
+    cut[1]["stopReason"] = "stop"
+    assert scenario_checks.failures(record, []) == {}
+
+
 def test_searching_a_whole_drive_never_becomes_a_row() -> None:
     scan = {"name": "powershell", "arguments": {"command": "Get-ChildItem / -Recurse -Filter 'app_logs*'"}}
     windows = {"name": "powershell", "arguments": {"command": "gci C:\\ -Recurse -File"}}
@@ -214,7 +224,7 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
                 assert "目標" not in prompt
                 card = re.search(r"使用者：問(\d+)", prompt).group(1)
                 ok = not Judge.strict and f"助理最後的回答：答{card}。完整的結尾{card}。" in prompt
-                verdict = {"turns": [{"turn": 1, "pass": ok, "evidence": "無"}]}
+                verdict = {"turns": [{"turn": 1, "ending": "結尾", "complete": ok, "responds": ok}]}
             else:
                 keys = re.findall(r"^([MN]\d+)\. ", prompt, re.M)
                 assert keys and "助理：" in prompt

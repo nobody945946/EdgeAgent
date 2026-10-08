@@ -53,17 +53,19 @@ CORRUPTIONS = ("cut", "swap", "swap_all")
 # (teacher-cards-1024, 2026-10-08). Asked as one more item among the card's,
 # the judge passed 6 of 14 answers cut off mid-sentence (it reads the card's
 # items against a long transcript of tool calls); asked alone, per turn, over
-# the messages and answers only, it has nothing else to read.
+# the messages and answers only, it has nothing else to read. Asked pass or
+# fail, it still passed 3 of 10 answers cut after their main point
+# (teacher-cards-4096); it now copies each answer's ending before it decides.
+# A real cut (the output limit) is the checks' (scenario_checks cut_off).
 ANSWER_PROMPT = """你是嚴格的評審。下面是一段對話裡使用者說的每一則訊息，以及 AI 助理在那一輪最後給使用者的回答（助理中間查資料、跑工具的過程省略了）。
 
 {turns}
 
-逐輪判斷那一輪的回答：
-1. 有沒有回應那則訊息要的事（照前面的對話理解那則訊息；反問使用者來釐清那則訊息也算回應）；
-2. 話有沒有講完：句子、清單、表格、程式碼都完整，不是講到一半就斷掉。
-兩點都做到才算通過。
+逐輪判斷那一輪的回答：先照抄它最後 15 個字，再看
+1. complete：話有沒有講完——句子、括號、引號、清單、表格、程式碼都完整收尾，不是講到一半就斷掉（只差後面的補充也算沒講完）；
+2. responds：有沒有回應那則訊息要的事（照前面的對話理解那則訊息；反問使用者來釐清那則訊息也算回應）。
 
-只輸出一個 JSON 物件：{{"turns": [{{"turn": 輪次, "pass": true 或 false, "evidence": "沒通過就引用那個回答的最後 20 字，通過寫 無"}}]}}，每一輪都要有。"""
+只輸出一個 JSON 物件：{{"turns": [{{"turn": 輪次, "ending": "回答最後 15 個字（照抄）", "complete": true 或 false, "responds": true 或 false}}]}}，每一輪都要有。"""
 
 JUDGE_PROMPT = """你是嚴格的評審，要判斷一個 AI 助理在一段對話裡有沒有做到規定。只根據下面的對話紀錄判斷，不要猜測紀錄以外的事。
 
@@ -168,8 +170,9 @@ def answered(port: int, trajectory: list[dict]) -> dict:
     match = re.search(r"\{.*\}", ask(port, ANSWER_PROMPT.format(turns=listed)), re.DOTALL)
     try:
         found = {int(v["turn"]): v for v in json.loads(match.group(0))["turns"]} if match else {}
-        verdicts = {n: bool(found[n]["pass"]) for n in found}
-        failed = {f"turn {n}": str(found[n].get("evidence", ""))[:80] for n in found if not verdicts[n]}
+        verdicts = {n: bool(found[n]["complete"]) and bool(found[n]["responds"]) for n in found}
+        failed = {f"turn {n}": ("cut: " if not found[n]["complete"] else "off: ") + str(found[n].get("ending", ""))[:40]
+                  for n in found if not verdicts[n]}
     except (ValueError, KeyError, TypeError):
         verdicts, failed = {}, {}
     missing = [f"turn {n}" for n in range(1, len(pairs) + 1) if n not in verdicts]
