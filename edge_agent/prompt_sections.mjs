@@ -21,11 +21,12 @@ export function today(now = new Date()) {
 // it keeps asking for approval (owner's conversations, 2026-10-07/08).
 export function modelFacts(init) {
   const model = String(init.model_name || init.model || '').split(/[\\/]/).pop().replace(/\.gguf$/i, '');
-  const system = process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'Linux';
+  // The host states the operating system with the hardware (edge_agent.hardware):
+  // the bench's sandbox runs Linux but stands for the laptop.
   const facts = [
     `你是在這台電腦上用 llama.cpp 執行的本機模型 ${model}，不是雲端服務。`
       + (init.hardware ? `這台電腦：${init.hardware}。` : '')
-      + `作業系統是 ${system}，指令用 PowerShell 執行。`,
+      + '指令用 PowerShell 執行。',
     `上下文視窗是 ${init.context_size} 個 token；對話太長時，主機會把較早的內容整理成摘要`
       + '（聊天畫面會出現「已整理上下文」的提示），整理前的細節可能不見了，要找回原話用 search_history。'
       + '你看不到 token 用量。你沒有跨對話的記憶：開新對話就是空白的，所以不要答應下次還記得什麼。',

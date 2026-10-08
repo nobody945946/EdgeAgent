@@ -2,7 +2,9 @@
 
 Asked "GPU or CPU?", the Agent probed the machine with PowerShell (2026-10-08:
 on the dev box that was the bench sandbox, and the answers said Docker and an
-RTX 3090); the host knows these facts, so it states them.
+RTX 3090); the host knows these facts, so it states them. The operating system
+is one of them: the bench states the laptop's (bench/run.py LAPTOP_HARDWARE)
+while its sandbox runs Linux.
 """
 
 from __future__ import annotations
@@ -63,10 +65,14 @@ def ram_mib() -> int | None:
         return None
 
 
+def system() -> str:
+    return {"win32": "Windows", "darwin": "macOS"}.get(sys.platform, "Linux")
+
+
 def describe(gpu_layers: int) -> str:
-    """e.g. 「NVIDIA GeForce RTX 3050 Ti Laptop GPU（4 GB 顯示記憶體）、8 GB RAM；模型有 41 層放在顯示卡，其餘在 CPU」"""
+    """e.g. 「Windows、NVIDIA GeForce RTX 3050 Ti Laptop GPU（4 GB 顯示記憶體）、8 GB RAM；模型有 41 層放在顯示卡，其餘在 CPU」"""
     found, ram = gpu(), ram_mib()
-    parts = [f"{found[0]}（{round(found[1] / 1024)} GB 顯示記憶體）" if found else "沒有 NVIDIA 顯示卡"]
+    parts = [system(), f"{found[0]}（{round(found[1] / 1024)} GB 顯示記憶體）" if found else "沒有 NVIDIA 顯示卡"]
     if ram:
         parts.append(f"{round(ram / 1024)} GB RAM")
     if not found or gpu_layers == 0:
