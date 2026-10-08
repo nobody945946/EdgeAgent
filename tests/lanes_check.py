@@ -143,12 +143,18 @@ def run(core: EdgeAgent, lease_lora: str, config: dict) -> dict[str, object]:
 def main() -> int:
     from edge_agent.processes import listening_pid
 
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--install", type=Path, default=CORE_ROOT, help="the deployed EdgeAgent folder")
+    parser.add_argument("--memory-only", action="store_true",
+                        help="only the memory of the llama-server already running (the baseline), then exit")
+    options = parser.parse_args()
+    if options.memory_only:
+        print(json.dumps({"event": "memory_baseline", **gpu(), **process_memory()}), flush=True)
+        return 0
+    install = options.install.resolve()
     for port in (CONTROL_PORT, 18089):
         if listening_pid(port) is not None:
             raise RuntimeError(f"port {port} is in use: stop EdgeAgent's service first")
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--install", type=Path, default=CORE_ROOT, help="the deployed EdgeAgent folder")
-    install = parser.parse_args().install.resolve()
     owner = load_config(install / "config.json")  # read only; the check runs in a temporary core
     from edge_agent import load_plan, router
 
