@@ -169,8 +169,8 @@ def main() -> int:
 
     deployed = install / ".runtime/deployment.json"
     if deployed.is_file():  # the install's own llama-server, for the router and its model
-        server = str((install / json.loads(deployed.read_text(encoding="utf-8"))["server"]).resolve())
-        load_plan.find_llama_server = router.find_llama_server = lambda: server
+        llama_server = str((install / json.loads(deployed.read_text(encoding="utf-8"))["server"]).resolve())
+        load_plan.find_llama_server = router.find_llama_server = lambda: llama_server
     with tempfile.TemporaryDirectory(prefix="edge-lanes-") as directory:
         core = EdgeAgent(Path(directory))
         core.model_dir = (install / "models").resolve()
@@ -178,8 +178,8 @@ def main() -> int:
         keep = ("model", "lora", "context_size", "gpu_layers", "low_vram", "max_output_tokens", "working_context_size")
         core.config = {**core.config, **{k: owner[k] for k in keep if k in owner}}
         Handler.core = core
-        server = ExclusiveHTTPServer(("127.0.0.1", CONTROL_PORT), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        control = ExclusiveHTTPServer(("127.0.0.1", CONTROL_PORT), Handler)
+        threading.Thread(target=control.serve_forever, daemon=True).start()
         results = []
         try:
             for lease_lora in (CHARACTER_ADAPTER, str(core.config["lora"])):
@@ -189,7 +189,7 @@ def main() -> int:
         finally:
             core.chat.close()
             core._stop_child()
-            server.shutdown()
+            control.shutdown()
     print(json.dumps({"event": "lanes_check_done", "runs": len(results)}), flush=True)
     return 0
 
