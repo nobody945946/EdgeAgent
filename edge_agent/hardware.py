@@ -75,8 +75,6 @@ def describe(gpu_layers: int) -> str:
         placement = "模型的層由 llama.cpp 自動分配到顯示卡和 CPU"
     elif gpu_layers >= 99:
         placement = "模型全部放在顯示卡"
-    elif gpu_layers >= 99:
-        placement = "模型全部放在顯示卡"
     else:
         placement = f"模型有 {gpu_layers} 層放在顯示卡，其餘在 CPU"
     return "、".join(parts) + "；" + placement
