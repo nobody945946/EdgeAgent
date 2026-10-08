@@ -44,7 +44,8 @@ CORRUPTIONS = ("cut", "swap", "swap_all")
 # message. A card's items often check only the process: on spec v2's longer
 # conversations a last answer swapped for another card's still met them all
 # (teacher-cards-1024, 2026-10-08).
-EVERY_ANSWER = "必須：每一則助理回答都回應使用者當時那則訊息：答的是那則訊息要的事，而且話有講完，沒有答非所問、沒有講到一半就斷掉。"
+EVERY_ANSWER = ("必須：使用者的每一則訊息，助理在那一輪最後的回答都確實回應了它：答的是那則訊息要的事，話也有講完；"
+                "不能答非所問，也不能講到一半就斷掉（同一輪中間「我查一下」之類的過渡句不算最後的回答）。")
 
 JUDGE_PROMPT = """你是嚴格的評審，要判斷一個 AI 助理在一段對話裡有沒有做到規定。只根據下面的對話紀錄判斷，不要猜測紀錄以外的事。
 
@@ -184,7 +185,7 @@ def answers(trajectory: list[dict]) -> list[int]:
 
 
 def corrupt(trajectory: list[dict], other: list[dict], how: str) -> list[dict]:
-    """A copy whose answers fail EVERY_ANSWER for sure: the last answer stops
+    """A copy that fails EVERY_ANSWER for sure: the last turn's answer stops
     mid-sentence (cut), is another card's last answer (swap), or every answer
     is another card's (swap_all)."""
     def replaced(index: int, text: str) -> dict:
