@@ -264,5 +264,48 @@
    "1024"
   ],
   "time_scale": 0.5
+ },
+ "e4b-laptop-fw2e1": {
+  "_note": "e4b-laptop-fw2 with the adapter saved after the first of its two epochs (train_lora.py --epoch-copies): the next candidate if agent-fw2 fails the ship gate.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "agent-fw2-e1.q8_0.gguf"
+ },
+ "e4b-laptop-fw2e1-high": {
+  "_note": "e4b-laptop-fw2-high with the adapter saved after the first of its two epochs (train_lora.py --epoch-copies): the next candidate if agent-fw2 fails the ship gate.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "agent-fw2-e1.q8_0.gguf"
+ },
+ "e4b-laptop-fw2e1-scen": {
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 5000,
+  "vram_slot_mib": 1200,
+  "search_tools": true,
+  "lora": "agent-fw2-e1.q8_0.gguf",
+  "_note": "e4b-laptop-fw2-scen with the adapter saved after the first of its two epochs (train_lora.py --epoch-copies): the next candidate if agent-fw2 fails the ship gate.",
+  "simulator": "teacher-38-sim"
  }
 }

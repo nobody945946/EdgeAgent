@@ -52,6 +52,8 @@ def test_it_ships_only_when_every_gate_passes(tmp_path: Path, monkeypatch) -> No
 def test_one_failed_chat_probe_stops_it(tmp_path: Path, monkeypatch) -> None:
     assert gate(tmp_path, monkeypatch, [True, False], {"eval-C-001": True, "eval-D-001": True}) == 1
     assert json.loads((tmp_path / "new" / "ship-gate.json").read_text())["chat_failed"] == ["chat-greeting r1"]
+    why = (tmp_path / "new" / "why.txt").read_text()
+    assert "== chat-greeting r1" in why and "before (base):" in why and "after (new):" in why
 
 
 def test_cards_must_be_strictly_better(tmp_path: Path, monkeypatch) -> None:
