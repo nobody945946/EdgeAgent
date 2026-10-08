@@ -234,33 +234,41 @@ def generate(args: argparse.Namespace) -> None:
                          "start a new file instead of mixing versions")
     run_dir = OUT / f"server-{args.split}"
     run_dir.mkdir(parents=True, exist_ok=True)
-    server = run.Server(config, run_dir, args.parallel, args.port)
+    server = run.Server(config, run_dir, args.parallel, args.port, fit_slots=True)
     run.close_on_term(server)
     today = datetime.date.today().isoformat()
     topics = topics_for(args.split, spec)
     lock = threading.Lock()
 
-    def family_cards(family_id: str) -> None:
-        """One family's cards; families run side by side on the server's slots."""
+    names = args.families or sorted(spec["families"])
+    have = {f: sum(c["family"] == f for c in kept) for f in names}
+    started = {f: 0 for f in names}  # cards asked for, kept or not: at most 3 per card wanted
+
+    def family_cards(job: tuple[str, int]) -> None:
+        """Cards of one family; a family can have several workers (one family
+        alone would otherwise use one slot), and families run side by side."""
+        family_id, worker = job
         family = spec["families"][family_id]
-        rng = random.Random(f"{args.split}-{args.seed}-{family_id}")
-        with lock:
-            have = sum(c["family"] == family_id for c in kept)
-        tries = 0
-        while have < args.per_family and tries < args.per_family * 3:
-            tries += 1
+        rng = random.Random(f"{args.split}-{args.seed}-{family_id}-{worker}")
+        while True:
+            with lock:
+                if have[family_id] >= args.per_family or started[family_id] >= args.per_family * 3:
+                    return
+                started[family_id] += 1
             topic = rng.choice(topics)
             card = parse_card(ask(server.port, prompt_for(family_id, family, topic, today)))
             card = traditional(card) if card is not None else None
             why = ["not JSON"] if card is None else problems(card, family_id, family)
             with lock:
+                if not why and have[family_id] >= args.per_family:
+                    return
                 if not why and near_duplicate(card, [c for c in kept if c["family"] == family_id]):
                     why = ["near-duplicate"]
                 if why:
                     print(f"{family_id} {topic}: dropped ({'; '.join(why)})", flush=True)
                     continue
-                have += 1
-                card_id = f"{args.split}-{family_id}-{have:03d}"
+                have[family_id] += 1
+                card_id = f"{args.split}-{family_id}-{have[family_id]:03d}"
                 card.update({"id": card_id, "family": family_id, "topic": topic,
                              "source": {"teacher": config["model"], "families_version": spec["version"],
                                         "prompt": hashlib.sha256(CARD_PROMPT.encode()).hexdigest()[:12],
@@ -271,8 +279,9 @@ def generate(args: argparse.Namespace) -> None:
                 print(f"{card_id} {topic}: kept", flush=True)
 
     try:
-        with ThreadPoolExecutor(args.parallel) as pool:
-            list(pool.map(family_cards, args.families or sorted(spec["families"])))
+        with ThreadPoolExecutor(server.parallel) as pool:
+            workers = max(1, server.parallel // len(names))
+            list(pool.map(family_cards, [(f, w) for f in names for w in range(workers)]))
     finally:
         server.close()
 
@@ -372,7 +381,7 @@ def main() -> None:
     g.add_argument("--families", nargs="*", help="family ids (default all)")
     g.add_argument("--seed", type=int, default=0)
     g.add_argument("--port", type=int, default=18389)
-    g.add_argument("--parallel", type=int, default=2, help="families written side by side")
+    g.add_argument("--parallel", type=int, default=4, help="cards written side by side (fewer if the GPU holds fewer)")
     f = sub.add_parser("files")
     f.add_argument("--config", required=True, help="the teacher's bench config (configs.json)")
     f.add_argument("--split", choices=SPLITS, required=True)

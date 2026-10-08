@@ -246,3 +246,25 @@ def test_results_of_a_changed_task_are_dropped_to_play_again(tmp_path: Path, mon
     assert left == ["a", "c"]
     assert not (run_dir / "records" / "b-r0").exists() and not (run_dir / "traj" / "b-r0.json").exists()
     assert (run_dir / "verdicts.jsonl").read_text() == '{"job": "a-r0"}\n'
+
+
+def test_one_family_is_written_by_several_workers_without_duplicate_ids(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(scenario_cards, "OUT", tmp_path)
+    monkeypatch.setattr(scenario_cards.run, "Server", lambda *a, **k: SimpleNamespace(
+        port=0, parallel=4, close=lambda: None))
+    monkeypatch.setattr(scenario_cards.run, "close_on_term", lambda *a: None)
+    count = iter(range(1000))
+
+    def ask(port: int, prompt: str, max_tokens: int = 6000) -> str:
+        n = next(count)
+        return json.dumps({**card(goal=f"目標{n}" * 3, plan=[f"第{n}步甲乙丙", f"第{n}步丁戊己"]), "pages": []})
+
+    monkeypatch.setattr(scenario_cards, "ask", ask)
+    monkeypatch.setattr(scenario_cards, "near_duplicate", lambda c, kept: False)
+    args = SimpleNamespace(config="teacher-38-iq3", split="train", per_family=6, families=["I"], seed=0,
+                           port=0, parallel=4)
+    scenario_cards.generate(args)
+    ids = [json.loads(line)["id"] for line in (tmp_path / "train-cards.jsonl").read_text().splitlines()]
+    assert sorted(ids) == [f"train-I-{n:03d}" for n in range(1, 7)]
