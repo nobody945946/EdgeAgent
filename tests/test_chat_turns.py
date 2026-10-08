@@ -126,7 +126,9 @@ def test_turn_approval_is_explicit_and_sent_to_upstream(tmp_path):
             *ending(),
         ]
     )
-    reply = chat.stream_reply("fixture", "fixture", working_dir=tmp_path)
+    # The owner is asked (permission "ask"); under "reversible" the host would answer a write itself.
+    reply = chat.stream_reply("fixture", "fixture", working_dir=tmp_path,
+                              permissions={"edit": "ask", "shell": "ask", "web": "allow"})
     assert next(reply)[0] == "approval"
     assert not chat.resolve_approval("other", "approval", True, "turn")
     assert chat.resolve_approval("fixture", "approval", True, "turn")
