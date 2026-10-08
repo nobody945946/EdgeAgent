@@ -11,9 +11,10 @@ cells the character's cache holds, that cache is erased (a few seconds to
 rebuild); a character request that does not fit waits while an Agent task
 runs, and erases the Agent's cache when none does. A new Agent request waits
 while the character is speaking, and one still reading its prompt (nothing
-generated yet) steps aside when the character starts: llama-server fills a
+generated yet) steps aside when the character starts (llama-server fills a
 batch slot by slot, so a long prompt would hold the character's every token
-back. The prompt read so far stays cached and the request resumes after the
+back; it notices the cut only after a quiet second, which the character
+waits). The prompt read so far stays cached and the request resumes after the
 character, up to VOICE_FIRST_SECONDS in all; after that both run side by side.
 
 No conversation or task state lives here. Clients resend their own RAM history
@@ -23,6 +24,7 @@ after a handover; only the engine's disposable prompt cache is cleared.
 from __future__ import annotations
 
 import http.client
+import itertools
 import json
 import socket
 import threading
@@ -44,6 +46,11 @@ MEDIA_CELLS = 1100
 # How long a new Agent request lets the character finish speaking first; after
 # that both run side by side (when the cells allow).
 VOICE_FIRST_SECONDS = 30.0
+# After cutting an Agent request off, the quiet time llama-server needs to see
+# it: it looks at a client's connection only after a second with no result
+# for any slot (each result restarts that second), and then drops the request
+# at its next step. The character's request goes after that.
+PREEMPT_SETTLE_SECONDS = 1.2
 
 
 class InferenceBusy(RuntimeError):
@@ -181,8 +188,8 @@ class InferenceGateway:
         self.agent_adapter: int | None = None
         self.slots = {AGENT: 0, CHARACTER: 0}
         self._identity: dict[str, tuple[object, ...] | None] = {AGENT: None, CHARACTER: None}
-        # The Agent's request still reading its prompt, which a character request preempts.
-        self._reading: http.client.HTTPConnection | None = None
+        # The socket of the Agent's request still reading its prompt, which a character request preempts.
+        self._reading: socket.socket | None = None
         self._preempted = False
         self._reading_lock = threading.Lock()
 
@@ -224,57 +231,116 @@ class InferenceGateway:
         with urllib.request.urlopen(request, timeout=30) as response:
             return json.loads(response.read() or b"{}")
 
-    def _need(self, path: str, value: dict[str, object]) -> int:
-        """The cells a request may take: its prompt as the server tokenizes it
-        (chat template and tools included), each image or audio part, the
-        most it may generate, and a margin; the whole pool when the server
-        cannot say. Without a pool (one slot) nothing is counted."""
+    @staticmethod
+    def _bound(path: str, value: dict[str, object]) -> tuple[int, int]:
+        """(an upper bound on the prompt's tokens, its image and audio parts),
+        without asking the server: a token is at least one byte, so the bytes
+        of everything the template renders (messages, tools) plus a few tokens
+        a message for its markers never fall short."""
+        if path == "/completion":
+            prompt = value.get("prompt", "")
+            return (len(prompt) if isinstance(prompt, list) else len(str(prompt).encode("utf-8")) + 16), 0
+        media, rendered = 0, []
+        messages = [m for m in value.get("messages") or [] if isinstance(m, dict)]
+        for message in messages:
+            content = message.get("content")
+            for part in content if isinstance(content, list) else [content]:
+                if isinstance(part, dict) and part.get("type") not in (None, "text"):
+                    media += 1
+                else:
+                    rendered.append(part)
+            rendered.append({k: v for k, v in message.items() if k != "content"})
+        rendered += [value.get("tools"), value.get("chat_template_kwargs")]
+        size = len(json.dumps(rendered, ensure_ascii=False).encode("utf-8"))
+        return size + 16 * len(messages) + 1024, media
+
+    def _need(self, path: str, value: dict[str, object], agent: bool) -> int:
+        """The cells a request may take: its prompt, each image or audio part,
+        the most it may generate, and a margin. The byte bound is used while
+        it fits beside the other slot's cache; nearer a full pool the server
+        tokenizes the prompt (chat template and tools included), and when it
+        cannot say, the whole pool. Without a pool (one slot) nothing is
+        counted."""
         pool = self.access.pool
         if not pool:
             return 0
+        limit = next((value[key] for key in ("max_tokens", "max_completion_tokens", "n_predict")
+                      if type(value.get(key)) is int and value[key] > 0), pool)
+        bound, media = self._bound(path, value)
+        need = min(pool, bound + media * MEDIA_CELLS + limit + MARGIN_CELLS)
+        if need + self.access.cells[CHARACTER if agent else AGENT] <= pool:
+            return need
         try:
-            if path == "/completion":
-                prompt, media = value.get("prompt", ""), 0
-            else:
-                prompt = self._post("/apply-template", value)["prompt"]
-                media = sum(1 for message in value.get("messages") or [] if isinstance(message, dict)
-                            and isinstance(message.get("content"), list)
-                            for part in message["content"]
-                            if isinstance(part, dict) and part.get("type") not in (None, "text"))
+            prompt = value.get("prompt", "") if path == "/completion" else self._post("/apply-template", value)["prompt"]
             tokens = len(prompt) if isinstance(prompt, list) else len(self._post("/tokenize", {"content": prompt})["tokens"])
         except (urllib.error.HTTPError, OSError, ValueError, KeyError, TypeError):
             return pool
-        limit = next((value[key] for key in ("max_tokens", "max_completion_tokens", "n_predict")
-                      if type(value.get(key)) is int and value[key] > 0), pool)
         return min(pool, tokens + media * MEDIA_CELLS + limit + MARGIN_CELLS)
 
-    def _preempt(self) -> None:
-        """A character request started: an Agent request still reading its
-        prompt steps aside (llama-server cancels it within a second, keeping
-        what it read in the slot's cache)."""
-        with self._reading_lock:
-            if self._reading is not None and self._reading.sock is not None:
-                self._preempted = True
-                try:
-                    self._reading.sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
 
-    def _agent_response(self, path: str, value: dict[str, object]) -> http.client.HTTPResponse:
-        """The Agent's upstream response, once its first token is out; while
-        the prompt is read a character request may preempt it, and it is
-        sent again after the character (the cached part is not read twice)."""
+    def _preempt(self) -> bool:
+        """A character request started: an Agent request still reading its
+        prompt steps aside (llama-server keeps what it read in the slot's
+        cache). True if one did."""
+        with self._reading_lock:
+            if self._reading is None:
+                return False
+            self._preempted = True
+            try:
+                self._reading.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            return True
+
+    @staticmethod
+    def _generated(line: bytes) -> bool:
+        """A streamed line that carries generated output, the end or an error
+        (llama-server sends its headers, an empty first chunk and pings
+        before the prompt is read)."""
+        if not line.startswith(b"data: "):
+            return False
+        try:
+            chunk = json.loads(line[6:])
+        except ValueError:
+            return True  # [DONE] or anything unexpected: stop holding back
+        if not isinstance(chunk, dict) or "error" in chunk or "timings" in chunk:
+            return True
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") or {}
+            if choice.get("finish_reason") or any(delta.get(key) for key in ("content", "reasoning_content", "tool_calls")):
+                return True
+        return False
+
+    def _agent_response(self, path: str, value: dict[str, object]) -> tuple[http.client.HTTPResponse, list[bytes]]:
+        """The Agent's upstream response and the lines read until its first
+        generated token. Until then a character request may preempt it
+        (nothing has reached the client): it is sent again after the
+        character, and the prompt already read stays cached."""
         upstream = urllib.parse.urlsplit(self.upstream_url)
         body = json.dumps(value).encode("utf-8")
         deadline = time.monotonic() + VOICE_FIRST_SECONDS
         while True:
             connection = http.client.HTTPConnection(upstream.hostname, upstream.port, timeout=1800)
             preemptable = bool(self.access.pool) and value.get("stream") is True and time.monotonic() < deadline
-            with self._reading_lock:
-                self._reading, self._preempted = (connection if preemptable else None), False
             try:
+                connection.connect()
+                with self._reading_lock:
+                    # The socket itself: http.client drops the connection's reference once a response owns it.
+                    self._reading, self._preempted = (connection.sock if preemptable else None), False
                 connection.request("POST", path, body=body, headers={"Content-Type": "application/json"})
-                return connection.getresponse()
+                response = connection.getresponse()
+                held: list[bytes] = []
+                if response.status < 400 and preemptable:
+                    for line in response:
+                        held.append(line)
+                        if self._generated(line):
+                            break
+                    else:
+                        with self._reading_lock:
+                            preempted = self._preempted
+                        if preempted:
+                            raise ConnectionAbortedError("preempted")
+                return response, held
             except (OSError, http.client.HTTPException):
                 with self._reading_lock:
                     preempted = self._preempted
@@ -322,7 +388,7 @@ class InferenceGateway:
         started = False
         try:
             value = self._prepare(payload, agent)
-            with self.access.generation(agent=agent, need=self._need(handler.path, value)) as evict:
+            with self.access.generation(agent=agent, need=self._need(handler.path, value, agent)) as evict:
                 if evict:
                     self._erase(evict)
                     self.access.evicted(evict)
@@ -331,13 +397,15 @@ class InferenceGateway:
                     # Another adapter in this slot: its cache means nothing now.
                     self._erase(lane)
                     self._identity[lane] = identity
+                held: list[bytes] = []
                 if agent:
-                    response = self._agent_response(handler.path, value)
+                    response, held = self._agent_response(handler.path, value)
                     if response.status >= 400:
                         raise urllib.error.HTTPError(handler.path, response.status, response.reason,
                                                      response.headers, response)
                 else:
-                    self._preempt()
+                    if self._preempt():
+                        time.sleep(PREEMPT_SETTLE_SECONDS)
                     response = urllib.request.urlopen(urllib.request.Request(
                         self.upstream_url + handler.path, data=json.dumps(value).encode("utf-8"),
                         headers={"Content-Type": "application/json"}, method="POST"), timeout=30)
@@ -350,7 +418,7 @@ class InferenceGateway:
                     handler.close_connection = True
                     started = True
                     cells = None
-                    for line in response:
+                    for line in itertools.chain(held, response):
                         handler.wfile.write(line)
                         handler.wfile.flush()
                         cells = self._cells(line) or cells

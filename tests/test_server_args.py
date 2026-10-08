@@ -100,7 +100,8 @@ def test_character_server_gets_two_slots_and_lora() -> None:
     assert _value_after(args, "--ctx-size") == "32768"
     assert _value_after(args, "--parallel") == "2"
     assert "--kv-unified" in args
-    # A long prompt yields to the other slot every micro-batch.
+    # Each slot keeps its cache while the other works; a long prompt yields every micro-batch.
+    assert "--no-cache-idle-slots" in args
     assert _value_after(args, "--batch-size") == "512"
     assert _value_after(args, "--load-mode") == "mmap"
     assert _value_after(args, "--lazy-mode") == "on"

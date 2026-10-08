@@ -12,11 +12,15 @@ once with the character's own adapter (two adapters, as shipped now) and once
 with one adapter for both (as a joint adapter would run). Prints one JSON
 object per measurement and a summary line.
 
-    .venv\\Scripts\\python.exe tests\\lanes_check.py
+    .venv\\Scripts\\python.exe tests\\lanes_check.py --install <the deployed EdgeAgent folder>
+
+--install is the folder EdgeAgent is deployed in (its config.json, models\\
+and llama-server); the check itself may run from another checkout.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -142,10 +146,19 @@ def main() -> int:
     for port in (CONTROL_PORT, 18089):
         if listening_pid(port) is not None:
             raise RuntimeError(f"port {port} is in use: stop EdgeAgent's service first")
-    owner = load_config(CORE_ROOT / "config.json")  # read only; the check runs in a temporary core
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--install", type=Path, default=CORE_ROOT, help="the deployed EdgeAgent folder")
+    install = parser.parse_args().install.resolve()
+    owner = load_config(install / "config.json")  # read only; the check runs in a temporary core
+    from edge_agent import load_plan, router
+
+    deployed = install / ".runtime/deployment.json"
+    if deployed.is_file():  # the install's own llama-server, for the router and its model
+        server = str((install / json.loads(deployed.read_text(encoding="utf-8"))["server"]).resolve())
+        load_plan.find_llama_server = router.find_llama_server = lambda: server
     with tempfile.TemporaryDirectory(prefix="edge-lanes-") as directory:
         core = EdgeAgent(Path(directory))
-        core.model_dir = CORE_ROOT / "models"
+        core.model_dir = (install / "models").resolve()
         core.chat.bridge.core_dir = CORE_ROOT
         keep = ("model", "lora", "context_size", "gpu_layers", "low_vram", "max_output_tokens", "working_context_size")
         core.config = {**core.config, **{k: owner[k] for k in keep if k in owner}}

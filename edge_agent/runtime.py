@@ -114,10 +114,14 @@ def build_server_args(
         str(target_slot_dir).replace("\\", "/"),
     ]
     if slots > 1:
-        # One pool for every slot; and one micro-batch per server step, so a
-        # long prompt yields to the other slot every 512 tokens (same prompt
-        # speed: 18.84 s against 18.78 s for 36K tokens, dev box).
-        args += ["--kv-unified", "--batch-size", "512"]
+        # One pool for every slot (edge_agent.inference counts it); each slot
+        # keeps its cache while the other works (by default a pooled server
+        # clears every idle slot when any slot starts, so the character re-read
+        # its whole prompt after each Agent step: 1,180 tokens instead of 35);
+        # and one micro-batch per server step, so a long prompt yields to the
+        # other slot every 512 tokens (same prompt speed: 18.84 s against
+        # 18.78 s for 36K tokens, dev box).
+        args += ["--kv-unified", "--no-cache-idle-slots", "--batch-size", "512"]
     if gpu_layers == -1:
         # Upstream owns device-memory fitting. Explicit context plus fit-ctx
         # preserves the chosen window while weights can move to CPU.

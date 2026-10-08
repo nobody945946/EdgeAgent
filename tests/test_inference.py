@@ -144,7 +144,7 @@ def gateway_servers():
             if self.path == "/apply-template":
                 self.send_response(200)
                 self.end_headers()
-                self.wfile.write(json.dumps({"prompt": "x" * payload.get("fixture_tokens", 100)}).encode())
+                self.wfile.write(json.dumps({"prompt": "".join(m["content"] for m in payload["messages"])}).encode())
             elif self.path == "/tokenize":
                 self.send_response(200)
                 self.end_headers()
@@ -152,10 +152,14 @@ def gateway_servers():
             elif payload.get("fixture_prefill") and not prefilled:
                 # A long prompt: nothing comes back until it is read, unless the client leaves.
                 prefilled.append(self.path)
-                time.sleep(1.5)
                 try:
                     self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
                     self.end_headers()
+                    self.wfile.write(b'data: {"choices":[{"delta":{"role":"assistant","content":null}}]}\n\n')
+                    self.wfile.flush()
+                    time.sleep(1.5)
+                    self.wfile.write(b'data: {"choices":[{"delta":{"content":"late"}}]}\n\n')
                 except OSError:
                     pass
             elif payload.get("fixture_overflow"):
@@ -170,7 +174,8 @@ def gateway_servers():
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream" if payload.get("stream") else "application/json")
                 self.end_headers()
-                timings = {"cache_n": 0, "prompt_n": payload.get("fixture_tokens", 100), "predicted_n": 7}
+                timings = {"cache_n": 0, "prompt_n": sum(len(m["content"]) for m in payload.get("messages", [])),
+                           "predicted_n": 7}
                 self.wfile.write(b'data: {"fixture":true}\n\ndata: [DONE]\n\n' if payload.get("stream")
                                  else json.dumps({"fixture": True, "timings": timings}).encode())
 
@@ -206,41 +211,50 @@ def post(url, payload, headers):
     return urllib.request.urlopen(request, timeout=3)
 
 
+def said(tokens):
+    """A request whose prompt is `tokens` tokens (one a character in the fixture)."""
+    return {"messages": [{"role": "user", "content": "x" * tokens}]}
+
+
 def test_http_lanes_keep_their_slots_adapters_and_counted_cells():
     with gateway_servers() as (gateway, url, requests):
         role = {"X-Character-Owner": str(os.getpid())}
         agent = {"Authorization": f"Bearer {gateway.access.agent_key}"}
-        with post(url, {"id_slot": 1, "lora": [{"id": 0, "scale": 1}], "max_tokens": 200}, role) as response:
+        line = {"lora": [{"id": 0, "scale": 1}], "max_tokens": 200}
+        with post(url, {**said(100), **line, "id_slot": 1}, role) as response:
             assert json.load(response)["fixture"] is True
         # The server's timings settle what the slot holds: 100 prompt + 7 generated.
         assert gateway.access.cells["character"] == 107
+        # Far from a full pool a byte bound counts (never less than the tokens), with no server round trip.
+        assert not any(path in ("/apply-template", "/tokenize") for path, _ in requests)
         with gateway.access.agent_turn():
             # The character keeps talking during a task.
-            with post(url, {"lora": [{"id": 0, "scale": 1}], "max_tokens": 200}, role) as response:
+            with post(url, {**said(100), **line}, role) as response:
                 assert response.status == 200
-            with post(url, {"stream": True, "lora": [{"id": 0, "scale": 1}], "max_tokens": 8192}, agent) as response:
+            with post(url, {**said(100), "stream": True, "max_tokens": 8192}, agent) as response:
                 assert list(response) == [b'data: {"fixture":true}\n', b'\n', b'data: [DONE]\n', b'\n']
-            # Counted before it runs: prompt 100 + 8192 output + margin.
-            assert gateway.access.cells["agent"] == 100 + 8192 + 256
+            assert gateway.access.cells["agent"] >= 100 + 8192 + 256
             with pytest.raises(urllib.error.HTTPError) as overflow:
-                post(url, {"fixture_overflow": True, "max_tokens": 200}, agent)
+                post(url, {**said(100), "fixture_overflow": True, "max_tokens": 200}, agent)
             assert overflow.value.code == 400
             assert json.load(overflow.value)["error"]["code"] == "context_length_exceeded"
-            # An Agent request that needs the character's cells erases them first.
+            # Near a full pool the server counts, and an Agent request that needs
+            # the character's cells erases them first.
             erased = sum(path == "/slots/0?action=erase&model=local" for path, _ in requests)
-            with post(url, {"fixture_tokens": 61500, "max_tokens": 4000}, agent) as response:
+            with post(url, {**said(61500), "max_tokens": 4000}, agent) as response:
                 assert response.status == 200
             assert sum(path == "/slots/0?action=erase&model=local" for path, _ in requests) == erased + 1
+            assert sum(path == "/tokenize" for path, _ in requests) == 1
             # The server says the Agent's cache holds 61,507: a short line still fits beside it,
-            with post(url, {"lora": [{"id": 0, "scale": 1}], "max_tokens": 200}, role) as response:
+            with post(url, {**said(100), **line}, role) as response:
                 assert response.status == 200
             # a longer prompt waits while the task holds the pool.
             with pytest.raises(urllib.error.HTTPError) as busy:
-                post(url, {"lora": [{"id": 0, "scale": 1}], "max_tokens": 200, "fixture_tokens": 4000}, role)
+                post(url, {**said(4000), **line}, role)
             assert busy.value.code == 423
             assert json.load(busy.value)["error"]["code"] == "inference_busy"
         # An Agent request that does not say how much it may generate is counted as the whole pool.
-        with gateway.access.agent_turn(), post(url, {}, agent):
+        with gateway.access.agent_turn(), post(url, said(10), agent):
             assert gateway.access.cells["agent"] == 65536
         generated = [value for path, value in requests if path == "/v1/chat/completions"]
         # The character's slot is 0 (filled first by the server), the Agent's 1.
@@ -264,10 +278,13 @@ def test_http_does_not_allow_a_character_to_take_the_agent_adapter():
         assert requests == []
 
 
-def test_an_agent_request_still_reading_its_prompt_lets_the_character_speak_first():
+def test_an_agent_request_still_reading_its_prompt_lets_the_character_speak_first(monkeypatch):
     """llama-server fills a batch slot by slot: a long prompt would hold back
     each of the character's tokens (19.6 s for a first token, dev box). The
     request steps aside and is sent again; its client sees one stream."""
+    import edge_agent.inference as inference
+
+    monkeypatch.setattr(inference, "PREEMPT_SETTLE_SECONDS", 0.1)
     with gateway_servers() as (gateway, url, requests):
         role = {"X-Character-Owner": str(os.getpid())}
         agent = {"Authorization": f"Bearer {gateway.access.agent_key}"}
@@ -275,14 +292,14 @@ def test_an_agent_request_still_reading_its_prompt_lets_the_character_speak_firs
 
         def task():
             with gateway.access.agent_turn():
-                with post(url, {"stream": True, "fixture_prefill": True, "max_tokens": 200}, agent) as response:
+                with post(url, {**said(100), "stream": True, "fixture_prefill": True, "max_tokens": 200}, agent) as response:
                     result["agent"] = list(response)
 
         thread = threading.Thread(target=task)
         thread.start()
         time.sleep(0.3)
         started = time.monotonic()
-        with post(url, {"lora": [{"id": 0, "scale": 1}], "max_tokens": 50}, role) as response:
+        with post(url, {**said(100), "lora": [{"id": 0, "scale": 1}], "max_tokens": 50}, role) as response:
             assert response.status == 200
         assert time.monotonic() - started < 1.0  # not behind the 1.5 s prompt
         thread.join(5)
