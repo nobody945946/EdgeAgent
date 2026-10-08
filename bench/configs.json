@@ -379,5 +379,48 @@
    "4096"
   ],
   "time_scale": 0.5
+ },
+ "e4b-laptop-ms3": {
+  "_note": "e4b-laptop-fw3 with machine-spirit-fw3: one adapter for the Agent and the machine spirit, trained on agent-fw3's rows and the character's chats, so the character can speak while the Agent works (two slots, one adapter); it ships only if it loses nothing to agent-fw3 here.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "machine-spirit-fw3.q8_0.gguf"
+ },
+ "e4b-laptop-ms3-high": {
+  "_note": "e4b-laptop-fw3-high with machine-spirit-fw3: one adapter for the Agent and the machine spirit, trained on agent-fw3's rows and the character's chats, so the character can speak while the Agent works (two slots, one adapter); it ships only if it loses nothing to agent-fw3 here.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "machine-spirit-fw3.q8_0.gguf"
+ },
+ "e4b-laptop-ms3-scen": {
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 5000,
+  "vram_slot_mib": 1200,
+  "search_tools": true,
+  "lora": "machine-spirit-fw3.q8_0.gguf",
+  "_note": "e4b-laptop-fw3-scen with machine-spirit-fw3: one adapter for the Agent and the machine spirit, trained on agent-fw3's rows and the character's chats, so the character can speak while the Agent works (two slots, one adapter); it ships only if it loses nothing to agent-fw3 here.",
+  "simulator": "teacher-38-sim"
  }
 }
