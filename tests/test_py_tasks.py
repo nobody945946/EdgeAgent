@@ -42,6 +42,15 @@ def test_a_task_is_read_from_its_sections_and_written_as_a_bench_task(tmp_path: 
     assert "None if i < n - 1" in (task_dir / "solution" / "ma.py").read_text(encoding="utf-8")
 
 
+def test_a_file_wrapped_in_a_code_fence_is_read_without_it() -> None:
+    fenced = ANSWER.replace("=== 測試：test_ma.py ===\n", "=== 測試：test_ma.py ===\n```python\n")
+    fenced = fenced.replace("[None, None, 6.0, 9.0]\n", "[None, None, 6.0, 9.0]\n```\n")
+    fenced = fenced.replace("=== 答案：ma.py ===\n", "=== 答案：ma.py ===\n```python\n")
+    task = py_tasks.parse_task(fenced)
+    assert task is not None and task["tests"] == py_tasks.parse_task(ANSWER)["tests"]
+    assert task["solution"]["ma.py"].startswith("def moving_average") and "```" not in task["solution"]["ma.py"]
+
+
 def test_a_cut_answer_or_a_path_outside_the_project_is_refused() -> None:
     assert py_tasks.parse_task(ANSWER.replace("=== 結束 ===\n", "")) is None
     task = py_tasks.parse_task(ANSWER.replace("=== 答案：ma.py ===", "=== 答案：../ma.py ==="))
@@ -70,3 +79,20 @@ def test_generate_starts_its_server_in_a_folder_that_exists(tmp_path, monkeypatc
     except SystemExit:
         pass
     assert seen["exists"] is True
+
+
+def test_new_tasks_are_numbered_after_every_number_used(tmp_path, monkeypatch) -> None:
+    """Rejected tasks leave gaps; a number taken from the count would overwrite a task that holds."""
+    from types import SimpleNamespace
+
+    (tmp_path / "eval" / "py-eval-002").mkdir(parents=True)
+    (tmp_path / "eval" / "py-eval-002" / "task.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "eval-rejected" / "py-eval-003").mkdir(parents=True)
+    monkeypatch.setattr(py_tasks, "OUT", tmp_path)
+    monkeypatch.setattr(py_tasks.run, "Server", lambda *a, **k: SimpleNamespace(port=0, parallel=1, close=lambda: None))
+    monkeypatch.setattr(py_tasks.run, "close_on_term", lambda server: None)
+    monkeypatch.setattr(py_tasks.cards, "ask", lambda port, prompt, max_tokens: ANSWER)
+    args = SimpleNamespace(config="teacher-38-iq3", split="eval", count=2, seed=0, port=0, parallel=1)
+    py_tasks.generate(args)
+    assert (tmp_path / "eval" / "py-eval-002" / "task.json").read_text(encoding="utf-8") == "{}"
+    assert (tmp_path / "eval" / "py-eval-004" / "task.json").is_file()
