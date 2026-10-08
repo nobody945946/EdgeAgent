@@ -130,11 +130,20 @@ def run(core: EdgeAgent, lease_lora: str, config: dict) -> dict[str, object]:
     result["during_prompt"] = beside(lambda: task(f"# a\n{code(1800)}\n用一句話總結這個檔案。", False, 30), 3, 5)
     # The whole window: a prompt the size of the pool less its output, while the character holds a cache.
     line(6)
-    # Sized by the server's own tokenizer: the pool less the output, the margin and the template.
-    per_line = len(core.router.request("/tokenize", {"content": code(100), "model": "local"})["tokens"]) / 100
-    lines = int((pool - 30 - 256 - 200) / per_line)
-    result["full_window"] = {"prompt_tokens_about": int(lines * per_line),
-                             **task(f"# b\n{code(lines)}\n用一句話總結這個檔案。", False, 30)}
+    # The pool less the output, the margin and the template, counted by the
+    # server's own tokenizer on the whole prompt (later lines have longer
+    # numbers, so a count of the first lines falls short: the dev box's dry
+    # run sent more than the pool and got 400).
+    budget = pool - 30 - 256 - 200
+
+    def count(text: str) -> int:
+        return len(core.router.request("/tokenize", {"content": text, "model": "local"})["tokens"])
+
+    per_line = count(code(100)) / 100
+    lines = int(budget / per_line)
+    while (tokens := count(prompt := f"# b\n{code(lines)}\n用一句話總結這個檔案。")) > budget:
+        lines -= int((tokens - budget) / per_line) + 1
+    result["full_window"] = {"prompt_tokens": tokens, **task(prompt, False, 30)}
     result["after_full_window"] = line(7)
     result["memory_after"] = {**gpu(), **process_memory()}
     return result
