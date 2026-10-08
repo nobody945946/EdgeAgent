@@ -43,6 +43,9 @@ STATE = ROOT / ".runtime/bench"
 IMAGE = "edgeagent-bench:1"
 TRAIN_IMAGE = "edgeagent-train:1"
 VRAM_EXIT = 3  # gave up waiting for free VRAM
+# The machine the product runs on, as edge_agent.hardware describes the
+# laptop: what the Agent states about itself, not the bench box it runs on.
+LAPTOP_HARDWARE = "NVIDIA GeForce RTX 3050 Ti Laptop GPU（4 GB 顯示記憶體）、8 GB RAM；模型有 41 層放在顯示卡，其餘在 CPU"
 CONVERSATION_TURNS = 2  # a scenario conversation may take two turns' budget in all
 REFIT_MIN = 30  # --fit-slots: minutes a run with fewer slots than asked keeps going
 SERVER = Path(os.environ.get(
@@ -441,6 +444,7 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
             # teacher recording rows for the product speaks as the product's model.
             **({"model": config["self_model"]} if config.get("self_model") else {}),
             "vision": config.get("vision", False), "prompt": task.get("prompt", ""),
+            "hardware": LAPTOP_HARDWARE,
             # A scenario (bench/scenario_cards.py) is a conversation with a simulated user.
             **({"scenario": task["scenario"]} if task.get("scenario") else {}),
             # Who asked (permissions.SCOPES): the owner's change or read task, or a public one.

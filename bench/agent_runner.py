@@ -122,6 +122,7 @@ def main() -> None:
     # with the character); the bench runs several jobs on one server, so the
     # server picks a free slot for each, as it did before the pinning.
     chat.slot_id = None
+    chat.hardware = spec.get("hardware", "")  # the laptop's, for the runtime section (products that have it)
     chat.configure_context(
         spec["context_size"],
         model=spec["model"],
