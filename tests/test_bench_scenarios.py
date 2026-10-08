@@ -193,24 +193,24 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
         name = f"train-C-{n:03d}"
         (task_root / name).mkdir(parents=True)
         (task_root / name / "task.json").write_text(json.dumps(
-            {"family": "C", "must": ["做完"], "must_not": ["反問"], "scenario": {"goal": f"目標{n}"}}))
+            {"family": "C", "must": ["做完"], "must_not": ["反問"], "scenario": {"goal": f"目標{n}"}}), encoding="utf-8")
         answer = f"答{n}。完整的結尾{n}。" if n < 4 else None
         trajectory = [{"role": "user", "content": "問"}, *(said(answer) if answer else [])]
-        (run_dir / "traj" / f"{name}-r0.json").write_text(json.dumps(trajectory, ensure_ascii=False))
+        (run_dir / "traj" / f"{name}-r0.json").write_text(json.dumps(trajectory, ensure_ascii=False), encoding="utf-8")
         rows.append({"task": name, "rep": 0, "kind": "scenario", "outcome": "done", "ended": "end",
                      "dialogue": [turn(answer or "")]})
-    (run_dir / "results.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows))
+    (run_dir / "results.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Judge)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
         server = SimpleNamespace(port=httpd.server_address[1], parallel=3)
         args = SimpleNamespace(run=run_dir, task_root=task_root, limit=30)
         scenario_judge.validate(args, server)
-        summary = json.loads((run_dir / "judge-validation.json").read_text())
+        summary = json.loads((run_dir / "judge-validation.json").read_text(encoding="utf-8"))
         assert summary == {"conversations": 4, "originals_accepted": 4, "corrupted_rejected": 8,
                            "corrupted": 8, "trusted": True}
         scenario_judge.judge(args, server)
-        verdicts = {v["job"]: v for v in map(json.loads, (run_dir / "verdicts.jsonl").read_text().splitlines())}
+        verdicts = {v["job"]: v for v in map(json.loads, (run_dir / "verdicts.jsonl").read_text(encoding="utf-8").splitlines())}
         assert len(verdicts) == 5
         assert all(verdicts[f"train-C-{n:03d}-r0"]["passed"] for n in range(4))
         assert len(verdicts["train-C-000-r0"]["judge"]) == 2
@@ -225,27 +225,27 @@ def test_results_of_a_changed_task_are_dropped_to_play_again(tmp_path: Path, mon
     tasks, run_dir = tmp_path / "tasks", tmp_path / "run"
     for name in ("a", "b", "c"):
         (tasks / name / "workspace").mkdir(parents=True)
-        (tasks / name / "task.json").write_text("{}")
+        (tasks / name / "task.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(run, "TASK_ROOT", tasks)
     digests = {name: run.task_digest(tasks / name) for name in ("a", "b")}
-    (tasks / "a" / "task.json").write_text('{"must": ["judged only"]}')  # judging changed: not re-played
+    (tasks / "a" / "task.json").write_text('{"must": ["judged only"]}', encoding="utf-8")  # judging changed: not re-played
     assert run.task_digest(tasks / "a") == digests["a"]
     rows = [{"task": "a", "rep": 0, "task_digest": digests["a"]},
             {"task": "b", "rep": 0, "task_digest": digests["b"]},
             {"task": "c", "rep": 0}]  # from before digests: kept
     (run_dir / "records" / "b-r0").mkdir(parents=True)
     (run_dir / "traj").mkdir()
-    (run_dir / "traj" / "b-r0.json").write_text("[]")
-    (run_dir / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
-    (run_dir / "verdicts.jsonl").write_text('{"job": "a-r0"}\n{"job": "b-r0"}\n')
+    (run_dir / "traj" / "b-r0.json").write_text("[]", encoding="utf-8")
+    (run_dir / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    (run_dir / "verdicts.jsonl").write_text('{"job": "a-r0"}\n{"job": "b-r0"}\n', encoding="utf-8")
     run.drop_superseded(run_dir)
-    assert len((run_dir / "results.jsonl").read_text().splitlines()) == 3
-    (tasks / "b" / "workspace" / "app.log").write_text("[ERROR] x")
+    assert len((run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()) == 3
+    (tasks / "b" / "workspace" / "app.log").write_text("[ERROR] x", encoding="utf-8")
     run.drop_superseded(run_dir)
-    left = [json.loads(line)["task"] for line in (run_dir / "results.jsonl").read_text().splitlines()]
+    left = [json.loads(line)["task"] for line in (run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()]
     assert left == ["a", "c"]
     assert not (run_dir / "records" / "b-r0").exists() and not (run_dir / "traj" / "b-r0.json").exists()
-    assert (run_dir / "verdicts.jsonl").read_text() == '{"job": "a-r0"}\n'
+    assert (run_dir / "verdicts.jsonl").read_text(encoding="utf-8") == '{"job": "a-r0"}\n'
 
 
 def test_one_family_is_written_by_several_workers_without_duplicate_ids(tmp_path: Path, monkeypatch) -> None:
@@ -266,7 +266,7 @@ def test_one_family_is_written_by_several_workers_without_duplicate_ids(tmp_path
     args = SimpleNamespace(config="teacher-38-iq3", split="train", per_family=6, families=["I"], seed=0,
                            port=0, parallel=4)
     scenario_cards.generate(args)
-    ids = [json.loads(line)["id"] for line in (tmp_path / "train-cards.jsonl").read_text().splitlines()]
+    ids = [json.loads(line)["id"] for line in (tmp_path / "train-cards.jsonl").read_text(encoding="utf-8").splitlines()]
     assert sorted(ids) == [f"train-I-{n:03d}" for n in range(1, 7)]
 
 
