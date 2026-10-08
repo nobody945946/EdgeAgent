@@ -36,6 +36,7 @@ sys.path.insert(0, str(ROOT))
 from edge_agent.runtime import build_server_args  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import laptop  # noqa: E402
 from mine_repo import REPOS  # noqa: E402
 
 BENCH = ROOT / "bench"
@@ -43,9 +44,6 @@ STATE = ROOT / ".runtime/bench"
 IMAGE = "edgeagent-bench:1"
 TRAIN_IMAGE = "edgeagent-train:1"
 VRAM_EXIT = 3  # gave up waiting for free VRAM
-# The machine the product runs on, as edge_agent.hardware describes the
-# laptop: what the Agent states about itself, not the bench box it runs on.
-LAPTOP_HARDWARE = "Windows、NVIDIA GeForce RTX 3050 Ti Laptop GPU（4 GB 顯示記憶體）、8 GB RAM；模型有 41 層放在顯示卡，其餘在 CPU"
 CONVERSATION_TURNS = 2  # a scenario conversation may take two turns' budget in all
 # What llama.cpp writes at the end of a thought the reasoning budget cut short
 # (a config with --reasoning-budget): 21% of teacher-cards-1024's thoughts
@@ -93,7 +91,9 @@ def code_mounts(bridge: Path | None = None,
               (BENCH / "relay.py", "/opt/bench/relay.py", "ro"),
               (BENCH / "agent_runner.py", "/opt/bench/agent_runner.py", "ro"),
               # Stand-in MCP servers (stock data, a drone) for tasks that enable them.
-              (BENCH / "mcp_eval", "/opt/bench/mcp", "ro")]
+              (BENCH / "mcp_eval", "/opt/bench/mcp", "ro"),
+              # The laptop's Windows commands (bench/laptop.py).
+              (BENCH / "windows", "/opt/bench/windows", "ro")]
     if bridge is not None:
         mounts.append((bridge, "/opt/edgeagent/edge_agent/agent_bridge.mjs", "ro"))
     return mounts
@@ -450,7 +450,9 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
             # teacher recording rows for the product speaks as the product's model.
             **({"model": config["self_model"]} if config.get("self_model") else {}),
             "vision": config.get("vision", False), "prompt": task.get("prompt", ""),
-            "hardware": LAPTOP_HARDWARE,
+            # The laptop, not the bench box: what the runtime section states, and
+            # what the Windows commands answer in the sandbox (bench/laptop.py).
+            "hardware": laptop.HARDWARE, "machine": laptop.machine(task_dir.name),
             # The APIs a scenario's owner registered (scenario_cards.py, family J), with made-up keys.
             "apis": task.get("apis", []),
             # A scenario (bench/scenario_cards.py) is a conversation with a simulated user.

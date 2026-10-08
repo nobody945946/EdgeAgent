@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""systeminfo as a Traditional Chinese Windows 11 laptop prints it (bench/laptop.py)."""
+import json
+import os
+import sys
+from datetime import datetime, timedelta
+
+try:
+    with open(os.environ.get("LAPTOP_FACTS", "/tmp/.laptop/machine.json"), encoding="utf-8") as handle:
+        m = json.load(handle)
+except OSError:
+    print("錯誤: 拒絕存取。")
+    sys.exit(1)
+boot = datetime.now() - timedelta(hours=m["os"]["uptime_hours"])
+total_mb, free_mb = m["memory"]["total_kb"] // 1024, m["memory"]["free_kb"] // 1024
+rows = [
+    ("主機名稱", m["computer"]), ("作業系統名稱", m["os"]["caption"]),
+    ("作業系統版本", f"{m['os']['version']} N/A 組建 {m['os']['build']}"), ("作業系統製造商", "Microsoft Corporation"),
+    ("作業系統設定", "獨立工作站"), ("作業系統組建類型", "Multiprocessor Free"), ("註冊的擁有者", m["user"]),
+    ("註冊的組織", "N/A"), ("產品識別碼", "00342-" + m["computer"][7:12] + "-AAOEM"),
+    ("原始安裝日期", (boot - timedelta(days=212)).strftime("%Y/%m/%d, %p %I:%M:%S").replace("AM", "上午").replace("PM", "下午")),
+    ("系統開機時間", boot.strftime("%Y/%m/%d, %p %I:%M:%S").replace("AM", "上午").replace("PM", "下午")),
+    ("系統製造商", m["system"]["maker"]), ("系統型號", m["system"]["model"]), ("系統類型", "x64-based PC"),
+    ("處理器", f"已安裝 1 個處理器。\n{'':27}[01]: {m['cpu']['identifier'].replace(',', '')} ~{m['cpu']['mhz']} Mhz"),
+    ("BIOS 版本", f"American Megatrends International, LLC. {m['system']['bios']}"),
+    ("Windows 目錄", "C:\\WINDOWS"), ("系統目錄", "C:\\WINDOWS\\system32"), ("開機裝置", "\\Device\\HarddiskVolume1"),
+    ("系統地區設定", "zh-tw;中文 (台灣)"), ("輸入法地區設定", "zh-tw;中文 (台灣)"), ("時區", "(UTC+08:00) 台北"),
+    ("實體記憶體總計", f"{total_mb:,} MB"), ("可用實體記憶體", f"{free_mb:,} MB"),
+    ("虛擬記憶體: 大小上限", f"{total_mb + 4096:,} MB"), ("虛擬記憶體: 可用", f"{free_mb + 1700:,} MB"),
+    ("虛擬記憶體: 使用中", f"{total_mb + 4096 - free_mb - 1700:,} MB"), ("頁面檔位置", "C:\\pagefile.sys"),
+    ("網域", "WORKGROUP"), ("登入伺服器", f"\\\\{m['computer']}"),
+    ("Hyper-V 需求", "已偵測到 Hypervisor。不會顯示 Hyper-V 所需的功能。"),
+]
+for name, value in rows:
+    label = name + ":"
+    # Padded to a column as a console shows it: a Chinese character takes two cells.
+    print(label + " " * (27 - sum(2 if ord(c) > 0x2E7F else 1 for c in label)) + value)

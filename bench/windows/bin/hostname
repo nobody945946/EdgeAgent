@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""hostname as the laptop answers it (bench/laptop.py)."""
+import json
+import os
+import sys
+
+try:
+    with open(os.environ.get("LAPTOP_FACTS", "/tmp/.laptop/machine.json"), encoding="utf-8") as handle:
+        print(json.load(handle)["computer"])
+except OSError:
+    sys.exit(1)

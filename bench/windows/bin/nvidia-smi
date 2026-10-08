@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""nvidia-smi as it answers on the laptop (bench/laptop.py): the table, -L,
+--query-gpu and --query-compute-apps with --format=csv[,noheader][,nounits]."""
+import json
+import os
+import sys
+from datetime import datetime
+
+try:
+    with open(os.environ.get("LAPTOP_FACTS", "/tmp/.laptop/machine.json"), encoding="utf-8") as handle:
+        m = json.load(handle)
+except OSError:
+    print("NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver. "
+          "Make sure that the latest NVIDIA driver is installed and running.")
+    sys.exit(9)
+gpu = m["gpu"]
+SERVER = f"C:\\Users\\{m['user']}\\EdgeAgent\\.runtime\\llama-b11193-cuda\\llama-server.exe"
+FIELDS = {  # field: (value, unit)
+    "index": ("0", ""), "name": (gpu["name"], ""), "gpu_name": (gpu["name"], ""),
+    "driver_version": (gpu["driver"], ""), "uuid": ("GPU-5f3c2a1e-8b7d-4c19-a2e6-" + m["computer"][-7:].lower() + "e1d", ""),
+    "pci.bus_id": ("00000000:01:00.0", ""), "pstate": ("P0" if gpu["utilization"] > 20 else "P8", ""),
+    "memory.total": (str(gpu["mib"]), "MiB"), "memory.used": (str(gpu["used_mib"]), "MiB"),
+    "memory.free": (str(gpu["mib"] - gpu["used_mib"] - 120), "MiB"), "memory.reserved": ("120", "MiB"),
+    "temperature.gpu": (str(gpu["temperature"]), ""), "utilization.gpu": (str(gpu["utilization"]), "%"),
+    "utilization.memory": (str(max(1, gpu["utilization"] // 2)), "%"), "power.draw": (f"{gpu['power_w']:.2f}", "W"),
+    "power.limit": ("[N/A]", ""), "fan.speed": ("[N/A]", ""), "compute_mode": ("Default", ""),
+    "clocks.gr": (str(1035 + gpu["utilization"] * 5), "MHz"), "clocks.mem": ("5500", "MHz"),
+    "display_active": ("Disabled", ""), "driver_model.current": ("WDDM", ""),
+}
+APPS = {"pid": (str(next(p["pid"] for p in m["processes"] if p["name"] == "llama-server.exe")), ""),
+        "process_name": (SERVER, ""), "name": (SERVER, ""), "used_memory": ("[N/A]", ""), "used_gpu_memory": ("[N/A]", "")}
+
+
+def query(spec: str, table: dict, options: set[str]) -> None:
+    names = [n.strip() for n in spec.split(",") if n.strip()]
+    unknown = [n for n in names if n not in table]
+    if unknown:
+        print(f'Field "{unknown[0]}" is not a valid field to query.\n')
+        sys.exit(2)
+    if "csv" not in options:
+        print('"--format" option must be used with "--query-*" options.')
+        sys.exit(2)
+    if "noheader" not in options:
+        print(", ".join(n + (f" [{table[n][1]}]" if table[n][1] and "nounits" not in options else "") for n in names))
+    print(", ".join(table[n][0] + (f" {table[n][1]}" if table[n][1] and "nounits" not in options
+                                   and not table[n][0].startswith("[") else "") for n in names))
+
+
+def default_table() -> None:
+    used, total = gpu["used_mib"], gpu["mib"]
+    print(datetime.now().strftime("%a %b %d %H:%M:%S %Y"))
+    print(f"""+-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI {gpu['driver']}                 Driver Version: {gpu['driver']}         CUDA Version: 12.7     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                  Driver-Model | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 3050 ...  WDDM  |   00000000:01:00.0 Off |                  N/A |
+| N/A   {gpu['temperature']}C    {FIELDS['pstate'][0]}             {gpu['power_w']:4.0f}W /   60W |    {used:5d}MiB /  {total}MiB |    {gpu['utilization']:3d}%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A    {APPS['pid'][0]:>7}    C   ...uda\\llama-server.exe                    N/A      |
++-----------------------------------------------------------------------------------------+""")
+
+
+args = sys.argv[1:]
+options: set[str] = set()
+for arg in args:
+    if arg.startswith("--format="):
+        options = {o.strip() for o in arg.split("=", 1)[1].split(",")}
+if not args:
+    default_table()
+elif args[0] in ("-L", "--list-gpus"):
+    print(f"GPU 0: {gpu['name']} (UUID: {FIELDS['uuid'][0]})")
+elif any(a.startswith("--query-gpu=") for a in args):
+    query(next(a for a in args if a.startswith("--query-gpu=")).split("=", 1)[1], FIELDS, options)
+elif any(a.startswith("--query-compute-apps=") for a in args):
+    query(next(a for a in args if a.startswith("--query-compute-apps=")).split("=", 1)[1], APPS, options)
+elif args[0] in ("-q", "--query"):
+    print(f"""==============NVSMI LOG==============
+
+Timestamp                                 : {datetime.now().strftime('%a %b %d %H:%M:%S %Y')}
+Driver Version                            : {gpu['driver']}
+CUDA Version                              : 12.7
+
+Attached GPUs                             : 1
+GPU 00000000:01:00.0
+    Product Name                          : {gpu['name']}
+    Product Architecture                  : Ampere
+    Driver Model
+        Current                           : WDDM
+    FB Memory Usage
+        Total                             : {gpu['mib']} MiB
+        Reserved                          : 120 MiB
+        Used                              : {gpu['used_mib']} MiB
+        Free                              : {gpu['mib'] - gpu['used_mib'] - 120} MiB
+    Utilization
+        Gpu                               : {gpu['utilization']} %
+    Temperature
+        GPU Current Temp                  : {gpu['temperature']} C
+        GPU Shutdown Temp                 : 101 C
+        GPU Slowdown Temp                 : 98 C
+    GPU Power Readings
+        Power Draw                        : {gpu['power_w']:.2f} W""")
+else:
+    print(f"Invalid combination of input arguments. Please run 'nvidia-smi -h' for help.")
+    sys.exit(2)

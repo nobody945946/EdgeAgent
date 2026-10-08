@@ -68,7 +68,7 @@ def chat(messages: list[dict], options: dict) -> dict:
 
 
 def main() -> None:
-    spec = json.loads(os.environ["BENCH_SPEC"])
+    spec = json.loads(os.environ.pop("BENCH_SPEC"))  # the agent's shell inherits the environment
     options = spec.get("mini") or {}
     relay = subprocess.Popen(
         [sys.executable, "/opt/bench/relay.py", "--listen", "tcp:127.0.0.1:18089",

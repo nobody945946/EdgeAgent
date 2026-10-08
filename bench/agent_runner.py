@@ -106,8 +106,31 @@ def simulate(card: dict, port: int, lines: list[str], answers: list[str], turns_
     return text.strip().strip("「」\"") or END
 
 
+LAPTOP = "/opt/bench/windows"  # bench/windows, mounted by run.py
+FACTS = Path("/tmp/.laptop/machine.json")  # bench/laptop.py FACTS
+
+
+def windows(machine: dict) -> None:
+    """The laptop for the Agent's shell (bench/laptop.py): its facts where
+    the module and scripts read them, the module on PSModulePath (PowerShell
+    loads it on the first Windows command), the scripts first on PATH, and the
+    environment Windows sets."""
+    FACTS.parent.mkdir(parents=True, exist_ok=True)
+    FACTS.write_text(json.dumps(machine, ensure_ascii=False), encoding="utf-8")
+    os.environ["PSModulePath"] = os.pathsep.join([LAPTOP, *filter(None, [os.environ.get("PSModulePath")])])
+    os.environ["PATH"] = f"{LAPTOP}/bin" + os.pathsep + os.environ["PATH"]
+    os.environ.update({"COMPUTERNAME": machine["computer"], "USERDOMAIN": machine["computer"],
+                       "USERNAME": machine["user"], "NUMBER_OF_PROCESSORS": str(machine["cpu"]["threads"]),
+                       "PROCESSOR_ARCHITECTURE": "AMD64", "PROCESSOR_IDENTIFIER": machine["cpu"]["identifier"],
+                       "OS": "Windows_NT"})
+
+
 def main() -> None:
-    spec = json.loads(os.environ["BENCH_SPEC"])
+    # Read once and taken out of the environment: the Agent's shell inherits
+    # it, and the spec holds the simulated user's script.
+    spec = json.loads(os.environ.pop("BENCH_SPEC"))
+    if spec.get("machine"):
+        windows(spec["machine"])
     if spec.get("search_tools"):
         # rg and fd for Pi's grep/find tools (inherited by the Node process).
         os.environ["PATH"] = "/opt/searchtools/bin" + os.pathsep + os.environ["PATH"]

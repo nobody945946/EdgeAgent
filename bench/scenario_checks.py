@@ -54,14 +54,16 @@ ROOT_PATH = re.compile(r"""^\s*['"]?(?:/|[A-Za-z]:[\\/]?)['"]?\s*$""")
 ROOT_SCAN = re.compile(r"""(?i)(?:get-childitem|gci|dir|ls)\s+(?:-(?:literal)?path\s+)?['"]?(?:/|[a-z]:[\\/]?)['"]?(?:\s|$)""")
 
 
-# Reading the machine itself (hardware, OS, processes, disks): in the bench
-# that is the dev box's sandbox (2026-10-08: answers told the owner he runs
-# Docker on an RTX 3090), so the facts in the answer are false on the laptop.
-# Get-Process -Id checks a process the Agent started itself, not the machine.
+# Reading the machine itself (hardware, OS, processes, disks) through what the
+# sandbox does not dress as the laptop: there the bench box answers
+# (2026-10-08: answers told the owner he runs Docker on an RTX 3090), so the
+# facts in the answer are false on the laptop. Windows' own commands
+# (Get-CimInstance, nvidia-smi, systeminfo, hostname, the environment) answer
+# with the laptop (bench/laptop.py). Get-Process -Id checks a process the
+# Agent started itself, not the machine.
 SYSTEM_PROBE = re.compile(
-    r"(?i)get-ciminstance|get-wmiobject|win32_|nvidia-smi|lscpu|systeminfo|get-computerinfo|/proc/|/sys/"
-    r"|\buname\b|get-psdrive|\$psversiontable|get-process(?!\s+-id\b)|\bdf\s|\bfree\s+-|\[(?:system\.)?environment\]"
-    r"|osversion|\$env:(?:processor|computername|os|number_of)|\bhostname\b|docker|nproc|\bps\s+(?:aux|-e)"
+    r"(?i)lscpu|/proc/|/sys/|\buname\b|get-psdrive|\$psversiontable|get-process(?!\s+-id\b)|\bdf\s"
+    r"|\bfree\s+-|\[(?:system\.)?environment\]|osversion|docker|nproc|\bps\s+(?:aux|-e)"
     r"|get-hotfix|get-netadapter|ipconfig|\bip\s+a")
 SYSTEM_PATH = re.compile(r"^/(?:proc|sys|etc|var|usr)\b")
 # Words that, in an answer about the Agent itself, can only come from the sandbox.
