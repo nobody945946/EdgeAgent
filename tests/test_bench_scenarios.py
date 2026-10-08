@@ -333,3 +333,28 @@ def test_cards_naming_v1_tools_or_asking_for_jargon_are_retired(tmp_path, monkey
     (tmp_path / "train-cards.jsonl").write_text("".join(json.dumps(c, ensure_ascii=False) + "\n" for c in (good, bad)))
     scenario_cards.recheck(type("Args", (), {"split": "train"})())
     assert [json.loads(line)["id"] for line in (tmp_path / "train-cards.jsonl").read_text().splitlines()] == ["train-B-001"]
+
+
+def test_the_pair_judge_counts_a_line_only_when_it_wins_both_ways_round(monkeypatch):
+    import pair_judge
+
+    answers = iter(["A", "B", "A", "A", "B", "tie"])
+    monkeypatch.setattr(pair_judge, "ask", lambda port, chat, a, b: next(answers))
+    # A then (swapped) B: the same line both times.
+    assert pair_judge.verdict(0, "chat", "x", "y") == "A"
+    # A both times: it followed the position, not the line.
+    assert pair_judge.verdict(0, "chat", "x", "y") == "tie"
+    assert pair_judge.verdict(0, "chat", "x", "y") == "tie"
+
+
+def test_the_pair_judge_proves_itself_on_broken_lines():
+    import random
+
+    import pair_judge
+
+    pairs = [{"n": 1, "chat": "甲", "A": "今天打得不錯喔真的", "B": "b1"},
+             {"n": 2, "chat": "乙", "A": "短", "B": "b2"}]
+    trials = pair_judge.broken(pairs, random.Random(1))
+    assert ("甲", "今天打得不錯喔真的", "b2", "another chat's line") in trials
+    assert ("甲", "今天打得不錯喔真的", "今天打得", "cut short") in trials
+    assert all(intact != bad for _, intact, bad, _ in trials)
