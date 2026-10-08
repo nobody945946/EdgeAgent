@@ -75,8 +75,9 @@ def plan_load(
     # EdgeAgent owns the server: one pool of context (its setting, up to
     # the model's own limit) that every slot draws from, placed on the
     # GPU and CPU by --fit. A lease supplies the model and adapter for
-    # both clients. One slot is lent to the idle character; an Agent task
-    # owns the full window. Standalone preferences remain in config.
+    # both clients and adds the character's slot to the same pool; the
+    # Agent's window stays the whole pool (edge_agent.inference counts
+    # the cells). Standalone preferences remain in config.
     context_size = int(config["context_size"])
     limit = metadata["context_length"]
     if isinstance(limit, int) and limit > 0:

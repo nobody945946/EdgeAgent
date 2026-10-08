@@ -191,8 +191,8 @@ class EdgeAgent:
             "mode": self.mode,
             "ready": ready,
             "port": CONTROL_PORT,
-            "inference_policy": "agent_priority_idle_borrow",
-            "inference_slots": 1,
+            "inference_policy": "two_lanes_voice_first",
+            "inference_slots": 2 if self.inference.access.pool else 1,
             "url": f"http://127.0.0.1:{CONTROL_PORT}/",
             "model_url": f"http://127.0.0.1:{CONTROL_PORT}",
             "owner_pid": self.owner_pid,
@@ -286,7 +286,6 @@ class EdgeAgent:
     ) -> None:
         plan = plan_load(mode, self.config, character, self.model_dir, self.router.port)
         agent_context = plan.allocation.agent
-        agent_slot = 0
         self.router.load(plan.args)
         self.mode = mode
         self.capabilities = self.router.capabilities(plan.context_size)
@@ -296,7 +295,6 @@ class EdgeAgent:
         self.active_character_lora = (
             plan.character_lora.name if plan.character_lora else ""
         )
-        self.agent_slot = agent_slot
         self.owner_pid = owner_pid if mode == "character" else None
         self.owner_dead_since = None
         self.handoff_until = 0.0
@@ -309,9 +307,11 @@ class EdgeAgent:
             hardware.describe(int(self.config["gpu_layers"])),
         )
         self.chat.api_session = apis.for_session(self.config["apis"])
-        self.chat.slot_id = agent_slot
         self.chat.lora_id = plan.loras.index(plan.agent_lora) if plan.agent_lora else None
-        self.inference.configure(self.owner_pid, len(plan.loras), self.chat.lora_id)
+        # Two slots in one pool when a character is leased (edge_agent.inference).
+        self.inference.configure(self.owner_pid, len(plan.loras), self.chat.lora_id,
+                                 plan.allocation.total if plan.allocation.slots > 1 else 0)
+        self.agent_slot = self.chat.slot_id = self.inference.slots["agent"]
 
     def _stop_child(self) -> None:
         self.active_model = ""

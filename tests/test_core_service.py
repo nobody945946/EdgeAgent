@@ -120,8 +120,9 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
     model_limit,
 ):
     """One pool for both clients: EdgeAgent's own size (up to the model's
-    limit), borrowed serially without reducing the Agent window. The server
-    is placed by EdgeAgent (--fit), mapped from disk, its cache bounded.
+    limit), two slots drawing from it (kv-unified) without reducing the Agent
+    window. The server is placed by EdgeAgent (--fit), mapped from disk, its
+    cache bounded.
     The character's adapter is the lease's (index 0); the Agent keeps its own
     when its model is the leased one, and each request names only its own."""
     manager = core.EdgeAgent(tmp_path)
@@ -144,13 +145,14 @@ def test_character_lease_shares_model_and_adapter_then_restores_preferences(
         {"model": leased_model, "lora": leased_lora, "port": 18088, "context_size": 32768},
     )
     preset = (tmp_path / ".runtime/models.ini").read_text()
-    assert "parallel = 1" in preset
-    assert "kv-unified" not in preset
+    assert "parallel = 2" in preset
+    assert "kv-unified = true" in preset
     assert f"ctx-size = {pool}" in preset
     for line in ("load-mode = mmap", "lazy-mode = on", "cache-ram = 256",
                  "ctx-checkpoints = 2", "n-gpu-layers = auto", "fit = on"):
         assert line in preset
-    assert manager.agent_slot == manager.chat.slot_id == 0
+    # The character's slot is 0 (llama-server fills it first), the Agent's 1.
+    assert manager.agent_slot == manager.chat.slot_id == 1
     assert manager.chat.context_size == status["context_size"] == agent_window
     agent = standalone_lora if same_base else ""
     loaded = list(dict.fromkeys(name for name in (leased_lora, agent) if name))
@@ -196,10 +198,11 @@ def test_a_small_pool_bounds_the_lease_and_keeps_the_agent(tmp_path, monkeypatch
         {"model": "base.gguf", "lora": "", "port": 18088, "context_size": 32768},
     )
     preset = (tmp_path / ".runtime/models.ini").read_text()
-    assert "parallel = 1" in preset and "ctx-size = 16384" in preset
-    assert "kv-unified" not in preset
-    assert manager.agent_slot == 0
+    assert "parallel = 2" in preset and "ctx-size = 16384" in preset
+    assert "kv-unified = true" in preset
+    assert manager.agent_slot == 1
     assert manager.status()["context_size"] == 16384
+    assert manager.inference.access.pool == 16384
 
 
 def test_busy_stream_cannot_switch_models_but_does_not_hold_service_lock(tmp_path):
