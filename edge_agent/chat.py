@@ -53,8 +53,10 @@ class NativeChat:
         self.model = ""
         self.slot_id: int | None = 0
         # List the enabled MCP servers in the system prompt, so a small model
-        # knows tool_search has something to find (measured by the bench mcp-* tasks).
+        # knows what they are for (measured by the bench mcp-* tasks).
         self.mcp_overview = True
+        # The APIs the Agent is told about and the keys its shell gets (edge_agent.apis.for_session).
+        self.api_session: tuple[list[dict[str, str]], dict[str, str]] = ([], {})
         # The index of the Agent's adapter on the server (None: no adapter).
         self.lora_id: int | None = None
         self.hardware = ""
@@ -180,6 +182,7 @@ class NativeChat:
             tuple(sorted(permissions.items())),
             json.dumps(mcp_servers, sort_keys=True),
             self.hardware,
+            json.dumps(self.api_session, sort_keys=True),
         )
         if self.bridge.key == key and self.bridge.alive():
             return
@@ -194,6 +197,9 @@ class NativeChat:
                 "model": "local",
                 "model_name": self.model,
                 "hardware": self.hardware,
+                "apis": self.api_session[0],
+                # Keys go to the shell's environment and are masked in tool output, never to the model.
+                "api_env": self.api_session[1],
                 "slot_id": self.slot_id,
                 "mcp_overview": self.mcp_overview,
                 "lora_id": self.lora_id,

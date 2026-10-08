@@ -79,6 +79,11 @@ const ownTools = publicOnly ? [...webTools, ...(init.python ? ['translate_machin
     : [...FILE_TOOLS, 'edit', 'write', 'powershell']) : []),
   'search_history', ...(init.agent && init.python ? ['translate_machine'] : []), ...webTools];
 if (init.python) usePython(init.python);  // web_fetch reads PDFs with the product's own reader
+// API keys (edge_agent/apis.py) reach the shell's environment, never the
+// model; any tool output that shows one is masked.
+const apiEnv = init.api_env ?? {};
+const secrets = Object.values(apiEnv).filter(value => typeof value === 'string' && value.length >= 6);
+const mask = text => secrets.reduce((out, secret) => out.split(secret).join('***'), String(text));
 // Files whose changes need a passing check before the work counts as done.
 const CODE_FILE = /\.(py|pyw|js|mjs|cjs|ts|tsx|jsx|ps1|psm1|psd1|cs|java|go|rs|c|cc|cpp|h|hpp|rb|php|sql|sh|bat|cmd|json|toml|ya?ml|ini|cfg|csproj|xml)$/i;
 const TEST_COMMAND = /\b(pytest|unittest|npm( run)? test|pnpm test|yarn test|cargo test|go test|dotnet test|Invoke-Pester|node --test)\b/i;
@@ -153,8 +158,8 @@ function policy(pi) {
           + 'online say; forum posts are then included and marked as opinions' })) }),
       async execute(_id, params, signal) {
         const first = researched.reduce((top, item) => Math.max(top, item.n), 0) + 1;
-        return { content: [{ type: 'text', text: await webResearch(params.question, params.queries ?? [], signal,
-          { opinions: params.opinions === true, first, found: researched }) }], details: {} };
+        return { content: [{ type: 'text', text: mask(await webResearch(params.question, params.queries ?? [], signal,
+          { opinions: params.opinions === true, first, found: researched })) }], details: {} };
       },
     });
     pi.registerTool({ name: 'web_fetch', label: 'Read web page',
@@ -164,7 +169,7 @@ function policy(pi) {
       parameters: Type.Object({ url: Type.String({ minLength: 8, maxLength: 2000 }),
         max_chars: Type.Optional(Type.Integer({ minimum: 500, maximum: 40000 })) }),
       async execute(_id, params, signal) {
-        return { content: [{ type: 'text', text: await webFetch(params.url, params.max_chars ?? 12000, signal) }], details: {} };
+        return { content: [{ type: 'text', text: mask(await webFetch(params.url, params.max_chars ?? 12000, signal)) }], details: {} };
       },
     });
   }
@@ -412,14 +417,15 @@ const localShell = createLocalPowerShellOperations();
 const shell = createPowerShellToolDefinition(root, { operations: {
   async exec(command, cwd, options) {
     let tail = Buffer.alloc(0), total = 0;
-    const result = await localShell.exec(command, cwd, { ...options, onData(chunk) {
+    const result = await localShell.exec(command, cwd, { ...options,
+      env: { ...(options.env ?? process.env), ...apiEnv }, onData(chunk) {
       total += chunk.length;
       tail = Buffer.concat([tail, chunk]);
       if (tail.length > 65536) tail = tail.subarray(tail.length - 65536);
     }});
     const clipped = truncateTail(tail.toString('utf8'), { maxBytes: 44000, maxLines: 1800 });
     const omitted = total > tail.length || clipped.truncated;
-    options.onData(Buffer.from((omitted ? '[Earlier output omitted; retained in RAM only]\n' : '') + clipped.content));
+    options.onData(Buffer.from((omitted ? '[Earlier output omitted; retained in RAM only]\n' : '') + mask(clipped.content)));
     return result;
   },
 }});

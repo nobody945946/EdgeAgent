@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from edge_agent.apis import RECOMMENDED, validate_apis
 from edge_agent.mcp import validate_mcp_servers
 from edge_agent.models import model_filename
 from edge_agent.modes import THINKING_PROFILES
@@ -32,6 +33,8 @@ DEFAULT_CONFIG: dict[str, object] = {
     "permissions": DEFAULT_PERMISSIONS,
     # MCP servers the owner added (edge_agent/mcp.py); none by default.
     "mcp_servers": {},
+    # APIs the Agent may use (edge_agent/apis.py); keys are kept apart.
+    "apis": [dict(api) for api in RECOMMENDED],
     # Sessions kept in the user's selected records folder (records.py).
     "record_sessions": False,
     "record_folder": "",
@@ -99,6 +102,7 @@ def validated_config(value: dict[str, object]) -> dict[str, object]:
         **merged,
         "permissions": validate_permissions(merged["permissions"]),
         "mcp_servers": validate_mcp_servers(merged["mcp_servers"]),
+        "apis": validate_apis(merged["apis"]),
         "record_sessions": _flag(merged, "record_sessions"),
         "record_folder": _folder(merged, "record_folder"),
     }

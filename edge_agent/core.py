@@ -7,7 +7,7 @@ import threading
 import time
 from pathlib import Path
 
-from edge_agent import hardware
+from edge_agent import apis, hardware
 from edge_agent.chat import NativeChat
 from edge_agent.config import MODEL_SETTINGS, load_config, save_config, validated_config
 from edge_agent.inference import InferenceGateway
@@ -73,7 +73,17 @@ class EdgeAgent:
 
     def _save_config(self, value: dict[str, object]) -> dict[str, object]:
         self.config = save_config(self.config_path, value)
+        self.chat.api_session = apis.for_session(self.config["apis"])
         return dict(self.config)
+
+    def set_api_key(self, api_id: str, key: str) -> dict[str, bool]:
+        """Store an API's key (edge_agent.apis); the Agent's next session gets it."""
+        with self.lock:
+            if api_id not in {api["id"] for api in self.config["apis"]}:
+                raise ValueError(f"no registered api {api_id!r}")
+            apis.set_key(api_id, key)
+            self.chat.api_session = apis.for_session(self.config["apis"])
+            return apis.has_key(self.config["apis"])
 
     def models_status(self) -> dict[str, object]:
         # Capture completion before scanning; a download finishing mid-scan
@@ -298,6 +308,7 @@ class EdgeAgent:
             int(self.config["working_context_size"]),
             hardware.describe(int(self.config["gpu_layers"])),
         )
+        self.chat.api_session = apis.for_session(self.config["apis"])
         self.chat.slot_id = agent_slot
         self.chat.lora_id = plan.loras.index(plan.agent_lora) if plan.agent_lora else None
         self.inference.configure(self.owner_pid, len(plan.loras), self.chat.lora_id)
