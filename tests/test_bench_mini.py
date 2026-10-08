@@ -14,7 +14,7 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the mini harnes
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
 
-import mini_runner  # noqa: E402
+import mini_runner
 
 
 def test_short_output_is_tojson_with_html_escapes(tmp_path: Path) -> None:

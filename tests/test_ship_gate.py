@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
 
-import ship_gate  # noqa: E402
+import ship_gate
 
 
 def runs(root: Path, tag: str, passed: dict[str, list[bool]], crash: str | None = None) -> None:

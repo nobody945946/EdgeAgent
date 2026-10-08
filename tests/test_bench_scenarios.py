@@ -11,9 +11,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
 
-import scenario_cards  # noqa: E402
-import scenario_checks  # noqa: E402
-import scenario_judge  # noqa: E402
+import scenario_cards
+import scenario_checks
+import scenario_judge
 
 
 def turn(answer: str, calls: list[dict] | None = None, outcome: str = "done") -> dict:
@@ -176,7 +176,7 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
             card = re.search(r"目標(\d+)", prompt).group(1)
             last = ([line for line in prompt.splitlines() if line.startswith("助理：")] or [""])[-1]
             ok = f"完整的結尾{card}" in last
-            items = [{"id": key, "pass": ok, "evidence": "無"} for key in re.findall(r"^([MN]\d+)\. ", prompt, re.M)]
+            items = [{"id": key, "pass": ok, "evidence": "無"} for key in re.findall(r"^([MN]\d+)\. ", prompt, re.MULTILINE)]
             body = json.dumps({"choices": [{"message": {"content": json.dumps({"items": items})}}]}).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))

@@ -62,7 +62,7 @@ def process_memory() -> dict[str, float]:
               "'{0} {1} {2}' -f [double]$d, [double]$s, $m")
     try:
         out = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True,
-                             timeout=120).stdout.split()
+                             timeout=120, check=False).stdout.split()
     except (OSError, subprocess.TimeoutExpired):
         return {}
     if len(out) != 3:
@@ -122,7 +122,7 @@ def run(core: EdgeAgent, lease_lora: str, config: dict) -> dict[str, object]:
         thread.join()
         return out
 
-    decode = lambda: task("請詳細解釋快速排序的每一步，越長越好。", True, 1500)  # noqa: E731
+    decode = lambda: task("請詳細解釋快速排序的每一步，越長越好。", True, 1500)
     line(0)
     result["memory"] = {**gpu(), **process_memory()}
     result["alone"] = [line(i) for i in (1, 2, 3)]

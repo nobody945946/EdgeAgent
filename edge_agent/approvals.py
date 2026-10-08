@@ -8,7 +8,12 @@ from pathlib import Path
 
 from edge_agent import undo
 from edge_agent.lingua import powershell as lingua_powershell
-from edge_agent.permissions import REVERSIBLE, reversible_edit, reversible_shell, routine_shell
+from edge_agent.permissions import (
+    REVERSIBLE,
+    reversible_edit,
+    reversible_shell,
+    routine_shell,
+)
 
 
 def explain_approval(details: dict, cwd: Path) -> dict[str, str]:

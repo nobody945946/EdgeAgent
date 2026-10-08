@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
 
-import scenario_cards  # noqa: E402
-import scenario_exports  # noqa: E402
+import scenario_cards
+import scenario_exports
 
 EXPORT = """﻿EdgeAgent 對話紀錄
 匯出時間：2026/10/8 上午9:25:50

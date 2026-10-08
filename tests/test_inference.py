@@ -51,9 +51,9 @@ def test_the_character_speaks_while_the_agent_works():
         with access.generation(agent=False, need=4000):
             pass
     # One character request at a time.
-    with access.generation(agent=False, need=4000):
-        with pytest.raises(InferenceBusy), access.generation(agent=False, need=10):
-            pass
+    with access.generation(agent=False, need=4000), pytest.raises(InferenceBusy), \
+            access.generation(agent=False, need=10):
+        pass
 
 
 def test_a_new_agent_request_lets_the_character_finish_speaking(monkeypatch):
@@ -81,11 +81,11 @@ def test_a_new_agent_request_lets_the_character_finish_speaking(monkeypatch):
     a.join(2)
     c.join(2)
     # A character that keeps speaking past the deadline: the Agent runs beside it.
-    import edge_agent.inference as inference
+    from edge_agent import inference
     monkeypatch.setattr(inference, "VOICE_FIRST_SECONDS", 0.2)
-    with access.generation(agent=False, need=4000):
-        with access.agent_turn(), access.generation(agent=True, need=20000) as evict:
-            assert evict is None
+    with access.generation(agent=False, need=4000), access.agent_turn(), \
+            access.generation(agent=True, need=20000) as evict:
+        assert evict is None
 
 
 def test_the_agent_always_gets_the_whole_pool():
@@ -282,7 +282,7 @@ def test_an_agent_request_still_reading_its_prompt_lets_the_character_speak_firs
     """llama-server fills a batch slot by slot: a long prompt would hold back
     each of the character's tokens (19.6 s for a first token, dev box). The
     request steps aside and is sent again; its client sees one stream."""
-    import edge_agent.inference as inference
+    from edge_agent import inference
 
     monkeypatch.setattr(inference, "PREEMPT_SETTLE_SECONDS", 0.1)
     with gateway_servers() as (gateway, url, requests):
@@ -291,9 +291,9 @@ def test_an_agent_request_still_reading_its_prompt_lets_the_character_speak_firs
         result = {}
 
         def task():
-            with gateway.access.agent_turn():
-                with post(url, {**said(100), "stream": True, "fixture_prefill": True, "max_tokens": 200}, agent) as response:
-                    result["agent"] = list(response)
+            with gateway.access.agent_turn(), \
+                    post(url, {**said(100), "stream": True, "fixture_prefill": True, "max_tokens": 200}, agent) as response:
+                result["agent"] = list(response)
 
         thread = threading.Thread(target=task)
         thread.start()

@@ -76,8 +76,8 @@ NODE_SHA = "2b0ff57b049cda1bbcea2240eec20467018713c1efe1f7360c2681859b90ed71"
 # writes Chinese in the ANSI code page (laptop 2026-10-07: no PowerShell 7).
 POWERSHELL_VERSION = "7.6.6"
 POWERSHELL = (
-    "https://github.com/PowerShell/PowerShell/releases/download/"
-    f"v{POWERSHELL_VERSION}/PowerShell-{POWERSHELL_VERSION}-win-x64.zip",
+    ("https://github.com/PowerShell/PowerShell/releases/download/"
+    f"v{POWERSHELL_VERSION}/PowerShell-{POWERSHELL_VERSION}-win-x64.zip"),
     "02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c860",
 )
 SEARCH_TOOLS = {
