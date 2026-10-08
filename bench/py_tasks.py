@@ -150,6 +150,7 @@ def generate(args: argparse.Namespace) -> None:
     topics = topics_for(args.split)
     lock = threading.Lock()
     counter = {"have": have, "started": 0}
+    (OUT / f"server-{args.split}").mkdir(parents=True, exist_ok=True)
     server = run.Server(config, OUT / f"server-{args.split}", args.parallel, args.port, fit_slots=True)
     run.close_on_term(server)
 

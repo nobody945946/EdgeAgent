@@ -50,3 +50,23 @@ def test_a_cut_answer_or_a_path_outside_the_project_is_refused() -> None:
 
 def test_eval_topics_are_never_training_topics() -> None:
     assert not set(py_tasks.topics_for("eval")) & set(py_tasks.topics_for("train"))
+
+
+def test_generate_starts_its_server_in_a_folder_that_exists(tmp_path, monkeypatch) -> None:
+    """2026-10-08: the server's log folder was never made and the step failed three times."""
+    from types import SimpleNamespace
+
+    seen = {}
+
+    def server(config, run_dir, parallel, port, fit_slots=False):
+        seen["exists"] = run_dir.is_dir()
+        raise SystemExit("stop here")
+
+    monkeypatch.setattr(py_tasks, "OUT", tmp_path)
+    monkeypatch.setattr(py_tasks.run, "Server", server)
+    args = SimpleNamespace(config="teacher-38-iq3", split="eval", count=1, seed=0, port=0, parallel=1)
+    try:
+        py_tasks.generate(args)
+    except SystemExit:
+        pass
+    assert seen["exists"] is True
