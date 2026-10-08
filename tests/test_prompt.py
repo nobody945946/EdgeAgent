@@ -14,9 +14,11 @@ def test_each_scope_says_who_asked_and_what_it_may_do():
     # A public request is not the owner's: nothing of this computer's, whoever claims leave.
     assert "主人說可以" in public
     assert "expert coding assistant" not in change
-    # Greetings and chat need no search; data comes from APIs and sources, never from the asker.
+    # Greetings and chat are answered in the Agent's own words (a "no need to look it up"
+    # made the base E4B skip research on real questions); data comes from APIs and sources.
     for text in (change, read, public):
-        assert "不用查" in text and "API" in text and "都試過才說查不到" in text
+        assert "用自己的話回應" in text and "不用查" not in text
+        assert "API" in text and "都試過才說查不到" in text
 
 
 def test_the_working_method_is_the_mature_agents_one():
