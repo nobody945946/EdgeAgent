@@ -61,7 +61,7 @@ SilentTalk 租借時，Agent 自動共用角色傳來的基底與 LoRA，不必�
 
 在「⋯ → 權限」分別設定網頁與 Discord 的寫檔、指令、上網權限（可還原就自動／允許／詢問／禁止）及可用資料夾。Discord 預設關閉；開啟後還需設定至少一個工作資料夾，SilentTalk 使用第一個。
 
-預設是「可還原就自動」（`reversible`，`edge_agent/permissions.py`）：能復原的改動直接執行，不跳批准卡。寫檔、編輯、以及 PowerShell 解析（`edge_agent/lingua`，PowerShell 自己的語法樹）能確認目標的建立、覆寫、搬移、改名，執行前主機先把會被動到的檔案備份到 EdgeAgent 自己的資料夾（`edge_agent/undo.py`，不放在工作資料夾裡），在網頁的「還原」可以一步一步復原。讀取、工作資料夾裡的 Python／Node 腳本與測試、`code`、git 的查看與提交、API 的讀取（GET）也直接執行。刪除、系統變更（服務、程序、執行原則、關機）、送出資料（POST 等）、安裝套件、其他外部程式和目標無法確認的指令仍要批准；讀過網頁之後，執行程式與連網也重新詢問。單一工作可以縮小範圍（`/chat` 的 `scope`）：`read`（SilentTalk 派工時，主人只要讀和查的工作）不提供寫檔工具，指令只執行能確認的唯讀指令，其餘拒絕；`public` 只剩網頁工具與翻譯器。
+預設是「可還原就自動」（`reversible`，`edge_agent/permissions.py`）：能證明可以復原的改動直接執行，不跳批准卡。寫檔與編輯（路徑照 Pi 自己的解讀），以及 PowerShell 解析（`edge_agent/lingua`，PowerShell 自己的語法樹）能證明「只是原生 cmdlet 的單純管線、參數全是字面值、只讀工作資料夾或只寫它指名的檔案」的指令（`Set-Content`、`Add-Content`、`Out-File`、`Export-Csv`、`New-Item`、`Copy-Item`、`Move-Item`、`Rename-Item`），執行前主機先把會被動到的檔案備份到 EdgeAgent 自己的資料夾（`edge_agent/undo.py`，不放在工作資料夾裡），在網頁的「還原」可以一步一步復原。其他一律詢問：執行程式（腳本、測試、git）、連網、啟動程式、重導向、條件與迴圈、子運算式、換資料夾、刪除、系統變更；這些做了什麼沒辦法保證能復原。按「本輪允許」後，這一輪其餘非刪除的操作不再詢問；讀過網頁之後本輪允許失效。單一工作可以縮小範圍（`/chat` 的 `scope`）：`read`（SilentTalk 派工時，主人只要讀和查的工作）不提供寫檔工具，指令只執行能證明唯讀的指令，其餘拒絕；`public` 只剩網頁工具與翻譯器。工具輸出（讀檔、搜尋、指令、MCP）裡出現 API 金鑰一律遮成 `***`。
 
 刪除及透過指令觸及受保護檔案的操作永遠只有單次批准，卡片說明原因。
 

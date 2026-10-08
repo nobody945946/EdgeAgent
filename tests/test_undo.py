@@ -53,36 +53,90 @@ def test_a_reversible_edit_runs_after_its_file_is_copied(journal: Path) -> None:
 
 @pytest.mark.parametrize(("command", "copies"), [
     ("Get-ChildItem", []),
+    ("Get-Content -Path app.py", []),
+    ('Get-ChildItem -Path . -Filter "*.tmp" -File | Measure-Object', []),
     ("Set-Content -Path notes.txt -Value hi", ["notes.txt"]),
-    ("python app.py", []),
-    ("python app.py > log.txt", ["log.txt"]),
-    ("python -m pytest -q", []),
-    ("git status", []),
-    ("Start-Process code", []),
-    ("Invoke-RestMethod -Uri https://api.example.com/price", []),
+    ("Get-ChildItem | Out-File -FilePath list.txt", ["list.txt"]),
     ("Rename-Item -Path app.py -NewName main.py", ["app.py", "main.py"]),
     ("Move-Item -Path app.py -Destination sub", ["app.py", "sub/app.py"]),
-    ("Remove-Item app.py", None),
-    ("pip install requests", None),
-    ("git push", None),
-    ("'x' > out.txt", None),
-    ("Invoke-RestMethod -Uri https://api.example.com/order -Method Post -Body '{}'", None),
-    ("Stop-Process -Name code", None),
-    ("curl.exe https://example.com", None),
+    ("Copy-Item -Path app.py -Destination copy.py", ["copy.py"]),
+    ("New-Item -ItemType Directory -Path build", []),
 ])
-def test_a_command_runs_when_everything_it_does_can_be_put_back(journal: Path, command: str, copies) -> None:
+def test_a_command_proven_to_touch_only_named_files_runs_after_they_are_copied(journal: Path, command: str, copies) -> None:
     from edge_agent.permissions import reversible_shell
 
     (journal / "app.py").write_text("print(1)\n")
     (journal / "sub").mkdir()
-    found = reversible_shell(command, journal, after_web=False)
-    assert (None if found is None else sorted(p.relative_to(journal.resolve()).as_posix() for p in found)) == copies
+    found = reversible_shell(command, journal)
+    assert found is not None, command
+    assert sorted(p.relative_to(journal.resolve()).as_posix() for p in found) == copies
 
 
-@pytest.mark.parametrize("command", ["python app.py", "Start-Process code", "Invoke-RestMethod -Uri https://api.example.com/x"])
-def test_after_web_content_programs_and_the_network_wait_for_the_owner(journal: Path, command: str) -> None:
+@pytest.mark.parametrize("command", [
+    # Programs: what they do cannot be put back (the owner can allow a turn).
+    "python app.py", "python -c \"import shutil; shutil.rmtree('build')\"", "python -m pip install requests",
+    "python -m pytest -q", "pytest --basetemp=C:/Users/x/Documents", "git status", "git diff --output=app.py",
+    "code --install-extension x", ".\\pytest.cmd", "curl.exe https://example.com",
+    # The network, processes, the system.
+    "Invoke-RestMethod -Uri https://api.example.com/x", "Invoke-WebRequest -Uri https://x/a.exe -OutFile a.exe",
+    "Start-Process code", "Start-Process pwsh -ArgumentList '-Command','Remove-Item -Recurse x'",
+    "Stop-Process -Name code", "Remove-Item app.py", "Clear-Content app.py",
+    # Anything not a plain pipeline of literal arguments.
+    "if ($true) { Set-Content -Path /etc/zzz -Value x }", "(Get-Item app.py).Delete()",
+    "[IO.File]::WriteAllText('x.txt','')", "Get-ChildItem | ForEach-Object Delete", "Get-Process | ForEach-Object Kill",
+    "Write-Output (Stop-Process -Name explorer -Force)", "Write-Output $(Stop-Computer -Force)",
+    "$p = 'x'; Set-Content -Path $p -Value 1", "Set-Content -Path notes.txt -Value $env:EDGE_API_X",
+    "Get-Date && Set-Content -Path a.txt -Value 1", "'x' > out.txt",
+    # Leaving the workspace, or naming files that cannot be told.
+    "cd ..; Set-Content -Path notes.txt -Value x", "Set-Location ..", "Set-Content -Path ../out.txt -Value x",
+    "Set-Content -Path *.txt -Value x", "Set-Content -Path . -Value x", "Copy-Item -Path sub -Destination elsewhere -Recurse",
+    "Expand-Archive -Path a.zip -DestinationPath .",
+    # Redirections and archive functions are not proven by the parser: Set-Content and Out-File are.
+    "Get-ChildItem > notes.txt", "Get-ChildItem > 'notes.txt'", "Compress-Archive -Path app.py -DestinationPath out",
+])
+def test_anything_not_proven_reversible_waits_for_the_owner(journal: Path, command: str) -> None:
     from edge_agent.permissions import reversible_shell
 
     (journal / "app.py").write_text("print(1)\n")
-    assert reversible_shell(command, journal, after_web=True) is None
-    assert reversible_shell("Set-Content -Path a.txt -Value 1", journal, after_web=True) is not None
+    (journal / "sub").mkdir()
+    assert reversible_shell(command, journal) is None, command
+
+
+def test_the_owners_turn_approval_covers_what_cannot_be_put_back_but_never_deleting(journal: Path) -> None:
+    rules = {"edit": "reversible", "shell": "reversible", "web": "allow"}
+    run = {"tool": "powershell", "arguments": {"command": "python app.py"}}
+    assert approvals.host_answer(run, rules, journal) is None
+    assert approvals.host_answer({**run, "turn_approved": True}, rules, journal) is True
+    delete = {"tool": "powershell", "arguments": {"command": "Remove-Item app.py"}, "explicit": "destructive",
+              "turn_approved": True}
+    assert approvals.host_answer(delete, rules, journal) is None
+
+
+def test_an_edit_is_copied_where_pi_writes_it(journal: Path) -> None:
+    (journal / "app.py").write_text("v1")
+    rules = {"edit": "reversible", "shell": "reversible", "web": "allow"}
+    edit = {"tool": "edit", "arguments": {"path": "@app.py"}, "resolved_path": str(journal / "app.py")}
+    assert approvals.host_answer(edit, rules, journal) is True
+    assert undo.history(journal)[0]["files"] == ["app.py"]
+    outside = {"tool": "write", "arguments": {"path": "~/x.txt"}, "resolved_path": str(Path.home() / "x.txt")}
+    assert approvals.host_answer(outside, rules, journal) is None
+
+
+def test_a_checkpoint_that_fails_leaves_undo_working(journal: Path, monkeypatch) -> None:
+    import shutil
+
+    (journal / "a.txt").write_text("v1")
+    good = undo.checkpoint(journal, [Path("a.txt")], "first")
+
+    def broken(*args, **kwargs):
+        raise PermissionError("locked")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "copy2", broken)
+        with pytest.raises(OSError):
+            undo.checkpoint(journal, [Path("a.txt")], "second")
+        rules = {"edit": "reversible", "shell": "reversible", "web": "allow"}
+        assert approvals.host_answer({"tool": "edit", "arguments": {"path": "a.txt"}}, rules, journal) is None
+    assert [h["id"] for h in undo.history(journal)] == [good]
+    (journal / "a.txt").write_text("v2")
+    assert undo.restore(journal, good) == ["a.txt"] and (journal / "a.txt").read_text() == "v1"

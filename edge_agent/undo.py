@@ -46,30 +46,39 @@ def coverable(workspace: Path, paths: list[Path]) -> bool:
 
 
 def checkpoint(workspace: Path, paths: list[Path], label: str) -> str:
-    """Copy `paths` as they are now; returns the checkpoint id."""
+    """Copy `paths` as they are now; returns the checkpoint id. Written whole
+    or not at all: a file that cannot be copied raises OSError and leaves no
+    checkpoint behind."""
     root = workspace.resolve()
     with _lock:
         folder = journal(root)
         folder.mkdir(parents=True, exist_ok=True)
-        existing = sorted(p.name for p in folder.iterdir() if p.is_dir())
+        existing = sorted(p.name for p in folder.iterdir() if p.is_dir() and (p / "manifest.json").is_file())
         number = int(existing[-1].split("-")[0]) + 1 if existing else 1
-        point = folder / f"{number:06d}-{int(time.time())}"
-        point.mkdir()
-        files = []
-        for index, path in enumerate(paths):
-            target = (root / path).resolve() if not path.is_absolute() else path.resolve()
-            entry = {"path": str(target.relative_to(root)), "existed": target.is_file()}
-            if target.is_file():
-                shutil.copy2(target, point / f"{index}.bak")
-                entry["copy"] = f"{index}.bak"
-            files.append(entry)
-        (point / "manifest.json").write_text(json.dumps(
-            {"workspace": str(root), "label": label[:300], "time": time.time(), "files": files},
-            ensure_ascii=False), encoding="utf-8")
+        name = f"{number:06d}-{int(time.time())}"
+        partial = folder / (name + ".partial")
+        shutil.rmtree(partial, ignore_errors=True)
+        partial.mkdir()
+        try:
+            files = []
+            for index, path in enumerate(paths):
+                target = (root / path).resolve() if not path.is_absolute() else path.resolve()
+                entry = {"path": str(target.relative_to(root)), "existed": target.is_file()}
+                if target.is_file():
+                    shutil.copy2(target, partial / f"{index}.bak")
+                    entry["copy"] = f"{index}.bak"
+                files.append(entry)
+            (partial / "manifest.json").write_text(json.dumps(
+                {"workspace": str(root), "label": label[:300], "time": time.time(), "files": files},
+                ensure_ascii=False), encoding="utf-8")
+            partial.rename(folder / name)
+        except BaseException:
+            shutil.rmtree(partial, ignore_errors=True)
+            raise
         for old in existing[: max(0, len(existing) + 1 - KEEP)]:
             shutil.rmtree(folder / old, ignore_errors=True)
         (folder / "workspace.txt").write_text(str(root), encoding="utf-8")
-        return point.name
+        return name
 
 
 def history(workspace: Path) -> list[dict]:
@@ -78,7 +87,7 @@ def history(workspace: Path) -> list[dict]:
     if not folder.is_dir():
         return []
     found = []
-    for point in sorted((p for p in folder.iterdir() if p.is_dir()), reverse=True):
+    for point in sorted((p for p in folder.iterdir() if (p / "manifest.json").is_file()), reverse=True):
         manifest = json.loads((point / "manifest.json").read_text(encoding="utf-8"))
         found.append({"id": point.name, "time": manifest["time"], "label": manifest["label"],
                       "files": [f["path"] for f in manifest["files"]]})
@@ -90,8 +99,8 @@ def restore(workspace: Path, point_id: str) -> list[str]:
     root = workspace.resolve()
     folder = journal(root)
     with _lock:
-        points = sorted((p for p in folder.iterdir() if p.is_dir() and p.name >= point_id), reverse=True) \
-            if folder.is_dir() else []
+        points = sorted((p for p in folder.iterdir() if (p / "manifest.json").is_file() and p.name >= point_id),
+                        reverse=True) if folder.is_dir() else []
         if not points or points[-1].name != point_id:
             raise ValueError(f"no checkpoint {point_id}")
         restored = []

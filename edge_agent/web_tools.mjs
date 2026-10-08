@@ -5,6 +5,7 @@
 import { isIP } from 'node:net';
 import { lookup } from 'node:dns/promises';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const SEARCH_URL = process.env.EDGE_AGENT_SEARCH_URL || 'https://html.duckduckgo.com/html/';
 // Test harnesses serve fixture pages from loopback; never set in the product.
@@ -134,8 +135,9 @@ export async function webSearch(query, limit = 5, signal) {
 function pdfText(raw, signal) {
   if (!PYTHON) return Promise.reject(new Error('PDFs cannot be read here.'));
   return new Promise((done, fail) => {
-    const child = spawn(PYTHON, ['-m', 'edge_agent.documents', 'pdf'], { signal, timeout: 60_000,
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
+    // -P and EdgeAgent's own folder: a module in the working folder can never stand in for the reader.
+    const child = spawn(PYTHON, ['-P', '-m', 'edge_agent.documents', 'pdf'], { signal, timeout: 60_000,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONPATH: fileURLToPath(new URL('..', import.meta.url)) } });
     const out = [], err = [];
     child.stdout.on('data', chunk => out.push(chunk));
     child.stderr.on('data', chunk => err.push(chunk));

@@ -15,6 +15,12 @@ const packageURL = new URL('../.runtime/pi/node_modules/@earendil-works/pi-codin
 const sdk = await import(new URL('index.js', packageURL));
 const { createLocalPowerShellOperations, createPowerShellToolDefinition } = await import(new URL('core/tools/powershell.js', packageURL));
 const { truncateTail } = await import(new URL('core/tools/truncate.js', packageURL));
+// How Pi itself reads a path a tool is given (~, a leading @, file://): the
+// workspace check and the undo copy must mean the same file Pi will touch.
+const { resolveToCwd } = await import(new URL('core/tools/path-utils.js', packageURL));
+// EdgeAgent's own folder: our Python helpers import from here, never from the workspace.
+const coreRoot = fileURLToPath(new URL('..', import.meta.url));
+const pythonEnv = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONPATH: coreRoot };
 const { Type } = await import(pathToFileURL(createRequire(new URL('index.js', packageURL)).resolve('typebox')));
 
 // Read precisely one LF-delimited initialization record. Leave subsequent
@@ -158,8 +164,8 @@ function policy(pi) {
           + 'online say; forum posts are then included and marked as opinions' })) }),
       async execute(_id, params, signal) {
         const first = researched.reduce((top, item) => Math.max(top, item.n), 0) + 1;
-        return { content: [{ type: 'text', text: mask(await webResearch(params.question, params.queries ?? [], signal,
-          { opinions: params.opinions === true, first, found: researched })) }], details: {} };
+        return { content: [{ type: 'text', text: await webResearch(params.question, params.queries ?? [], signal,
+          { opinions: params.opinions === true, first, found: researched }) }], details: {} };
       },
     });
     pi.registerTool({ name: 'web_fetch', label: 'Read web page',
@@ -169,7 +175,7 @@ function policy(pi) {
       parameters: Type.Object({ url: Type.String({ minLength: 8, maxLength: 2000 }),
         max_chars: Type.Optional(Type.Integer({ minimum: 500, maximum: 40000 })) }),
       async execute(_id, params, signal) {
-        return { content: [{ type: 'text', text: mask(await webFetch(params.url, params.max_chars ?? 12000, signal)) }], details: {} };
+        return { content: [{ type: 'text', text: await webFetch(params.url, params.max_chars ?? 12000, signal) }], details: {} };
       },
     });
   }
@@ -191,14 +197,14 @@ function policy(pi) {
           description: 'regex: example strings to run through the real engine (to check a regex you wrote)' })),
       }),
       async execute(_id, params, signal) {
-        const args = ['-m', 'edge_agent.lingua', params.kind];
+        const args = ['-P', '-m', 'edge_agent.lingua', params.kind];
         for (const key of ['flavor', 'dialect', 'arch']) if (params[key]) args.push(`--${key}`, params[key]);
         if (params.samples?.length) args.push('--samples', JSON.stringify(params.samples));
         // The translators work on the given text alone; a public lookup runs
         // them in an empty folder, away from the workspace.
         const cwd = publicOnly ? mkdtempSync(join(tmpdir(), 'edgeagent-public-')) : root;
         const text = await new Promise((done, fail) => {
-          const child = spawn(init.python, args, { cwd, env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+          const child = spawn(init.python, args, { cwd, env: pythonEnv,
             signal, timeout: 60_000 });
           let out = '';
           child.stdout.on('data', chunk => { out += chunk; });
@@ -310,8 +316,10 @@ function policy(pi) {
           + 'Use what it returned, try a different approach, or tell the user what is done and what is not.' };
       }
     }
+    let resolvedPath = '';
     if (typeof input.path === 'string') {
-      const path = resolve(root, input.path);
+      const path = resolveToCwd(input.path, root);
+      resolvedPath = path;
       let parent = path;
       while (!existsSync(parent) && dirname(parent) !== parent) parent = dirname(parent);
       const actual = resolve(realpathSync(parent), relative(parent, path));
@@ -346,7 +354,10 @@ function policy(pi) {
     // Under "reversible" every edit and command goes to the host, which copies what it will touch
     // (edge_agent.undo) and answers itself, or asks the owner what cannot be put back.
     if (!explicit && !provableReads && rule !== 'reversible' && (rule === 'allow' || turnApproved)) return;
-    const choice = await ctx.ui.select(JSON.stringify({ tool: toolName, arguments: input, after_web: tainted, explicit }),
+    // The host answers what it can put back (edge_agent/approvals.py), for the file Pi will
+    // actually touch, and keeps the owner's "allow this turn" for the rest.
+    const choice = await ctx.ui.select(JSON.stringify({ tool: toolName, arguments: input, after_web: tainted, explicit,
+      turn_approved: turnApproved, ...(resolvedPath ? { resolved_path: resolvedPath } : {}) }),
       explicit ? ['Allow once', 'Deny'] : ['Allow this turn', 'Allow once', 'Deny'], { timeout: 300000 });
     // An explicit approval covers this one command only.
     if (choice === 'Allow this turn' && !explicit) turnApproved = true;
@@ -386,6 +397,13 @@ function policy(pi) {
     }
     if (!choice || choice === 'Deny') return { block: true, reason: 'Operation was not approved.' };
   }
+  // Any tool's output (a file read, a search, a shell, an MCP server) that shows an API key:
+  // masked before the model or the session sees it.
+  pi.on('tool_result', event => {
+    if (!secrets.length || !Array.isArray(event.content)) return;
+    const content = event.content.map(item => item.type === 'text' ? { ...item, text: mask(item.text) } : item);
+    if (content.some((item, i) => item.text !== event.content[i].text)) return { content };
+  });
   pi.on('tool_result', event => {
     if (!event.isError) remember((event.content ?? []).map(item => item.text ?? '').join('\n'));
     // Work counts as done only after a check passes on the last change.
@@ -425,7 +443,7 @@ const shell = createPowerShellToolDefinition(root, { operations: {
     }});
     const clipped = truncateTail(tail.toString('utf8'), { maxBytes: 44000, maxLines: 1800 });
     const omitted = total > tail.length || clipped.truncated;
-    options.onData(Buffer.from((omitted ? '[Earlier output omitted; retained in RAM only]\n' : '') + mask(clipped.content)));
+    options.onData(Buffer.from((omitted ? '[Earlier output omitted; retained in RAM only]\n' : '') + clipped.content));
     return result;
   },
 }});

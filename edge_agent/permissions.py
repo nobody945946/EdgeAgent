@@ -21,7 +21,6 @@ always asks (once): the model built it, and it could carry data out.
 
 from __future__ import annotations
 
-import re
 import subprocess
 from pathlib import Path
 
@@ -131,176 +130,137 @@ def scope_rules(rules: dict[str, str], scope: str) -> dict[str, str]:
     return {**rules, "edit": "deny", "shell": shell}
 
 
-def routine_shell(command: str, directory: Path) -> bool:
-    """Prove a literal native read-only pipeline inside the current workspace.
-
-    Dynamic code, external programs, provider paths and unknown syntax require
-    an owner decision. Human translation is never used as a security verdict.
-    """
-    try:
-        info = powershell.analyze(command, cwd=str(directory), timeout=20)
-    except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
-        return False
-    if (
-        info["errors"]
-        or info["other_blocks"]
-        or not info["simple_literals"]
-        or any(item.get("background") for item in info["statements"])
-    ):
-        return False
-    commands = info["all_commands"]
-    if not commands:
-        return False
-    root = directory.resolve()
-    for item in commands:
-        entry = powershell.COMMANDS.get(item["resolved"])
-        kind = item["target_type"] or item["type"]
-        if (
-            kind != "Cmdlet"
-            or entry is None
-            or entry.effect != "read"
-            or item["binding_errors"]
-            or item["redirections"]
-            or item["invocation"] != "Unknown"
-            or item["module"]
-            not in {
-                "Microsoft.PowerShell.Core",
-                "Microsoft.PowerShell.Management",
-                "Microsoft.PowerShell.Utility",
-                "Microsoft.PowerShell.Security",
-            }
-        ):
-            return False
-        if item["resolved"] in {
-            "Get-Content",
-            "Select-String",
-            "Get-FileHash",
-            "Import-Csv",
-        } and not any(
-            param["name"] in {"Path", "LiteralPath"} for param in item["bound"]
-        ):
-            # FileInfo pipeline inputs can follow links outside the workspace.
-            return False
-        for param in item["bound"]:
-            if param["name"] not in entry.params:
-                return False
-            if param["name"] in {"Path", "LiteralPath", "FilePath"}:
-                value = param["literal"]
-                if not isinstance(value, str) or not value:
-                    return False
-                # Only literal filesystem paths can prove the resolved target.
-                # A wildcard could match a link leading outside this workspace.
-                if ":" in value and not (
-                    len(value) > 2 and value[1] == ":" and value[0].isalpha()
-                ):
-                    return False
-                target = Path(value).expanduser()
-                if not target.is_absolute():
-                    target = root / target
-                if (
-                    any(char in value for char in "*?[")
-                    and param["name"] != "LiteralPath"
-                ):
-                    return False
-                if not target.resolve().is_relative_to(root):
-                    return False
-    return True
+CORE_MODULES = {
+    "Microsoft.PowerShell.Core",
+    "Microsoft.PowerShell.Management",
+    "Microsoft.PowerShell.Utility",
+    "Microsoft.PowerShell.Security",
+}
+# Changing the current folder would make every later relative path mean
+# somewhere the proof did not look.
+LOCATION = {"Set-Location", "Push-Location", "Pop-Location"}
+PATH_PARAMS = {"Path", "LiteralPath", "FilePath", "Destination", "DestinationPath"}
+# Writes whose targets are the named files (copied before they run); any other
+# cmdlet that changes something waits for the owner.
+WRITES = {"Set-Content", "Add-Content", "Out-File", "Export-Csv", "New-Item", "Copy-Item", "Move-Item",
+          "Rename-Item"}
+READ_NEEDS_PATH = {"Get-Content", "Select-String", "Get-FileHash", "Import-Csv"}
 
 
-# External programs whose effects stay in the workspace or can be put back:
-# scripts and tests of the workspace, the editor, and git's own history.
-INTERPRETERS = {"python", "python3", "py", "node"}
-GIT_KEEPS = {"status", "diff", "log", "show", "branch", "add", "commit", "init", "rev-parse", "ls-files"}
-
-
-def _literal_path(value: object, root: Path) -> Path | None:
-    """A literal file path inside the workspace, or None."""
-    if not isinstance(value, str) or not value or any(char in value for char in "*?[") \
-            or (":" in value and not (len(value) > 2 and value[1] == ":" and value[0].isalpha())):
+def _inside(value: object, root: Path, wildcards: bool = False) -> Path | None:
+    """A literal filesystem path inside the workspace, or None. Only literal
+    paths prove where a command lands; a wildcard could match a link leading
+    out of the workspace."""
+    if not isinstance(value, str) or not value:
+        return None
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        value = value[1:-1]
+    if (":" in value and not (len(value) > 2 and value[1] == ":" and value[0].isalpha())) \
+            or (not wildcards and any(char in value for char in "*?[")):
         return None
     target = Path(value).expanduser()
     target = (target if target.is_absolute() else root / target).resolve()
-    return target if target.is_relative_to(root) and target != root else None
+    # The workspace itself is a place to read; as a write target it is a folder, which undo never covers.
+    return target if target.is_relative_to(root) else None
 
 
-def _landing(cmdlet: str, origin: Path, bound: dict, root: Path) -> Path | None:
-    """Where a renamed, moved or copied file ends up, or None when it cannot be told."""
-    if cmdlet == "Rename-Item":
-        return _literal_path(str(origin.parent / str(bound.get("NewName", ""))), root) if bound.get("NewName") else None
-    destination = _literal_path(bound.get("Destination"), root)
-    if destination is None:
-        return None
-    return destination / origin.name if destination.is_dir() else destination
-
-
-def _program_keeps(element: dict, root: Path) -> bool:
-    name = Path(element["name"]).stem.lower()
-    args = [str(a) for a in element["args"]]
-    if name in INTERPRETERS:
-        if args[:2] in (["-m", "pytest"], ["-m", "unittest"]):
-            return True
-        script = next((a for a in args if not a.startswith("-")), None)
-        return script is not None and _literal_path(script, root) is not None
-    if name in ("pytest", "code"):
-        return True
-    return name == "git" and bool(args) and args[0] in GIT_KEEPS
-
-
-def reversible_shell(command: str, directory: Path, after_web: bool) -> list[Path] | None:
-    """The files to copy before `command` runs when everything it does can be
-    put back: reads, files it writes or overwrites by name inside the
-    workspace, windows it opens, the workspace's own scripts and tests. None
-    when the owner decides: deleting, system changes, sending data out,
-    installing, other programs, a target the parser cannot name, and, once web
-    content entered the turn, running programs or reaching the network."""
+def _prove(command: str, directory: Path) -> tuple[list[Path], bool] | None:
+    """What a command writes and whether it changes anything, when it is proven to touch nothing but the
+    workspace: native cmdlets in plain pipelines with literal arguments that
+    read inside the workspace or write files it names there (returned, to copy
+    first). None for anything else: external programs, dynamic code, script
+    blocks, sub-expressions, method calls, folder changes, deleting, the
+    system, the network, a target that is not a literal path."""
     try:
         info = powershell.analyze(command, cwd=str(directory), timeout=20)
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
         return None
-    if info["errors"] or info["other_blocks"] or any(s.get("background") for s in info["statements"]):
+    if info["errors"] or info["other_blocks"] or not info["simple_literals"]:
+        return None
+    statements = info["statements"]
+    if not statements or any(s.get("kind") != "pipeline" or s.get("background") for s in statements):
+        return None
+    elements = [e for s in statements for e in s.get("elements", [])]
+    commands = info["all_commands"]
+    if not commands or any(e.get("kind") != "command" for e in elements) or len(commands) != len(elements):
         return None
     root = directory.resolve()
-    paths: list[Path] = []
-
-    def named(values: list[object]) -> bool:
-        found = [_literal_path(value, root) for value in values]
-        paths.extend(p for p in found if p is not None)
-        return bool(found) and None not in found
-
-    for statement in info["statements"]:
-        for element in statement.get("elements", []):
-            if element["kind"] == "expression":
-                if re.search(r">", element["text"]):  # a redirection the parser does not name
-                    return None
+    writes: list[Path] = []
+    changes = False
+    for item in commands:
+        entry = powershell.COMMANDS.get(item["resolved"])
+        if ((item["target_type"] or item["type"]) != "Cmdlet" or entry is None or item["binding_errors"]
+                or item["invocation"] != "Unknown" or item["module"] not in CORE_MODULES
+                or item["resolved"] in LOCATION):
+            return None
+        bound = {param["name"]: param["literal"] for param in item["bound"]}
+        if set(bound) - set(entry.params):
+            return None
+        if item["resolved"] in READ_NEEDS_PATH and not {"Path", "LiteralPath"} & set(bound):
+            return None  # FileInfo pipeline inputs can follow links outside the workspace
+        places = {name: _inside(bound[name], root, wildcards=name == "LiteralPath")
+                  for name in PATH_PARAMS & set(bound)}
+        if None in places.values():
+            return None
+        for redirect in item["redirections"]:
+            if redirect.get("merge"):
                 continue
-            if element["kind"] != "command":
+            target = _inside(redirect.get("to"), root)
+            if target is None:
                 return None
-            redirects = [r for r in element["redirections"] if not r.get("merge")]
-            if redirects and not named([r.get("to") for r in redirects]):
+            writes.append(target)
+            changes = True
+        if entry.effect == "read":
+            continue
+        if item["resolved"] not in WRITES:
+            return None
+        landing = _landing(item["resolved"], places, bound)
+        if landing is None or any(path == root or path.is_dir() for path in landing):
+            return None  # a folder as a write target: nothing a file copy can put back
+        writes.extend(landing)
+        changes = True
+    return writes, changes
+
+
+def _landing(cmdlet: str, places: dict[str, Path], bound: dict) -> list[Path] | None:
+    """The files a write changes (its targets, and a moved file's old place),
+    or None when they cannot be told from the command."""
+    source = places.get("Path") or places.get("LiteralPath")
+    if cmdlet in ("Copy-Item", "Move-Item", "Rename-Item"):
+        if source is None or not source.is_file() or {"Recurse", "Container", "Filter", "Include", "Exclude"} & set(bound):
+            return None
+        if cmdlet == "Rename-Item":
+            name = bound.get("NewName")
+            if not isinstance(name, str) or not name or any(c in name for c in "\\/:*?["):
                 return None
-            bound = {param["name"]: param.get("literal") for param in element["bound"]}
-            if (element["target_type"] or element["type"]) == "Cmdlet":
-                entry = powershell.COMMANDS.get(element["resolved"])
-                if entry is None or entry.effect in ("delete", "system"):
-                    return None
-                if entry.effect == "run":
-                    if element["resolved"] != "Start-Process" or after_web:
-                        return None
-                elif entry.effect == "network":
-                    sends = str(bound.get("Method") or "Get").lower() != "get" or {"Body", "InFile", "Form"} & set(bound)
-                    if after_web or sends or ("OutFile" in bound and not named([bound["OutFile"]])):
-                        return None
-                elif element["resolved"] in ("Move-Item", "Copy-Item", "Rename-Item"):
-                    # The file's old place (a copy leaves it) and where it lands.
-                    origin = _literal_path(bound.get("Path") or bound.get("LiteralPath"), root)
-                    landing = _landing(element["resolved"], origin, bound, root) if origin else None
-                    if landing is None:
-                        return None
-                    paths.extend([landing] if element["resolved"] == "Copy-Item" else [origin, landing])
-                elif entry.effect in ("write", "overwrite"):
-                    names = entry.targets or ("Path", "LiteralPath", "FilePath")
-                    if not named([bound[n] for n in names if n in bound]):
-                        return None
-            elif after_web or not _program_keeps(element, root):
+            moved = source.parent / name
+        else:
+            destination = places.get("Destination")
+            if destination is None:
                 return None
-    return paths
+            moved = destination / source.name if destination.is_dir() else destination
+        return [moved] if cmdlet == "Copy-Item" else [source, moved]
+    if cmdlet == "New-Item":
+        target = source
+        if target is not None and isinstance(bound.get("Name"), str):
+            target = target / bound["Name"]
+        if target is None:
+            return None
+        return [] if str(bound.get("ItemType", "File")).lower() == "directory" else [target]
+    targets = [places[name] for name in ("Path", "LiteralPath", "FilePath") if name in places]
+    return targets or None
+
+
+def routine_shell(command: str, directory: Path) -> bool:
+    """Prove a literal native read-only pipeline inside the current workspace."""
+    proof = _prove(command, directory)
+    return proof is not None and not proof[1]
+
+
+def reversible_shell(command: str, directory: Path) -> list[Path] | None:
+    """The files to copy before `command` runs, when it is proven to read and
+    write only files it names inside the workspace (_prove); None when the
+    owner decides. Programs (scripts, tests, git) and the network always ask:
+    what they do cannot be put back."""
+    proof = _prove(command, directory)
+    return None if proof is None else proof[0]
