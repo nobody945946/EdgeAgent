@@ -76,6 +76,7 @@ def test_a_command_proven_to_touch_only_named_files_runs_after_they_are_copied(j
     # Programs: what they do cannot be put back (the owner can allow a turn).
     "python app.py", "python -c \"import shutil; shutil.rmtree('build')\"", "python -m pip install requests",
     "python -m pytest -q", "pytest --basetemp=C:/Users/x/Documents", "git status", "git diff --output=app.py",
+    "git commit -m x", "git checkout -- app.py",
     "code --install-extension x", ".\\pytest.cmd", "curl.exe https://example.com",
     # The network, processes, the system.
     "Invoke-RestMethod -Uri https://api.example.com/x", "Invoke-WebRequest -Uri https://x/a.exe -OutFile a.exe",
@@ -106,6 +107,59 @@ def test_anything_not_proven_reversible_waits_for_the_owner(journal: Path, comma
     (journal / "app.py").write_text("print(1)\n")
     (journal / "sub").mkdir()
     assert reversible_shell(command, journal) is None, command
+
+
+@pytest.fixture
+def repo(journal: Path) -> Path:
+    import subprocess
+
+    (journal / "app.py").write_text("print(1)\n")
+    subprocess.run(["git", "init", "-q"], cwd=journal, check=True)
+    return journal
+
+
+@pytest.mark.parametrize("command", [
+    "git status", "git status --short", "git diff", "git diff --cached --stat", "git log -n 5 --oneline",
+    "git show HEAD --name-only", "git blame app.py", "git ls-files", "git branch -a", "git branch --show-current",
+    "git diff HEAD~1 -- app.py | Select-Object -First 40",
+])
+def test_git_reading_the_workspaces_own_repository_runs(repo: Path, command: str) -> None:
+    from edge_agent.permissions import reversible_shell, routine_shell
+
+    assert routine_shell(command, repo), command
+    assert reversible_shell(command, repo) == [], command
+
+
+@pytest.mark.parametrize("command", [
+    # Writes and programs: git's own and the ones its options run.
+    "git commit -m x", "git checkout -- app.py", "git branch topic", "git stash", "git reset --hard",
+    "git diff --output=app.py", "git diff --outp=app.py", "git log -p --ext-diff", "git diff --textconv",
+    "git diff --no-index /etc/passwd app.py", "git blame --contents /etc/passwd app.py",
+    # Global options (config, another repository or folder, a pager).
+    "git -c core.pager=evil log", "git -C /etc status", "git --git-dir=/tmp/x status", "git -p log",
+    "git --exec-path=. status", "git diff -- .git/config",
+])
+def test_git_that_writes_or_runs_programs_waits_for_the_owner(repo: Path, command: str) -> None:
+    from edge_agent.permissions import reversible_shell, routine_shell
+
+    assert not routine_shell(command, repo), command
+    assert reversible_shell(command, repo) is None, command
+
+
+def test_git_outside_a_repository_root_and_writes_under_git_wait_for_the_owner(repo: Path) -> None:
+    from edge_agent.permissions import reversible_shell, routine_shell
+
+    (repo / "sub").mkdir()
+    # A folder inside a repository: git would read the repository above the workspace.
+    assert not routine_shell("git status", repo / "sub")
+    # .git's config and hooks decide what later git commands run: never changed unasked.
+    assert reversible_shell("Set-Content -Path .git/config -Value x", repo) is None
+    assert reversible_shell("Set-Content -Path .GIT/hooks/pre-commit -Value x", repo) is None
+    rules = {"edit": "reversible", "shell": "reversible", "web": "allow"}
+    hook = {"tool": "write", "arguments": {"path": ".git/hooks/pre-commit"},
+            "resolved_path": str(repo / ".git" / "hooks" / "pre-commit")}
+    assert approvals.host_answer(hook, rules, repo) is None
+    assert approvals.host_answer({**hook, "turn_approved": True}, rules, repo) is True
 
 
 def test_the_owners_turn_approval_covers_what_cannot_be_put_back_but_never_deleting(journal: Path) -> None:

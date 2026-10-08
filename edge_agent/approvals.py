@@ -8,7 +8,7 @@ from pathlib import Path
 
 from edge_agent import undo
 from edge_agent.lingua import powershell as lingua_powershell
-from edge_agent.permissions import REVERSIBLE, reversible_shell, routine_shell
+from edge_agent.permissions import REVERSIBLE, reversible_edit, reversible_shell, routine_shell
 
 
 def explain_approval(details: dict, cwd: Path) -> dict[str, str]:
@@ -46,7 +46,7 @@ def host_answer(details: dict, rules: dict[str, str], cwd: Path) -> bool | None:
     if tool in ("edit", "write") and rules.get("edit") == REVERSIBLE:
         # The bridge sends the path as Pi resolves it (~, @, file:// and all).
         path = details.get("resolved_path") or arguments.get("path")
-        paths = [Path(path)] if isinstance(path, str) and path else None
+        paths = reversible_edit(path, cwd) if isinstance(path, str) and path else None
     elif tool == "powershell" and rules.get("shell") == REVERSIBLE and isinstance(arguments.get("command"), str):
         paths = reversible_shell(arguments["command"], cwd)
     elif rules.get("edit") != REVERSIBLE and rules.get("shell") != REVERSIBLE:

@@ -168,16 +168,64 @@ def _inside(value: object, root: Path, wildcards: bool = False) -> Path | None:
     target = Path(value).expanduser()
     target = (target if target.is_absolute() else root / target).resolve()
     # The workspace itself is a place to read; as a write target it is a folder, which undo never covers.
-    return target if target.is_relative_to(root) else None
+    if not target.is_relative_to(root) or _repository_internals(target.relative_to(root)):
+        return None
+    return target
+
+
+def _repository_internals(path: Path) -> bool:
+    """Under .git: its config and hooks decide what later git commands run,
+    so nothing there is changed (or proven) without the owner."""
+    return any(part.lower() == ".git" for part in path.parts)
+
+
+# git's reads (owner, 2026-10-08: reading uncommitted changes asked or was
+# refused). Global options (-c, -C, --git-dir, --exec-path, --paginate) come
+# before the subcommand and are refused with it; long options are refused when
+# they abbreviate one that writes a file or runs a program.
+GIT_READS = {"status", "diff", "log", "show", "blame", "ls-files"}
+GIT_BRANCH_LIST = {"-a", "-r", "-v", "-vv", "--list", "--show-current", "--all", "--remotes"}
+GIT_REFUSED = ("output", "ext-diff", "textconv", "no-index", "open-files-in-pager", "contents")
+
+
+def _git_read(item: dict, root: Path) -> bool:
+    """git reading the workspace's own repository: a listed subcommand first,
+    then options and revisions that write nothing and run nothing. The
+    repository is the workspace's (.git right there, so nothing above it is
+    read), and its config can only have changed with the owner's approval
+    (_repository_internals)."""
+    if item["type"] != "Application" or Path(str(item["resolved"])).stem.lower() != "git" \
+            or item["invocation"] != "Unknown" or not (root / ".git").exists():
+        return False
+    source = Path(str(item["source"] or ""))
+    if not source.is_absolute() or source.resolve().is_relative_to(root):
+        return False  # a git.exe in the workspace is the workspace's program, not git
+    args = [str(arg) for arg in item.get("args") or []]
+    if not args:
+        return False
+    command, rest = args[0], args[1:]
+    if command == "branch":
+        return set(rest) <= GIT_BRANCH_LIST
+    if command not in GIT_READS:
+        return False
+    for arg in rest:
+        if arg.startswith("--") and len(arg) > 2:
+            name = arg[2:].split("=", 1)[0]
+            if any(refused.startswith(name) for refused in GIT_REFUSED):
+                return False
+        if _repository_internals(Path(arg.replace("\\", "/"))):
+            return False
+    return True
 
 
 def _prove(command: str, directory: Path) -> tuple[list[Path], bool] | None:
     """What a command writes and whether it changes anything, when it is proven to touch nothing but the
     workspace: native cmdlets in plain pipelines with literal arguments that
     read inside the workspace or write files it names there (returned, to copy
-    first). None for anything else: external programs, dynamic code, script
-    blocks, sub-expressions, method calls, folder changes, deleting, the
-    system, the network, a target that is not a literal path."""
+    first), and git's reads of the workspace's own repository (_git_read).
+    None for anything else: other programs, dynamic code, script blocks,
+    sub-expressions, method calls, folder changes, deleting, the system, the
+    network, a target that is not a literal path, anything under .git."""
     try:
         info = powershell.analyze(command, cwd=str(directory), timeout=20)
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
@@ -195,13 +243,14 @@ def _prove(command: str, directory: Path) -> tuple[list[Path], bool] | None:
     writes: list[Path] = []
     changes = False
     for item in commands:
+        git = _git_read(item, root)
         entry = powershell.COMMANDS.get(item["resolved"])
-        if ((item["target_type"] or item["type"]) != "Cmdlet" or entry is None or item["binding_errors"]
-                or item["invocation"] != "Unknown" or item["module"] not in CORE_MODULES
-                or item["resolved"] in LOCATION):
+        if not git and ((item["target_type"] or item["type"]) != "Cmdlet" or entry is None or item["binding_errors"]
+                        or item["invocation"] != "Unknown" or item["module"] not in CORE_MODULES
+                        or item["resolved"] in LOCATION):
             return None
         bound = {param["name"]: param["literal"] for param in item["bound"]}
-        if set(bound) - set(entry.params):
+        if not git and set(bound) - set(entry.params):
             return None
         if item["resolved"] in READ_NEEDS_PATH and not {"Path", "LiteralPath"} & set(bound):
             return None  # FileInfo pipeline inputs can follow links outside the workspace
@@ -217,7 +266,7 @@ def _prove(command: str, directory: Path) -> tuple[list[Path], bool] | None:
                 return None
             writes.append(target)
             changes = True
-        if entry.effect == "read":
+        if git or entry.effect == "read":
             continue
         if item["resolved"] not in WRITES:
             return None
@@ -266,10 +315,18 @@ def routine_shell(command: str, directory: Path) -> bool:
     return proof is not None and not proof[1]
 
 
+def reversible_edit(path: str, directory: Path) -> list[Path] | None:
+    """The file to copy before an edit or write lands on `path` (as Pi
+    resolves it); None when the owner decides: outside the workspace, a path
+    Windows reads otherwise, or under .git."""
+    target = _inside(path, directory.resolve(), wildcards=True)
+    return None if target is None else [target]
+
+
 def reversible_shell(command: str, directory: Path) -> list[Path] | None:
     """The files to copy before `command` runs, when it is proven to read and
     write only files it names inside the workspace (_prove); None when the
-    owner decides. Programs (scripts, tests, git) and the network always ask:
-    what they do cannot be put back."""
+    owner decides. Programs (scripts, tests, git's writes) and the network
+    always ask: what they do cannot be put back."""
     proof = _prove(command, directory)
     return None if proof is None else proof[0]
