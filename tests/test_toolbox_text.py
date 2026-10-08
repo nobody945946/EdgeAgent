@@ -75,17 +75,16 @@ def test_merge_csv_union_of_headers(tmp_path: Path) -> None:
 
 
 def test_log_summary_counts_and_groups(tmp_path: Path) -> None:
-    write(tmp_path / "logs" / "app.log", "\n".join([
-        "2026-10-01 10:00:01 INFO start",
-        "2026-10-01 10:00:02 ERROR Connection refused to 10.0.0.5:5432",
-        "2026-10-01 10:00:03 [error] Connection refused to 10.0.0.6:5432",
-        "2026-10-01 10:00:04 WARN slow request 1234ms",
-        "2026-10-01 10:00:05 INFO retry after error",
-        "2026-10-01 10:00:06 FATAL out of memory at 0x7fff1234",
-        "Traceback (most recent call last):",
-        "2026-10-01 10:00:07 DEBUG id=550e8400-e29b-41d4-a716-446655440000",
-        "2026-10-01 10:00:08 ERROR Connection refused to 10.0.0.7:5432",
-    ]))
+    write(tmp_path / "logs" / "app.log", (
+        "2026-10-01 10:00:01 INFO start\n"
+        "2026-10-01 10:00:02 ERROR Connection refused to 10.0.0.5:5432\n"
+        "2026-10-01 10:00:03 [error] Connection refused to 10.0.0.6:5432\n"
+        "2026-10-01 10:00:04 WARN slow request 1234ms\n"
+        "2026-10-01 10:00:05 INFO retry after error\n"
+        "2026-10-01 10:00:06 FATAL out of memory at 0x7fff1234\n"
+        "Traceback (most recent call last):\n"
+        "2026-10-01 10:00:07 DEBUG id=550e8400-e29b-41d4-a716-446655440000\n"
+        "2026-10-01 10:00:08 ERROR Connection refused to 10.0.0.7:5432"))
     write(tmp_path / "logs" / "other.txt", "ERROR not a log by pattern")
     out = run("log_summary", tmp_path, path="logs")
     assert "共 9 行" in out

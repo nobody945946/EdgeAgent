@@ -11,9 +11,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
 
-import scenario_cards  # noqa: E402
-import scenario_checks  # noqa: E402
-import scenario_judge  # noqa: E402
+import scenario_cards
+import scenario_checks
+import scenario_judge
 
 
 def turn(answer: str, calls: list[dict] | None = None, outcome: str = "done") -> dict:
@@ -153,7 +153,9 @@ def test_corrupted_controls_break_the_answers_for_sure() -> None:
                   {"role": "user", "content": "再問"}, *said("完整的答案，還有很多細節要講。")]
     other = [{"role": "user", "content": "別的問題"}, *said("別張卡的第一答"), *said("別張卡的答案")]
     cut = scenario_judge.corrupt(trajectory, other, "cut")
-    assert cut[:3] == trajectory[:3] and cut[-1]["content"][-1]["text"] == "完整的答案，"
+    assert cut[:3] == trajectory[:3] and cut[-1]["content"][-1]["text"] == "完整的答案，還"
+    # A cut never stops where a sentence ends: at 40% this one would read "明白。" and look complete.
+    assert scenario_judge.cut_short("明白。是我越界了，判斷不是數據，這部分收回。往後只交付數字和來源。") == "明白。是我越界了，判斷不"
     swapped = scenario_judge.corrupt(trajectory, other, "swap")
     assert swapped[:3] == trajectory[:3] and swapped[-1]["content"][-1]["text"] == "別張卡的答案"
     every = scenario_judge.corrupt(trajectory, other, "swap_all")
@@ -170,11 +172,30 @@ def test_the_judge_sees_tool_calls_and_results_but_not_thinking() -> None:
     text = scenario_judge.transcript(trajectory)
     assert "秘密思考" not in text
     assert "web_research" in text and "結果" in text and "答案 [1]" in text
+    # Long results and a written file's contents are shown whole (an answer
+    # citing past 700 characters read as made up), the rest marked as left out.
+    page = "前段" * 400 + "第1300字以後才有的AES細節" + "尾" * 9000
+    long = [{"role": "assistant", "content": [{"type": "toolCall", "name": "write",
+                                               "arguments": {"path": "a.csv", "content": "x," * 1000 + "末欄"}}]},
+            {"role": "toolResult", "content": [{"type": "text", "text": page}]}]
+    text = scenario_judge.transcript(long)
+    assert "末欄" in text and "AES細節" in text
+    assert f"後面還有 {len(page) - scenario_judge.TOOL_CHARS} 字" in text
 
 
 def test_a_card_with_simplified_characters_is_converted_not_dropped() -> None:
     converted = scenario_cards.traditional({"goal": "查询这个软件", "plan": ["先问", "这个"], "max_turns": 3})
     assert converted == {"goal": "查詢這個軟體", "plan": ["先問", "這個"], "max_turns": 3}
+
+
+def test_a_turn_whose_last_message_did_not_finish_never_becomes_a_row() -> None:
+    cut = [{"role": "user", "content": "寫個遊戲"},
+           {"role": "assistant", "content": [{"type": "text", "text": "好，程式如下：\nimport pyg"}], "stopReason": "length"},
+           {"role": "user", "content": "然後呢"}, {"role": "assistant", "content": [], "stopReason": "stop"}]
+    record = {"dialogue": [turn("好"), turn("完成")], "ended": "end", "trajectory": cut}
+    assert scenario_checks.failures(record, [])["cut_off"] == "turns whose last message did not finish: [1]"
+    cut[1]["stopReason"] = "stop"
+    assert scenario_checks.failures(record, []) == {}
 
 
 def test_searching_a_whole_drive_never_becomes_a_row() -> None:
@@ -190,9 +211,10 @@ def test_searching_a_whole_drive_never_becomes_a_row() -> None:
 
 
 def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path: Path) -> None:
-    """judge and validate against a stand-in judge model that accepts an
-    answer only if it is that card's full answer: originals pass, cut and
-    swapped answers fail, and a conversation without an answer is left out."""
+    """judge and validate against a stand-in judge model whose answer check
+    accepts an answer only if it is that card's full answer: originals pass,
+    cut and swapped answers fail, and a conversation without an answer is left
+    out."""
     import re
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -203,13 +225,16 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
 
         def do_POST(self) -> None:
             prompt = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["messages"][0]["content"]
-            card = re.search(r"目標(\d+)", prompt).group(1)
-            said = [line for line in prompt.splitlines() if line.startswith("助理：")]
-            ok = not Judge.strict and said == [f"助理：答{card}。完整的結尾{card}。"]
-            keys = re.findall(r"^([MNU]\d+)\. ", prompt, re.M)
-            assert "U1" in keys
-            items = [{"id": key, "pass": ok, "evidence": "無"} for key in keys]
-            body = json.dumps({"choices": [{"message": {"content": json.dumps({"items": items})}}]}).encode()
+            if "助理最後的回答：" in prompt:  # the answer check sees messages and answers only
+                assert "目標" not in prompt
+                card = re.search(r"使用者：問(\d+)", prompt).group(1)
+                ok = not Judge.strict and f"助理最後的回答：答{card}。完整的結尾{card}。" in prompt
+                verdict = {"turns": [{"turn": 1, "ending": "結尾", "complete": ok, "responds": ok}]}
+            else:
+                keys = re.findall(r"^([MN]\d+)\. ", prompt, re.MULTILINE)
+                assert keys and "助理：" in prompt
+                verdict = {"items": [{"id": key, "pass": not Judge.strict, "evidence": "無"} for key in keys]}
+            body = json.dumps({"choices": [{"message": {"content": json.dumps(verdict)}}]}).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -226,13 +251,13 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
         name = f"train-C-{n:03d}"
         (task_root / name).mkdir(parents=True)
         (task_root / name / "task.json").write_text(json.dumps(
-            {"family": "C", "must": ["做完"], "must_not": ["反問"], "scenario": {"goal": f"目標{n}"}}))
+            {"family": "C", "must": ["做完"], "must_not": ["反問"], "scenario": {"goal": f"目標{n}"}}), encoding="utf-8")
         answer = f"答{n}。完整的結尾{n}。" if n < count - 1 else None
-        trajectory = [{"role": "user", "content": "問"}, *(said(answer) if answer else [])]
-        (run_dir / "traj" / f"{name}-r0.json").write_text(json.dumps(trajectory, ensure_ascii=False))
+        trajectory = [{"role": "user", "content": f"問{n}"}, *(said(answer) if answer else [])]
+        (run_dir / "traj" / f"{name}-r0.json").write_text(json.dumps(trajectory, ensure_ascii=False), encoding="utf-8")
         rows.append({"task": name, "rep": 0, "kind": "scenario", "outcome": "done", "ended": "end",
                      "dialogue": [turn(answer or "")]})
-    (run_dir / "results.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows))
+    (run_dir / "results.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Judge)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
@@ -243,18 +268,18 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
             scenario_judge.validate(args, server)
         Judge.strict = False
         scenario_judge.validate(args, server)
-        summary = json.loads((run_dir / "judge-validation.json").read_text())
+        summary = json.loads((run_dir / "judge-validation.json").read_text(encoding="utf-8"))
         accepted = count - 1
         assert {k: v for k, v in summary.items() if k != "details"} == {
             "conversations": accepted, "originals_accepted": accepted, "corrupted": 3 * accepted,
             "corrupted_rejected": 3 * accepted, "slipped": {"cut": 0, "swap": 0, "swap_all": 0}, "trusted": True}
         scenario_judge.judge(args, server)
-        verdicts = {v["job"]: v for v in map(json.loads, (run_dir / "verdicts.jsonl").read_text().splitlines())}
+        verdicts = {v["job"]: v for v in map(json.loads, (run_dir / "verdicts.jsonl").read_text(encoding="utf-8").splitlines())}
         assert len(verdicts) == count
         assert all(verdicts[f"train-C-{n:03d}-r0"]["passed"] for n in range(accepted))
-        assert len(verdicts["train-C-000-r0"]["judge"]) == 2
+        assert len(verdicts["train-C-000-r0"]["judge"]) == 3  # the answer check, then the items twice
         last = verdicts[f"train-C-{accepted:03d}-r0"]
-        assert not last["passed"] and len(last["judge"]) == 1 and "U1" in last["judge"][0]["failed"]
+        assert not last["passed"] and len(last["judge"]) == 1 and "turn 1" in last["judge"][0]["failed"]
     finally:
         httpd.shutdown()
 
@@ -265,27 +290,27 @@ def test_results_of_a_changed_task_are_dropped_to_play_again(tmp_path: Path, mon
     tasks, run_dir = tmp_path / "tasks", tmp_path / "run"
     for name in ("a", "b", "c"):
         (tasks / name / "workspace").mkdir(parents=True)
-        (tasks / name / "task.json").write_text("{}")
+        (tasks / name / "task.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(run, "TASK_ROOT", tasks)
     digests = {name: run.task_digest(tasks / name) for name in ("a", "b")}
-    (tasks / "a" / "task.json").write_text('{"must": ["judged only"]}')  # judging changed: not re-played
+    (tasks / "a" / "task.json").write_text('{"must": ["judged only"]}', encoding="utf-8")  # judging changed: not re-played
     assert run.task_digest(tasks / "a") == digests["a"]
     rows = [{"task": "a", "rep": 0, "task_digest": digests["a"]},
             {"task": "b", "rep": 0, "task_digest": digests["b"]},
             {"task": "c", "rep": 0}]  # from before digests: kept
     (run_dir / "records" / "b-r0").mkdir(parents=True)
     (run_dir / "traj").mkdir()
-    (run_dir / "traj" / "b-r0.json").write_text("[]")
-    (run_dir / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
-    (run_dir / "verdicts.jsonl").write_text('{"job": "a-r0"}\n{"job": "b-r0"}\n')
+    (run_dir / "traj" / "b-r0.json").write_text("[]", encoding="utf-8")
+    (run_dir / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    (run_dir / "verdicts.jsonl").write_text('{"job": "a-r0"}\n{"job": "b-r0"}\n', encoding="utf-8")
     run.drop_superseded(run_dir)
-    assert len((run_dir / "results.jsonl").read_text().splitlines()) == 3
-    (tasks / "b" / "workspace" / "app.log").write_text("[ERROR] x")
+    assert len((run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()) == 3
+    (tasks / "b" / "workspace" / "app.log").write_text("[ERROR] x", encoding="utf-8")
     run.drop_superseded(run_dir)
-    left = [json.loads(line)["task"] for line in (run_dir / "results.jsonl").read_text().splitlines()]
+    left = [json.loads(line)["task"] for line in (run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()]
     assert left == ["a", "c"]
     assert not (run_dir / "records" / "b-r0").exists() and not (run_dir / "traj" / "b-r0.json").exists()
-    assert (run_dir / "verdicts.jsonl").read_text() == '{"job": "a-r0"}\n'
+    assert (run_dir / "verdicts.jsonl").read_text(encoding="utf-8") == '{"job": "a-r0"}\n'
 
 
 def test_one_family_is_written_by_several_workers_without_duplicate_ids(tmp_path: Path, monkeypatch) -> None:
@@ -306,7 +331,7 @@ def test_one_family_is_written_by_several_workers_without_duplicate_ids(tmp_path
     args = SimpleNamespace(config="teacher-38-iq3", split="train", per_family=6, families=["I"], seed=0,
                            port=0, parallel=4)
     scenario_cards.generate(args)
-    ids = [json.loads(line)["id"] for line in (tmp_path / "train-cards.jsonl").read_text().splitlines()]
+    ids = [json.loads(line)["id"] for line in (tmp_path / "train-cards.jsonl").read_text(encoding="utf-8").splitlines()]
     assert sorted(ids) == [f"train-I-{n:03d}" for n in range(1, 7)]
 
 
@@ -330,6 +355,30 @@ def test_an_api_card_needs_its_docs_and_a_json_endpoint() -> None:
     assert scenario_cards.problems({**api_card(), "apis": []}, "J", family)
 
 
+def test_an_api_card_agrees_with_its_docs() -> None:
+    def with_docs(text: str, **api: str) -> dict:
+        one = api_card()
+        one["pages"][0] = {**one["pages"][0], "text": text}
+        one["apis"][0] = {**one["apis"][0], **api}
+        return one
+
+    family = {"web": "api"}
+    listed = "金鑰放在標頭 X-Key。端點：GET /lowest?app=…（回傳 lowest）、GET /stores 列出商店。" * 2
+    assert scenario_cards.problems(with_docs(listed), "J", family) == [
+        "api GamePrice: the docs list /v1/stores, which no endpoint page answers"]
+    template = '{"endpoints": {"/v1/{kind}": {"method": "GET"}}, "auth": "header X-Key"}' * 2
+    assert scenario_cards.problems(with_docs(template), "J", family) == []
+    assert scenario_cards.problems(with_docs(listed.replace("GET /stores", "POST /lowest")), "J", family) == [
+        "api GamePrice: the docs use POST; the stand-in web answers GET only"]
+    assert scenario_cards.problems(with_docs(listed, key_name="X-Token"), "J", family) == [
+        "api GamePrice: the docs never name X-Token, where the key goes"]
+    bearer = "標頭 Authorization: Bearer <金鑰>。GET /lowest?app=123 回傳 lowest。" * 2
+    assert scenario_cards.problems(with_docs(bearer, key_name="Authorization"), "J", family) == []
+    assert scenario_cards.problems(with_docs(bearer, key_name="Authorization", key="Bearer k-1"), "J", family) == [
+        "api GamePrice: the key is the key alone, without a scheme like Bearer"]
+    assert scenario_cards.problems(with_docs(bearer.replace("Bearer", "Token"), key_name="Authorization"), "J", family)
+
+
 def test_api_tasks_point_at_the_stand_in_web_and_endpoints_carry_their_key(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(scenario_cards, "OUT", tmp_path)
     one = {**api_card(), "id": "train-J-001", "family": "J", "topic": "遊戲", "files": {}}
@@ -342,6 +391,11 @@ def test_api_tasks_point_at_the_stand_in_web_and_endpoints_carry_their_key(tmp_p
     assert api["base_url"] == "http://api.gameprice.example:8081/v1" and api["key_env"] == "EDGE_API_GAMEPRICE"
     assert "http://api.gameprice.example:8081/v1/lowest?app=123" in pages[0]["text"]
     assert pages[1]["key"] == {"in": "header", "name": "X-Key", "value": "k-123456"} and "key" not in pages[2]
+    bearer = {**one, "apis": [{**one["apis"][0], "key_name": "Authorization"}]}
+    (tmp_path / "train-cards.jsonl").write_text(json.dumps(bearer, ensure_ascii=False) + "\n", encoding="utf-8")
+    scenario_cards.tasks(type("Args", (), {"split": "train"})())
+    pages = json.loads((task_dir / "web" / "pages.json").read_text(encoding="utf-8"))
+    assert pages[1]["key"] == {"in": "header", "name": "Authorization", "value": "Bearer k-123456"}
 
 
 def test_the_stand_in_web_finds_an_endpoint_whatever_the_order_of_its_parameters() -> None:
@@ -365,14 +419,22 @@ def test_calling_an_api_is_seen_in_the_calls() -> None:
 def test_cards_naming_v1_tools_or_asking_for_jargon_are_retired(tmp_path, monkeypatch) -> None:
     family = {"web": "fixture"}
     assert "names a tool of spec v1" in scenario_cards.problems(card(goal="用 tool_search 找工具"), "F", family)
-    assert scenario_cards.problems(card(must=["保持機魂的角色語氣，提到萬機之神"]), "B", family) == [
-        "a must item asks for the character's tone or jargon"]
+    tone = ["an item asks for the character's tone or jargon"]
+    assert scenario_cards.problems(card(must=["保持機魂的角色語氣，提到萬機之神"]), "B", family) == tone
+    for item in ("在回應閒聊時，語氣符合戰鎚 40K 背景", "使用符合戰錘40K語境的詞彙", "必須展現機魂的角色特質（如提及帝皇、忠誠）"):
+        assert scenario_cards.problems(card(must=[item]), "B", family) == tone, item
+    assert scenario_cards.problems(card(must_not=["不可客套，應保持機魂冷峻的角色語氣"]), "B", family) == tone
+    # The user's 40K words, and searching them, are no tone of the assistant's.
+    assert scenario_cards.problems(card(must=["對使用者的戰鎚風格打招呼自然回應，不可拿去搜尋"],
+                                        must_not=["不得把使用者的口頭禪「帝皇保佑」當關鍵字搜尋"]), "B", family) == []
+    assert scenario_cards.problems(card(must_not=["不能混入簡體字（如「運轉」寫成「運轉」）"]), "B", family) == [
+        "an item is about Simplified Chinese (every row becomes Traditional)"]
     monkeypatch.setattr(scenario_cards, "OUT", tmp_path)
     good = {**card(), "id": "train-B-001", "family": "B", "topic": "t", "files": {}}
     bad = {**card(must=["語氣要有口頭禪"]), "id": "train-B-002", "family": "B", "topic": "t", "files": {}}
-    (tmp_path / "train-cards.jsonl").write_text("".join(json.dumps(c, ensure_ascii=False) + "\n" for c in (good, bad)))
+    (tmp_path / "train-cards.jsonl").write_text("".join(json.dumps(c, ensure_ascii=False) + "\n" for c in (good, bad)), encoding="utf-8")
     scenario_cards.recheck(type("Args", (), {"split": "train"})())
-    assert [json.loads(line)["id"] for line in (tmp_path / "train-cards.jsonl").read_text().splitlines()] == ["train-B-001"]
+    assert [json.loads(line)["id"] for line in (tmp_path / "train-cards.jsonl").read_text(encoding="utf-8").splitlines()] == ["train-B-001"]
 
 
 def test_the_pair_judge_counts_a_line_only_when_it_wins_both_ways_round(monkeypatch):

@@ -47,7 +47,7 @@ def test_agent_reserves_the_whole_task_before_waiting_for_a_borrower():
             with access.generation(agent=False):
                 started.set()
                 assert finish.wait(3)
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 - a thread's failure, failed by the test
             failures.append(exc)
 
     def agent():
@@ -57,7 +57,7 @@ def test_agent_reserves_the_whole_task_before_waiting_for_a_borrower():
                     entered.set()
                 # Idle between token generations is still part of this task.
                 assert task_done.wait(3)
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 - a thread's failure, failed by the test
             failures.append(exc)
 
     b = threading.Thread(target=borrower)

@@ -73,6 +73,17 @@ TASK_PROMPT = """你要為一個寫 Python 的 AI 助理出一道練習題，之
 SECTION = re.compile(r"^=== (標題|需求|檔案：(.+?)|測試：(.+?)|答案：(.+?)|結束) ===[ \t]*$", re.MULTILINE)
 
 
+def unfenced(body: str) -> str:
+    """A file's text without the Markdown code fence the teacher often wraps it in
+    (sometimes without the closing line)."""
+    lines = body.strip("\n").split("\n")
+    if lines[0].startswith("```"):
+        lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+    return "\n".join(lines) + "\n"
+
+
 def parse_task(text: str) -> dict | None:
     """The task in TASK_PROMPT's format, or None when a part is missing."""
     marks = list(SECTION.finditer(text))
@@ -85,11 +96,11 @@ def parse_task(text: str) -> dict | None:
         elif name == "需求":
             task["request"] = body.strip()
         elif mark.group(2):
-            task["files"][mark.group(2).strip()] = body + "\n"
+            task["files"][mark.group(2).strip()] = unfenced(body)
         elif mark.group(3):
-            task["tests"][mark.group(3).strip()] = body + "\n"
+            task["tests"][mark.group(3).strip()] = unfenced(body)
         elif mark.group(4):
-            task["solution"][mark.group(4).strip()] = body + "\n"
+            task["solution"][mark.group(4).strip()] = unfenced(body)
     if not (task.get("title") and task.get("request") and len(task["tests"]) == 1 and task["solution"]
             and marks and marks[-1].group(1) == "結束"):
         return None
@@ -148,8 +159,12 @@ def generate(args: argparse.Namespace) -> None:
     rejected = OUT / f"{args.split}-rejected.jsonl"
     stamp = hashlib.sha256(TASK_PROMPT.encode()).hexdigest()[:12]
     topics = topics_for(args.split)
+    # Numbers continue after the highest one used: rejected tasks leave gaps, and a
+    # number from the count alone would overwrite a task that holds.
+    used = [int(d.name.rsplit("-", 1)[1]) for folder in (root, OUT / f"{args.split}-rejected")
+            if folder.is_dir() for d in folder.iterdir() if re.fullmatch(rf"py-{args.split}-\d+", d.name)]
     lock = threading.Lock()
-    counter = {"have": have, "started": 0}
+    counter = {"have": have, "started": 0, "last": max(used, default=0)}
     (OUT / f"server-{args.split}").mkdir(parents=True, exist_ok=True)
     server = run.Server(config, OUT / f"server-{args.split}", args.parallel, args.port, fit_slots=True)
     run.close_on_term(server)
@@ -174,7 +189,8 @@ def generate(args: argparse.Namespace) -> None:
                     print(f"{kind} {topic}: dropped ({'; '.join(why)})", flush=True)
                     continue
                 counter["have"] += 1
-                task_id = f"py-{args.split}-{counter['have']:03d}"
+                counter["last"] += 1
+                task_id = f"py-{args.split}-{counter['last']:03d}"
                 task.update(kind=kind, topic=topic, teacher=config["model"], prompt=stamp,
                             request=cards.traditional(task["request"]))
                 write_task(root, task_id, task)

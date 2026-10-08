@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Self
 
 import pytest
 
@@ -27,7 +28,7 @@ class FakeKey:
     def __init__(self, hive: str, view: int, path: str) -> None:
         self.hive, self.view, self.path = hive, view, path
 
-    def __enter__(self) -> FakeKey:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> bool:
@@ -43,7 +44,7 @@ class FakeReg:
     def __init__(self, keys: dict[tuple[str, int, str], dict]) -> None:
         self.keys = keys
 
-    def OpenKey(self, parent, sub: str, reserved: int = 0, access: int = 0x20019) -> FakeKey:  # noqa: N802
+    def OpenKey(self, parent, sub: str, reserved: int = 0, access: int = 0x20019) -> FakeKey:
         if isinstance(parent, FakeKey):
             hive, view, path = parent.hive, parent.view, f"{parent.path}\\{sub}"
         else:
@@ -52,20 +53,20 @@ class FakeReg:
             raise FileNotFoundError(path)
         return FakeKey(hive, view, path)
 
-    def EnumKey(self, key: FakeKey, i: int) -> str:  # noqa: N802
+    def EnumKey(self, key: FakeKey, i: int) -> str:
         children = sorted({k[2][len(key.path) + 1:].split("\\")[0] for k in self.keys
                            if k[:2] == (key.hive, key.view) and k[2].startswith(key.path + "\\")})
         if i >= len(children):
             raise OSError("no more keys")
         return children[i]
 
-    def QueryValueEx(self, key: FakeKey, name: str):  # noqa: N802
+    def QueryValueEx(self, key: FakeKey, name: str):
         values = self.keys.get((key.hive, key.view, key.path), {})
         if name not in values:
             raise FileNotFoundError(name)
         return values[name], 1
 
-    def EnumValue(self, key: FakeKey, i: int):  # noqa: N802
+    def EnumValue(self, key: FakeKey, i: int):
         items = list(self.keys.get((key.hive, key.view, key.path), {}).items())
         if i >= len(items):
             raise OSError("no more values")

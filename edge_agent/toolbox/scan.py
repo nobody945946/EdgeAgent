@@ -82,7 +82,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-_COPY_NAME = re.compile(r" \(\d+\)$|[ _-]?(?:copy|複製|副本|備份|backup)", re.I)
+_COPY_NAME = re.compile(r" \(\d+\)$|[ _-]?(?:copy|複製|副本|備份|backup)", re.IGNORECASE)
 
 
 def _original_first(path: Path) -> tuple:
@@ -129,8 +129,8 @@ def duplicates_run(params: dict, root: Path) -> str:
     else:
         groups.sort(key=lambda g: (-(g[0] * (len(g[1]) - 1)), str(g[1][0])))
         extra = sum(size * (len(paths) - 1) for size, paths in groups)
-        lines = [f"{where}：檢查了 {human_count(scanned)} 個檔案，找到 {len(groups)} 組內容完全相同（SHA-256 一樣）的檔案，"
-                 f"多出來的副本共佔 {human_size(extra)}。",
+        lines = [(f"{where}：檢查了 {human_count(scanned)} 個檔案，找到 {len(groups)} 組內容完全相同（SHA-256 一樣）的檔案，"
+                 f"多出來的副本共佔 {human_size(extra)}。"),
                  "每組最早修改的那個標成「原始」。沒有刪除任何檔案；要移走副本需要主人同意，可以用 archive_files 封存。"]
         for n, (size, paths) in enumerate(groups[:20], 1):
             ordered = sorted(paths, key=_original_first)

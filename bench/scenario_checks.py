@@ -129,10 +129,25 @@ def check(name: str, dialogue: dict) -> str | None:
     raise ValueError(f"unknown check: {name}")
 
 
+def unfinished_turns(trajectory: list[dict]) -> list[int]:
+    """Turns whose last assistant message did not finish (stopped at the
+    output limit, after a tool call, aborted, an error): a turn cut at the
+    output limit still ends as done, and its answer stops mid-sentence."""
+    last: list[dict | None] = []
+    for message in trajectory:
+        if message.get("role") == "user":
+            last.append(None)
+        elif message.get("role") == "assistant" and last:
+            last[-1] = message
+    return [n for n, message in enumerate(last, 1)
+            if message is not None and message.get("stopReason", "stop") != "stop"]
+
+
 def failures(dialogue: dict, names: list[str]) -> dict[str, str]:
     """Every listed check the dialogue fails, plus what no family allows:
     turns that did not end normally (a crash, a cancel or a timeout is never
-    a clean example), searching a whole drive and reading the machine itself."""
+    a clean example) or whose last message did not finish, searching a whole
+    drive and reading the machine itself."""
     found = {name: why for name in names if (why := check(name, dialogue)) is not None}
     calls = [c for turn in dialogue.get("dialogue") or [] for c in turn.get("calls") or []]
     scans = [c for c in calls if scans_a_drive(c)]
@@ -141,6 +156,9 @@ def failures(dialogue: dict, names: list[str]) -> dict[str, str]:
     probes = [c for c in calls if probes_the_machine(c)]
     if probes:
         found["system_probe"] = f"read the machine itself: {json.dumps(probes[0].get('arguments'), ensure_ascii=False)[:120]}"
+    unfinished = unfinished_turns(dialogue.get("trajectory") or [])
+    if unfinished:
+        found["cut_off"] = f"turns whose last message did not finish: {unfinished}"
     broken = [i + 1 for i, turn in enumerate(dialogue.get("dialogue") or []) if turn.get("outcome") != "done"]
     if broken:
         found["outcome"] = f"turns not done: {broken}"

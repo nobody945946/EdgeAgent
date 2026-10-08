@@ -11,7 +11,7 @@ dependencies = ["pypdf==6.19.0", "sqlglot==30.21.0", "pymavlink==2.4.50", "capst
                 "opencc-python-reimplemented==0.1.7"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.11", "unicorn==2.1.4"]
+dev = ["pytest>=8", "ruff==0.16.10", "unicorn==2.1.4"]
 
 [project.scripts]
 edge-agent = "edge_agent.cli:main"
@@ -28,3 +28,8 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py312"
 line-length = 88
+
+[tool.ruff.lint]
+# The Agent works on the owner's clock: the dates it tells and the file times
+# it shows are the laptop's local time, so naive local datetimes are meant.
+ignore = ["DTZ"]

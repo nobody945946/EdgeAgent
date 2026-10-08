@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import hashlib
+import html
 import json
 import random
 import re
@@ -82,10 +83,13 @@ WEB_RULES = {
     "optional": '- "pages"：如果這段對話需要查網路，給 3 到 7 個假網頁（格式同上述說明：url、title、published、text，要有正確資料和陷阱）；不需要就給空陣列 []。\n',
     "none": "",
     "api": ('- "apis"：1 到 2 個這段對話裡主人登錄好的 API，每個是 {{"name", "purpose", "base_url", "docs", "key_in"（header、query 或 none）, '
-            '"key_name", "key"（隨便編一串假金鑰）}}；網址用虛構但像真的網域。\n'
-            '- "pages"：3 到 7 個假網頁與 API：每個 API 一頁說明文件（寫出端點、參數、回傳欄位，網址就是 docs），'
-            '以及 1 到 4 個 API 端點：{{"url"（完整網址，含說明文件寫的查詢參數）, "title", "type": "application/json", '
-            '"text"（用那些參數呼叫時回傳的 JSON，數字要合理）}}；其餘是一般網頁，可以有過時或互相矛盾的數字當陷阱。\n'),
+            '"key_name"（說明文件寫的標頭或查詢參數名稱）, "key"（隨便編一串假金鑰，只寫金鑰本身，不加 Bearer 之類的前綴）}}；'
+            '網址用虛構但像真的網域。金鑰放在 Authorization 標頭的 API，說明文件要寫明格式是「Authorization: Bearer 金鑰」。\n'
+            '- "pages"：3 到 7 個假網頁與 API：每個 API 一頁說明文件（寫出端點、參數、回傳欄位，網址就是 docs；端點都用 GET，'
+            '路徑接在 base_url 後面），'
+            '以及 1 到 4 個 API 端點：{{"url"（完整網址＝base_url＋文件寫的路徑，含說明文件寫的查詢參數）, "title", "type": "application/json", '
+            '"text"（用那些參數呼叫時回傳的 JSON，數字要合理）}}；說明文件列出的每個端點都至少要有一個端點頁。'
+            '其餘是一般網頁，可以有過時或互相矛盾的數字當陷阱。\n'),
 }
 FILES_PROMPT = """下面是一張情境卡：另一個模型會照卡扮演使用者，和 AI 助理「機魂」多輪對話。助理只能讀寫一個工作資料夾，看不到使用者電腦的其他地方。
 
@@ -161,6 +165,19 @@ def _strings(value: object, low: int, high: int) -> bool:
 # character comes from what it wants and how it decides).
 V1_TOOLS = re.compile(r"tool_search|現成工具|run_checks")
 JARGON = re.compile(r"角色的?(語氣|口吻|風格)|口頭禪|萬機之?神")
+# The same in either list, worded around the character or 40K (teacher pilot,
+# 2026-10-08: 「語氣符合戰鎚 40K 背景」, 「使用符合戰錘40K語境的詞彙」, 「如提及
+# 帝皇、機靈、忠誠」 passed JARGON, and a must_not can ask for a tone too). The
+# user's own 40K words (「使用者的戰鎚風格打招呼」) are not the assistant's tone.
+TONE = re.compile(r"(機魂|人設|人格|角色)[」』]?的?[^。；，、]{0,6}(語氣|口吻|腔調)"
+                  r"|(語氣|口吻|腔調|敬語)[^。；]{0,10}(機魂|戰[鎚錘]|40K|帝皇)"
+                  r"|(符合|使用(?!者)|(?<!使)用)[^。；，]{0,6}(戰[鎚錘]|40K)[^。；，]{0,6}(語境|風格|語氣|背景)"
+                  r"|(如|例如)(提及|使用|用)[^。；]{0,4}(靈能|機械之?神|帝皇|亞空間|混沌|泰拉|忠誠)")
+# Every row is turned into Taiwan Traditional Chinese (dataset.py), so writing
+# no Simplified Chinese is not an ability a conversation shows; and converting
+# a card to Traditional turned its Simplified examples into nonsense the judge
+# then enforced (「如「運轉」寫成「運轉」」, train-B-018, 2026-10-08).
+SIMPLIFIED = re.compile(r"簡體|简体")
 
 
 def problems(card: dict, family_id: str, family: dict) -> list[str]:
@@ -169,8 +186,12 @@ def problems(card: dict, family_id: str, family: dict) -> list[str]:
              if not isinstance(card.get(key), str) or not card[key].strip()]
     if V1_TOOLS.search(json.dumps(card, ensure_ascii=False)):
         found.append("names a tool of spec v1")
-    if any(JARGON.search(item) for item in card.get("must") or [] if isinstance(item, str)):
-        found.append("a must item asks for the character's tone or jargon")
+    items = [item for item in (card.get("must") or []) + (card.get("must_not") or []) if isinstance(item, str)]
+    if any(JARGON.search(item) for item in card.get("must") or [] if isinstance(item, str)) \
+            or any(TONE.search(item) for item in items):
+        found.append("an item asks for the character's tone or jargon")
+    if any(SIMPLIFIED.search(item) for item in items):
+        found.append("an item is about Simplified Chinese (every row becomes Traditional)")
     if not _strings(card.get("plan"), 2, 5):
         found.append("plan must be 2-5 steps")
     if not _strings(card.get("must"), 1, 5):
@@ -197,20 +218,63 @@ def problems(card: dict, family_id: str, family: dict) -> list[str]:
 
 
 API_FIELDS = ("name", "purpose", "base_url", "docs", "key_in", "key_name", "key")
+# The endpoints an API's docs list, however they write them ("GET /stations/{id}",
+# "Endpoint: /rates/spot", {"path": "/v1/rates"}, "/prices/lowest: ...", a full
+# address on the API's host); a path segment in braces, angle or square
+# brackets, or after a colon stands for any value.
+DOC_TAGS = re.compile(r"</?(?:a|b|i|p|h\d|li|ul|ol|code|pre|strong|em|br|div|span|table|tr|td|th|body|html|head|title)\b[^>]*>")
+DOC_PATH = re.compile(r"(?:(?<=[\s`'\"(:：（])|^)(/[\w\-{}<>\[\].:%]+(?:/[\w\-{}<>\[\].:%]*)*)")
+DOC_URL = re.compile(r"https?://[^\s'\"<>`)]+")
+OTHER_METHOD = re.compile(r"\b(POST|PUT|PATCH|DELETE)\b")
+TEMPLATE = re.compile(r"\{[^/{}]*\}|<[^/<>]*>|\[[^/\[\]]*\]|:\w+")
+SCHEME = re.compile(r"(?i)(bearer|token|basic)\s")
+
+
+def documented(docs: str, base_url: str) -> list[str]:
+    """Each endpoint path an API's docs list, in full (the docs may write it
+    after base_url's path or with it), the base address itself left out."""
+    text = html.unescape(DOC_TAGS.sub(" ", docs))
+    base = urllib.parse.urlsplit(base_url)
+    base_path = base.path.rstrip("/")
+    paths = DOC_PATH.findall(DOC_URL.sub(" ", text))
+    paths += [urllib.parse.urlsplit(url).path for url in DOC_URL.findall(text)
+              if urllib.parse.urlsplit(url).hostname == base.hostname]
+    found = []
+    for path in paths:
+        path = path.rstrip(".,;:)。，；：）")
+        if not (base_path and (path == base_path or path.startswith(base_path + "/"))):
+            path = base_path + path
+        if path.rstrip("/") != base_path and path not in found:
+            found.append(path)
+    return found
+
+
+def serves(path: str, planted: list[str]) -> bool:
+    """A documented path (templates allowed) that one of the planted endpoint paths is."""
+    pattern = "".join("[^/]+" if TEMPLATE.fullmatch(part) else re.escape(part)
+                      for part in re.split(f"({TEMPLATE.pattern})", path) if part)
+    return any(re.fullmatch(pattern + "/?", p) for p in planted)
 
 
 def api_problems(apis: object, pages: list) -> list[str]:
     """A J card: 1-2 registered APIs, each with its documentation page and at
-    least one endpoint page of JSON under its address."""
+    least one endpoint page of JSON under its address. The Agent is told what
+    the owner registered (where the key goes) and reads the docs (what to
+    call), so both must agree, and every endpoint the docs list must answer
+    (2026-10-08, teacher pilot: a documented /stations that answered 404 sent
+    the teacher round a loop of guessed addresses until the guard stopped it;
+    13 of 59 keys carried "Bearer ", so a call made the way the docs say sent
+    it twice)."""
     if not (isinstance(apis, list) and 1 <= len(apis) <= 2 and all(
             isinstance(a, dict) and set(API_FIELDS) <= set(a) and all(isinstance(a[f], str) for f in API_FIELDS)
             for a in apis)):
         return ["needs 1-2 apis with " + ", ".join(API_FIELDS)]
-    urls = {str(p.get("url")) for p in pages if isinstance(p, dict)}
+    by_url = {str(p.get("url")): p for p in pages if isinstance(p, dict)}
     for api in apis:
         if api["key_in"] not in ("header", "query", "none") or (api["key_in"] != "none" and not (api["key_name"] and api["key"])):
             return [f"api {api['name']}: key_in header, query or none, with key_name and key"]
-        if api["docs"] not in urls:
+        docs = by_url.get(api["docs"])
+        if docs is None:
             return [f"api {api['name']}: its docs page is missing"]
         endpoints = [p for p in pages if isinstance(p, dict) and p.get("type") == "application/json"
                      and str(p.get("url", "")).startswith(api["base_url"])]
@@ -221,7 +285,30 @@ def api_problems(apis: object, pages: list) -> list[str]:
                 json.loads(page["text"])
             except (ValueError, TypeError):
                 return [f"api {api['name']}: an endpoint's text is not JSON"]
+        text = docs["text"]
+        if api["key_in"] != "none":
+            if SCHEME.match(api["key"]):
+                return [f"api {api['name']}: the key is the key alone, without a scheme like Bearer"]
+            if api["key_name"].lower() not in text.lower():
+                return [f"api {api['name']}: the docs never name {api['key_name']}, where the key goes"]
+            if api["key_name"].lower() == "authorization" and "bearer" not in text.lower():
+                return [f"api {api['name']}: an Authorization key needs docs that say Bearer"]
+        method = OTHER_METHOD.search(text)
+        if method:
+            return [f"api {api['name']}: the docs use {method.group(1)}; the stand-in web answers GET only"]
+        planted = [urllib.parse.urlsplit(p["url"]).path for p in endpoints]
+        for path in documented(text, api["base_url"]):
+            if not serves(path, planted):
+                return [f"api {api['name']}: the docs list {path}, which no endpoint page answers"]
     return []
+
+
+def header_value(api: dict) -> str:
+    """What a call carries for the key: an Authorization header says its
+    scheme (the docs say Bearer, api_problems), any other place the key alone."""
+    if api["key_in"] == "header" and api["key_name"].lower() == "authorization":
+        return f"Bearer {api['key']}"
+    return api["key"]
 
 
 def to_fixture(text: str, hosts: set[str]) -> str:
@@ -453,7 +540,7 @@ def tasks(args: argparse.Namespace) -> None:
             owner = next((a for a in apis if page.get("type") == "application/json"
                           and page["url"].startswith(a["base_url"]) and a["key_in"] != "none"), None)
             if owner:
-                page["key"] = {"in": owner["key_in"], "name": owner["key_name"], "value": owner["key"]}
+                page["key"] = {"in": owner["key_in"], "name": owner["key_name"], "value": header_value(owner)}
             pages.append(page)
         if pages:
             (task_dir / "web").mkdir()

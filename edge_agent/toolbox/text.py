@@ -219,8 +219,8 @@ def encoding_run(params: dict, root: Path) -> str:
         except (OSError, ToolError) as exc:
             reason = oserror_text(exc) if isinstance(exc, OSError) else str(exc)
             failed.append(f"- {shown(root, path)}：{reason}，沒動")
-    lines = [f"處理了 {len(files)} 個檔案：轉換完成 {len(done)} 個（每個都讀回來確認過）、"
-             f"已經是目標編碼 {len(same)} 個、沒動 {len(skipped) + len(failed)} 個。"]
+    lines = [(f"處理了 {len(files)} 個檔案：轉換完成 {len(done)} 個（每個都讀回來確認過）、"
+             f"已經是目標編碼 {len(same)} 個、沒動 {len(skipped) + len(failed)} 個。")]
     for title, group, limit in (("失敗的：", failed, 15), ("轉換的：", done, 30),
                                 ("不能轉的：", skipped, 15), ("本來就對的：", same, 10)):
         if group:
@@ -376,8 +376,8 @@ def _merge_lines(plan: MergePlan, root: Path) -> list[str]:
 
 def merge_preview(params: dict, root: Path) -> str:
     plan = _merge_plan(params, root)
-    return "\n".join([f"預計把 {len(plan.files)} 個 CSV 合併成「{shown(root, plan.output)}」（還沒有做），"
-                      f"共 {plan.total:,} 列資料（不含標題）：", *_merge_lines(plan, root), *plan.notes,
+    return "\n".join([(f"預計把 {len(plan.files)} 個 CSV 合併成「{shown(root, plan.output)}」（還沒有做），"
+                      f"共 {plan.total:,} 列資料（不含標題）："), *_merge_lines(plan, root), *plan.notes,
                       "輸出是 UTF-8 加 BOM、逗號分隔（Excel 直接開不會亂碼）；原本的檔案不會被改動。"])
 
 
@@ -395,8 +395,8 @@ def merge_run(params: dict, root: Path) -> str:
     with open(plan.output, encoding="utf-8-sig", newline="") as back:
         written = sum(1 for _ in csv.reader(back)) - 1
     check = "讀回來確認列數相符" if written == plan.total else f"讀回來是 {written:,} 列，和預期的 {plan.total:,} 列不符！"
-    return "\n".join([f"已合併 {len(plan.files)} 個 CSV 成「{shown(root, plan.output)}」：共 {plan.total:,} 列資料"
-                      f"（不含標題），{len(plan.columns)} 欄；{check}。", *_merge_lines(plan, root), *plan.notes,
+    return "\n".join([(f"已合併 {len(plan.files)} 個 CSV 成「{shown(root, plan.output)}」：共 {plan.total:,} 列資料"
+                      f"（不含標題），{len(plan.columns)} 欄；{check}。"), *_merge_lines(plan, root), *plan.notes,
                       "輸出是 UTF-8 加 BOM、逗號分隔，Excel 可以直接開。"])
 
 
@@ -422,7 +422,7 @@ register(Tool(
 
 # ---------------------------------------------------------------- log_summary
 
-_LEVEL = re.compile(r"(?<![A-Za-z0-9_])(FATAL|CRITICAL|ERROR|ERR|WARNING|WARN|INFO|DEBUG)(?![A-Za-z0-9_])", re.I)
+_LEVEL = re.compile(r"(?<![A-Za-z0-9_])(FATAL|CRITICAL|ERROR|ERR|WARNING|WARN|INFO|DEBUG)(?![A-Za-z0-9_])", re.IGNORECASE)
 _GROUP = {"fatal": "error", "critical": "error", "error": "error", "err": "error",
           "warning": "warn", "warn": "warn", "info": "info", "debug": "debug"}
 _NORMALIZE = (

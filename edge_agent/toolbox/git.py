@@ -126,7 +126,7 @@ def git_run(params: dict, root: Path) -> str:
     repo = resolve_inside(root, params["repo"])
     if not repo.is_dir():
         raise ToolError(f"「{params['repo']}」不是資料夾")
-    code, top, err = _git(repo, "rev-parse", "--show-toplevel")
+    code, _top, err = _git(repo, "rev-parse", "--show-toplevel")
     if code != 0:
         raise ToolError(f"「{shown(root, repo)}」不是 git 儲存庫（{_first_line(err)}）")
     what, limit = params["what"], params["limit"]
