@@ -51,7 +51,7 @@ TIMEOUT_S = 1800
 
 CARD_PROMPT = """你要為一個 AI 助理的訓練與測驗設計一張「情境卡」：一段多輪對話的劇本大綱，之後會由另一個模型照卡扮演使用者，和助理真的對話。
 
-助理是誰：使用者筆電上的個人代理「機魂」（戰鎚 40K 機魂的角色），能用工具查網路（web_research）、在工作資料夾裡讀寫檔案、執行 PowerShell、找現成工具（tool_search）。今天是 {today}。
+助理是誰：使用者筆電上的個人代理「機魂」（戰鎚 40K 機魂的角色），能查網路（web_research，web_fetch 讀網頁、JSON 和 PDF）、呼叫 API、在工作資料夾裡讀寫檔案、執行 PowerShell 和 Python。今天是 {today}。
 
 這張卡要測的能力（{family_id}．{name}）：{ability}
 使用者通常怎麼做：{user}
@@ -80,6 +80,11 @@ WEB_RULES = {
                "城市、公司、人物、數字請用虛構的，避免和真實世界混淆；遊戲或作品的設定可以照真實作品寫。\n",
     "optional": '- "pages"：如果這段對話需要查網路，給 3 到 7 個假網頁（格式同上述說明：url、title、published、text，要有正確資料和陷阱）；不需要就給空陣列 []。\n',
     "none": "",
+    "api": ('- "apis"：1 到 2 個這段對話裡主人登錄好的 API，每個是 {{"name", "purpose", "base_url", "docs", "key_in"（header、query 或 none）, '
+            '"key_name", "key"（隨便編一串假金鑰）}}；網址用虛構但像真的網域。\n'
+            '- "pages"：3 到 7 個假網頁與 API：每個 API 一頁說明文件（寫出端點、參數、回傳欄位，網址就是 docs），'
+            '以及 1 到 4 個 API 端點：{{"url"（完整網址，含說明文件寫的查詢參數）, "title", "type": "application/json", '
+            '"text"（用那些參數呼叫時回傳的 JSON，數字要合理）}}；其餘是一般網頁，可以有過時或互相矛盾的數字當陷阱。\n'),
 }
 FILES_PROMPT = """下面是一張情境卡：另一個模型會照卡扮演使用者，和 AI 助理「機魂」多輪對話。助理只能讀寫一個工作資料夾，看不到使用者電腦的其他地方。
 
@@ -170,10 +175,55 @@ def problems(card: dict, family_id: str, family: dict) -> list[str]:
         url = urllib.parse.urlsplit(str(page.get("url", "")) if isinstance(page, dict) else "")
         if not (isinstance(page, dict) and url.scheme in ("http", "https") and url.hostname
                 and isinstance(page.get("title"), str) and isinstance(page.get("text"), str)
-                and 50 <= len(page["text"]) <= 3000):
+                and (20 if page.get("type") == "application/json" else 50) <= len(page["text"]) <= 3000):
             found.append("a page needs url, title and 50-3000 characters of text")
             break
+    if family["web"] == "api":
+        found += api_problems(card.get("apis"), pages)
     return found
+
+
+API_FIELDS = ("name", "purpose", "base_url", "docs", "key_in", "key_name", "key")
+
+
+def api_problems(apis: object, pages: list) -> list[str]:
+    """A J card: 1-2 registered APIs, each with its documentation page and at
+    least one endpoint page of JSON under its address."""
+    if not (isinstance(apis, list) and 1 <= len(apis) <= 2 and all(
+            isinstance(a, dict) and set(API_FIELDS) <= set(a) and all(isinstance(a[f], str) for f in API_FIELDS)
+            for a in apis)):
+        return ["needs 1-2 apis with " + ", ".join(API_FIELDS)]
+    urls = {str(p.get("url")) for p in pages if isinstance(p, dict)}
+    for api in apis:
+        if api["key_in"] not in ("header", "query", "none") or (api["key_in"] != "none" and not (api["key_name"] and api["key"])):
+            return [f"api {api['name']}: key_in header, query or none, with key_name and key"]
+        if api["docs"] not in urls:
+            return [f"api {api['name']}: its docs page is missing"]
+        endpoints = [p for p in pages if isinstance(p, dict) and p.get("type") == "application/json"
+                     and str(p.get("url", "")).startswith(api["base_url"])]
+        if not endpoints:
+            return [f"api {api['name']}: no JSON endpoint under its base_url"]
+        for page in endpoints:
+            try:
+                json.loads(page["text"])
+            except (ValueError, TypeError):
+                return [f"api {api['name']}: an endpoint's text is not JSON"]
+    return []
+
+
+def to_fixture(text: str, hosts: set[str]) -> str:
+    """Addresses on the card's hosts as the stand-in web serves them (http, WEB_PORT)."""
+    if not hosts:
+        return text
+    pattern = re.compile(r"https?://(" + "|".join(map(re.escape, sorted(hosts))) + r")(?::\d+)?")
+    return pattern.sub(lambda m: f"http://{m.group(1)}:{WEB_PORT}", text)
+
+
+def env_name(api: dict, index: int) -> str:
+    """EDGE_API_<NAME> as edge_agent.apis names it, from the API's host for a card's made-up API."""
+    label = urllib.parse.urlsplit(api["base_url"]).hostname or f"api{index}"
+    label = next((part for part in label.split(".") if part not in ("api", "www", "open", "data")), label)
+    return "EDGE_API_" + re.sub(r"[^A-Za-z0-9]", "_", label).upper()
 
 
 def inside(path: str) -> bool:
@@ -353,12 +403,23 @@ def tasks(args: argparse.Namespace) -> None:
             target = task_dir / "workspace" / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text, encoding="utf-8")
+        # The stand-in web serves every page on its own host name at WEB_PORT,
+        # over http: page addresses and every mention of those hosts (API docs
+        # name their endpoints) point there.
+        hosts = {urllib.parse.urlsplit(page["url"]).hostname for page in card.get("pages") or []}
+        apis = [{**api, "base_url": to_fixture(api["base_url"], hosts), "docs": to_fixture(api["docs"], hosts),
+                 "key_env": env_name(api, n)} for n, api in enumerate(card.get("apis") or [])]
         pages = []
         for page in card.get("pages") or []:
-            url = urllib.parse.urlsplit(page["url"])
-            # The stand-in web serves every page on its own host name at WEB_PORT, over http.
-            pages.append({**page, "url": urllib.parse.urlunsplit(
-                ("http", f"{url.hostname}:{WEB_PORT}", url.path or "/", url.query, ""))})
+            url = urllib.parse.urlsplit(to_fixture(page["url"], hosts))
+            page = {**page, "url": urllib.parse.urlunsplit(("http", url.netloc, url.path or "/", url.query, "")),
+                    "text": to_fixture(page["text"], hosts)}
+            # An endpoint answers only with its API's key (the fixture checks it).
+            owner = next((a for a in apis if page.get("type") == "application/json"
+                          and page["url"].startswith(a["base_url"]) and a["key_in"] != "none"), None)
+            if owner:
+                page["key"] = {"in": owner["key_in"], "name": owner["key_name"], "value": owner["key"]}
+            pages.append(page)
         if pages:
             (task_dir / "web").mkdir()
             (task_dir / "web" / "pages.json").write_text(json.dumps(pages, ensure_ascii=False, indent=1),
@@ -366,7 +427,7 @@ def tasks(args: argparse.Namespace) -> None:
         scenario = {key: card[key] for key in ("persona", "topic", "opening", "goal", "plan", "max_turns")}
         task = {"kind": "scenario", "family": card["family"], "scope": "change", "web": bool(pages),
                 "scenario": scenario, "must": card["must"], "must_not": card["must_not"],
-                "check": ["true"], "timeout_s": TIMEOUT_S}
+                "check": ["true"], "timeout_s": TIMEOUT_S, **({"apis": apis} if apis else {})}
         (task_dir / "task.json").write_text(json.dumps(task, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"{len(cards)} tasks -> {root}")
 

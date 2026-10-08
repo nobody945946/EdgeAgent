@@ -151,7 +151,8 @@ def main() -> None:
         export = hashlib.sha256(data).hexdigest()[:12]
         split = "eval" if held_out(data) else "train"
         prompt = EXPORT_PROMPT.format(transcript=transcript(data.decode("utf-8-sig", errors="replace")),
-                                      families=family_list(spec), web_rule=cards.WEB_RULES["optional"])
+                                      families=family_list(spec), web_rule=cards.WEB_RULES["optional"]
+                                      + "（選 J 的話，pages 改照下面的格式，並加上 apis：）\n" + cards.WEB_RULES["api"])
         card = ask_card(prompt, None)
         if card is None:
             print(f"{path.name}: no usable card", flush=True)
@@ -163,8 +164,9 @@ def main() -> None:
         base = {k: v for k, v in card.items() if k not in ("id", "source", "family", "topic")}
         rng = random.Random(export)
         for topic in rng.sample(topics, min(args.variants, len(topics))):
+            rule = cards.WEB_RULES[spec["families"][card["family"]]["web"]] or cards.WEB_RULES["optional"]
             variant = ask_card(VARIANT_PROMPT.format(card=json.dumps(base, ensure_ascii=False, indent=1),
-                                                     topic=topic, web_rule=cards.WEB_RULES["optional"]),
+                                                     topic=topic, web_rule=rule),
                                card["family"])
             if variant is not None:
                 variant["topic"] = topic

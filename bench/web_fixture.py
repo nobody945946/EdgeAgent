@@ -6,6 +6,9 @@ the hosts), on port 8081; a search engine on 8080 answers in DuckDuckGo's
 HTML result format (what web_tools.mjs parses), ranking the pages for the
 query. So the product's own web_research runs unchanged against a fixed web
 with planted traps (forum posts, content farms, old news, conflicting sources).
+A page of type application/json is an API endpoint: served as JSON, matched
+on its path and the query parameters it names, refused (401) without its
+API's key (page["key"]: header or query, name, value), and never a search hit.
 
     python bench/web_fixture.py /web
 """
@@ -49,6 +52,24 @@ def rank(query: str, pages: list[dict], limit: int = 8) -> list[dict]:
     return [page for _, page in sorted(scored, key=lambda item: -item[0])[:limit]]
 
 
+def find(pages: list[dict], url: str) -> dict | None:
+    """The page at this address: exactly, or an API endpoint on the same path
+    whose query parameters the request carries (in any order, with more, such
+    as the key)."""
+    exact = next((p for p in pages if p["url"] == url), None)
+    if exact:
+        return exact
+    asked = urlsplit(url)
+    params = {k: v[0] for k, v in parse_qs(asked.query).items()}
+    for page in pages:
+        known = urlsplit(page["url"])
+        wanted = {k: v[0] for k, v in parse_qs(known.query).items()}
+        if page.get("type") == "application/json" and (known.netloc, known.path) == (asked.netloc, asked.path) \
+                and all(params.get(k) == v for k, v in wanted.items()):
+            return page
+    return None
+
+
 def page_html(page: dict) -> str:
     meta = (f'<meta property="article:published_time" content="{page["published"]}">'
             if page.get("published") else "")
@@ -58,13 +79,13 @@ def page_html(page: dict) -> str:
 
 def main() -> None:
     pages = json.loads((Path(sys.argv[1]) / "pages.json").read_text(encoding="utf-8"))
-    by_url = {p["url"]: p for p in pages}
+    readable = [p for p in pages if p.get("type") != "application/json"]  # what a search finds
 
     class Handler(BaseHTTPRequestHandler):
-        def reply(self, status: int, body: str) -> None:
+        def reply(self, status: int, body: str, kind: str = "text/html") -> None:
             data = body.encode("utf-8")
             self.send_response(status)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Type", f"{kind}; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -75,11 +96,19 @@ def main() -> None:
                 results = "".join(
                     f'<div class="result"><a class="result__a" href="{html.escape(p["url"])}">'
                     f'{html.escape(p["title"])}</a><a class="result__snippet">{html.escape(p["text"][:120])}</a></div>'
-                    for p in rank(query, pages))
+                    for p in rank(query, readable))
                 return self.reply(200, f"<html><body>{results}</body></html>")
-            url = f"http://{self.headers.get('Host', '')}{self.path}"
-            page = by_url.get(url)
-            return self.reply(200, page_html(page)) if page else self.reply(404, "not found")
+            page = find(pages, f"http://{self.headers.get('Host', '')}{self.path}")
+            if page is None:
+                return self.reply(404, "not found")
+            if page.get("type") != "application/json":
+                return self.reply(200, page_html(page))
+            key = page.get("key")
+            given = (self.headers.get(key["name"]) if key and key["in"] == "header"
+                     else parse_qs(urlsplit(self.path).query).get(key["name"], [None])[0] if key else None)
+            if key and given != key["value"]:
+                return self.reply(401, json.dumps({"error": "invalid or missing API key"}), "application/json")
+            return self.reply(200, page["text"], "application/json")
 
         def log_message(self, *args: object) -> None:
             pass

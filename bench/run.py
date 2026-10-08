@@ -445,6 +445,8 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
             **({"model": config["self_model"]} if config.get("self_model") else {}),
             "vision": config.get("vision", False), "prompt": task.get("prompt", ""),
             "hardware": LAPTOP_HARDWARE,
+            # The APIs a scenario's owner registered (scenario_cards.py, family J), with made-up keys.
+            "apis": task.get("apis", []),
             # A scenario (bench/scenario_cards.py) is a conversation with a simulated user.
             **({"scenario": task["scenario"]} if task.get("scenario") else {}),
             # Who asked (permissions.SCOPES): the owner's change or read task, or a public one.
