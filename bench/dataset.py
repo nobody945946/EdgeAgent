@@ -11,9 +11,10 @@ requests with the same tools is one row (its last request plus the reply),
 trained only on the replies written in that stretch, under the tools the
 model saw when it wrote them.
 
-Eval tasks (bench/tasks, and scenario cards of the eval split) never become
-training rows: only runs over training tasks (.runtime/agentdata/tool-tasks,
-scenario train cards) are accepted.
+Eval tasks (bench/tasks, and the eval splits of the scenario cards and the
+Python tasks) never become training rows: only runs over training tasks
+(.runtime/agentdata/tool-tasks, scenario train cards, Python train tasks) are
+accepted.
 
 A scenario conversation (bench/scenario_cards.py) becomes rows only if the
 judge passed it (bench/scenario_judge.py, <run>/verdicts.jsonl). Each user
@@ -58,6 +59,11 @@ from run import BUDGET_CUT  # noqa: E402
 EVAL_TASKS = {p.name for p in (ROOT / "bench/tasks").iterdir() if p.is_dir()}
 
 
+def is_eval(task: str) -> bool:
+    """bench/tasks, scenario cards of the eval split (eval-*) and Python eval tasks (py-eval-*)."""
+    return task in EVAL_TASKS or task.startswith(("eval-", "py-eval-"))
+
+
 def final_answer(trajectory: list[dict]) -> dict | None:
     """The Agent's last assistant message in wire format (its text and the
     reasoning before it: a finished job ends with its report, not a tool call)."""
@@ -98,7 +104,7 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
     for line in (run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines():
         result = json.loads(line)
         job = f"{result['task']}-r{result['rep']}"
-        if result["task"] in EVAL_TASKS or result["task"].startswith("eval-"):
+        if is_eval(result["task"]):
             skip("eval task")
             continue
         if result.get("kind") == "scenario" and not judged.get(job):

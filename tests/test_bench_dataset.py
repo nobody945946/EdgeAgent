@@ -73,3 +73,9 @@ def test_a_new_user_turn_ends_a_stretch() -> None:
 def test_rows_teach_taiwan_forms_but_leave_traditional_text_alone() -> None:
     assert dataset.taiwan_traditional("这个软件") == "這個軟體"
     assert dataset.taiwan_traditional("測試通過") == "測試通過"
+
+
+def test_no_eval_split_ever_becomes_a_row() -> None:
+    assert dataset.is_eval("eval-G-016") and dataset.is_eval("py-eval-002")
+    assert all(map(dataset.is_eval, dataset.EVAL_TASKS))
+    assert not any(map(dataset.is_eval, ("train-G-016", "py-train-002", "archive-00")))
