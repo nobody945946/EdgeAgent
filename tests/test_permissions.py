@@ -15,9 +15,9 @@ from edge_agent.permissions import (
 )
 
 
-def test_defaults_ask_before_changes_and_keep_discord_off(tmp_path):
+def test_defaults_run_what_can_be_put_back_and_keep_discord_off(tmp_path):
     config = EdgeAgent(tmp_path).config["permissions"]
-    assert bridge_rules(config["ui"]) == {"edit": "ask", "shell": "ask", "web": "allow"}
+    assert bridge_rules(config["ui"]) == {"edit": "reversible", "shell": "reversible", "web": "allow"}
     assert config["discord"]["enabled"] is False
     with pytest.raises(PermissionError):
         profile_for(config, "discord")
@@ -72,11 +72,11 @@ def test_workspace_roots_limit_folders(tmp_path: Path):
     assert workspace_allowed(DEFAULT_PERMISSIONS["ui"], tmp_path / "private")
 
 
-def test_routine_shell_profile_persists_without_enabling_writes(tmp_path):
+def test_the_earlier_routine_shell_becomes_reversible_without_enabling_a_client(tmp_path):
     manager = EdgeAgent(tmp_path)
-    manager.update_config({"permissions": {"discord": {"shell": "routine"}}})
+    manager.update_config({"permissions": {"discord": {"edit": "ask", "shell": "routine"}}})
     profile = EdgeAgent(tmp_path).config["permissions"]["discord"]
-    assert bridge_rules(profile) == {"edit": "ask", "shell": "routine", "web": "allow"}
+    assert bridge_rules(profile) == {"edit": "ask", "shell": "reversible", "web": "allow"}
     assert not profile["enabled"]
 
 

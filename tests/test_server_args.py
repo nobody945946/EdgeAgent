@@ -26,7 +26,7 @@ def test_base_server_is_one_slot_without_an_extra_agent_loop() -> None:
 
     assert _value_after(args, "--ctx-size") == "131072"
     assert _value_after(args, "--parallel") == "1"
-    assert "--kv-unified" not in args
+    assert "--kv-unified" not in args and "--batch-size" not in args
     assert _value_after(args, "--load-mode") == "mmap"
     assert _value_after(args, "--lazy-mode") == "on"
     assert "--tools" not in args
@@ -100,6 +100,9 @@ def test_character_server_gets_two_slots_and_lora() -> None:
     assert _value_after(args, "--ctx-size") == "32768"
     assert _value_after(args, "--parallel") == "2"
     assert "--kv-unified" in args
+    # Each slot keeps its cache while the other works; a long prompt yields every micro-batch.
+    assert "--no-cache-idle-slots" in args
+    assert _value_after(args, "--batch-size") == "512"
     assert _value_after(args, "--load-mode") == "mmap"
     assert _value_after(args, "--lazy-mode") == "on"
     assert _value_after(args, "--cache-ram") == "256"

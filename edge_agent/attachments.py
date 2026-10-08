@@ -9,6 +9,8 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
+from edge_agent import documents
+
 
 def attachment_context(attachments: object) -> str:
     return decode_attachments(attachments, {"vision": False, "audio": False})[0]
@@ -73,18 +75,7 @@ def decode_attachments(
         if document_total > 2_000_000:
             raise ValueError("document attachments exceed 2 MB")
         if extension == ".pdf":
-            from pypdf import PdfReader
-            from pypdf.errors import PdfReadError
-
-            try:
-                reader = PdfReader(io.BytesIO(raw))
-            except PdfReadError as exc:
-                raise ValueError("invalid PDF attachment") from exc
-            if len(reader.pages) > 50:
-                raise ValueError("PDF attachments are limited to 50 pages")
-            content = "\n".join(page.extract_text() or "" for page in reader.pages)
-            if not content.strip():
-                raise ValueError("PDF has no selectable text; scanned PDFs need OCR")
+            content = documents.pdf_text(raw)
         elif extension == ".docx":
             try:
                 with zipfile.ZipFile(io.BytesIO(raw)) as document:

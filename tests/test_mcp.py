@@ -156,27 +156,22 @@ def _ran(log: Path) -> list[str]:
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
-def test_first_search_waits_for_a_connecting_deferred_server(tmp_path, repeating_model):  # noqa: F811 - imported fixture
+def test_a_connecting_servers_tools_are_offered_from_the_first_request(tmp_path, repeating_model):  # noqa: F811 - imported fixture
+    """Spec v2: an enabled server's tools are shown up front (no catalog),
+    including a server still starting when the session opens."""
     port, state = repeating_model
     server, log = _server(tmp_path, permission="allow", hardware=False)
     server["env"]["MCP_FIXTURE_INITIALIZE_DELAY_MS"] = "750"
-    state["sequence"] = [
-        ("tool_search", {"query": "stock quote"}),
-        ("mcp__fin__quote", {"symbol": "2330"}),
-    ]
+    state["sequence"] = [("mcp__fin__quote", {"symbol": "2330"})]
     chat = NativeChat(model_port=port)
     try:
         events = _run(chat, tmp_path, {"fin": server}, approve=lambda data: False)
     finally:
         chat.close()
-    searches = [d for n, d in events if n == "tool" and d["phase"] == "finished" and d["tool"] == "tool_search"]
-    assert len(searches) == 1
-    assert "mcp__fin__quote" in searches[0]["result"]["details"]["found"]
     assert _ran(log) == ["quote"]
     assert not any(n == "approval" for n, _ in events)
-    declarations = [[t["function"]["name"] for t in r.get("tools", [])] for r in state["requests"]]
-    assert "mcp__fin__quote" not in declarations[0]
-    assert "mcp__fin__quote" in declarations[1]
+    first = [t["function"]["name"] for t in state["requests"][0].get("tools", [])]
+    assert "mcp__fin__quote" in first and "tool_search" not in first
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
@@ -184,9 +179,7 @@ def test_read_only_tools_run_and_destructive_ones_ask_once(tmp_path, repeating_m
     port, state = repeating_model
     server, log = _server(tmp_path, permission="allow", hardware=False)
     state["sequence"] = [
-        ("tool_search", {"query": "stock quote"}),
         ("mcp__fin__quote", {"symbol": "2330"}),
-        ("tool_search", {"query": "place stock order"}),
         ("mcp__fin__place_order", {"symbol": "2330", "shares": 1}),
     ]
     chat = NativeChat(model_port=port)
@@ -197,9 +190,6 @@ def test_read_only_tools_run_and_destructive_ones_ask_once(tmp_path, repeating_m
     approvals = [data for name, data in events if name == "approval"]
     assert [(a["tool"], a["explicit"]) for a in approvals] == [("mcp__fin__place_order", "mcp_destructive")]
     assert _ran(log) == ["quote"]  # the denied order never reached the server
-    first = state["requests"][0]
-    assert {t["function"]["name"] for t in first.get("tools", [])} >= {"tool_search"}
-    assert not any(t["function"]["name"].startswith("mcp__") for t in first.get("tools", []))
     assert not (Path(__file__).resolve().parents[1] / ".runtime/pi-state/mcp.log").exists()
 
 
@@ -208,7 +198,6 @@ def test_hardware_needs_its_own_approval_every_time(tmp_path, repeating_model): 
     port, state = repeating_model
     server, log = _server(tmp_path, permission="allow", hardware=True, hardware_tools=True)
     state["sequence"] = [
-        ("tool_search", {"query": "drone arm telemetry"}),
         ("mcp__drone__telemetry", {}),
         ("mcp__drone__arm", {}),
         ("mcp__drone__arm", {}),
@@ -228,7 +217,7 @@ def test_hardware_needs_its_own_approval_every_time(tmp_path, repeating_model): 
 def test_an_ask_server_asks_even_for_reads(tmp_path, repeating_model):  # noqa: F811
     port, state = repeating_model
     server, log = _server(tmp_path, permission="ask", hardware=False)
-    state["sequence"] = [("tool_search", {"query": "stock quote"}), ("mcp__fin__quote", {"symbol": "2330"})]
+    state["sequence"] = [("mcp__fin__quote", {"symbol": "2330"})]
     chat = NativeChat(model_port=port)
     try:
         events = _run(chat, tmp_path, {"fin": server}, approve=lambda data: False)
@@ -246,7 +235,6 @@ def test_with_mcp_the_read_only_mode_still_cannot_change_anything(tmp_path, repe
     port, state = repeating_model
     server, log = _server(tmp_path, permission="allow", hardware=False)
     state["sequence"] = [
-        ("tool_search", {"query": "place stock order"}),
         ("mcp__fin__place_order", {"symbol": "2330", "shares": 1}),
         ("write", {"path": "x.txt", "content": "x"}),
     ]
@@ -269,11 +257,10 @@ def test_with_mcp_the_read_only_mode_still_cannot_change_anything(tmp_path, repe
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
-def test_only_the_listed_tools_can_be_found_or_called(tmp_path, repeating_model):  # noqa: F811
+def test_only_the_listed_tools_are_offered_or_called(tmp_path, repeating_model):  # noqa: F811
     port, state = repeating_model
     server, log = _server(tmp_path, permission="allow", hardware=False, tools=["quo*"])
     state["sequence"] = [
-        ("tool_search", {"query": "stock quote order journal note"}),
         ("mcp__fin__quote", {"symbol": "2330"}),
         ("mcp__fin__place_order", {"symbol": "2330", "shares": 1}),
     ]
@@ -282,8 +269,8 @@ def test_only_the_listed_tools_can_be_found_or_called(tmp_path, repeating_model)
         events = _run(chat, tmp_path, {"fin": server}, approve=lambda data: True)
     finally:
         chat.close()
-    found = next(d for n, d in events if n == "tool" and d["phase"] == "finished" and d["tool"] == "tool_search")
-    assert "quote" in json.dumps(found) and "place_order" not in json.dumps(found)
+    offered = {t["function"]["name"] for t in state["requests"][0].get("tools", [])}
+    assert "mcp__fin__quote" in offered and "mcp__fin__place_order" not in offered
     assert not any(n == "approval" for n, _ in events)
     assert _ran(log) == ["quote"]
 
@@ -295,7 +282,6 @@ def test_a_turn_confirm_server_lets_one_approval_cover_the_turn(tmp_path, repeat
     port, state = repeating_model
     server, log = _server(tmp_path, permission="allow", hardware=False, confirm="turn")
     state["sequence"] = [
-        ("tool_search", {"query": "place stock order"}),
         ("mcp__fin__place_order", {"symbol": "2330", "shares": 1}),
         ("mcp__fin__place_order", {"symbol": "2317", "shares": 1}),
     ]
@@ -313,9 +299,7 @@ def test_the_owner_can_vouch_for_unmarked_tools_but_not_against_the_server(tmp_p
     port, state = repeating_model
     server, log = _server(tmp_path, permission="allow", read_only_tools=["note", "place_order"])
     state["sequence"] = [
-        ("tool_search", {"query": "journal note"}),
         ("mcp__fin__note", {"text": "watch 2330"}),
-        ("tool_search", {"query": "place stock order"}),
         ("mcp__fin__place_order", {"symbol": "2330", "shares": 1}),
     ]
     chat = NativeChat(model_port=port)

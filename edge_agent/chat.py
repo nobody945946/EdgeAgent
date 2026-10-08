@@ -12,7 +12,6 @@ from pathlib import Path
 from uuid import uuid4
 
 from edge_agent import prompt as agent_prompt
-from edge_agent import toolbox
 from edge_agent.approvals import explain_approval, host_answer
 from edge_agent.bridge import PiBridge
 from edge_agent.chat_session import ChatSession
@@ -54,10 +53,13 @@ class NativeChat:
         self.model = ""
         self.slot_id: int | None = 0
         # List the enabled MCP servers in the system prompt, so a small model
-        # knows tool_search has something to find (measured by the bench mcp-* tasks).
+        # knows what they are for (measured by the bench mcp-* tasks).
         self.mcp_overview = True
+        # The APIs the Agent is told about and the keys its shell gets (edge_agent.apis.for_session).
+        self.api_session: tuple[list[dict[str, str]], dict[str, str]] = ([], {})
         # The index of the Agent's adapter on the server (None: no adapter).
         self.lora_id: int | None = None
+        self.hardware = ""
         self.capabilities = {"vision": False, "audio": False}
         self._sessions: dict[str, ChatSession] = {}
         self._sessions_lock = threading.RLock()
@@ -69,8 +71,11 @@ class NativeChat:
         capabilities: dict[str, bool] | None = None,
         max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
         working_context_size: int = DEFAULT_WORKING_CONTEXT_SIZE,
+        hardware: str | None = None,
     ) -> None:
         self.context_size = context_size
+        if hardware is not None:
+            self.hardware = hardware  # the machine, for the Agent's runtime section (edge_agent.hardware)
         # One owner for the effective budget passed to Pi and displayed by UI.
         # Reserve at least half the window for instructions, media and history.
         self.max_output_tokens = min(max_output_tokens, context_size // 2)
@@ -176,6 +181,8 @@ class NativeChat:
             public,
             tuple(sorted(permissions.items())),
             json.dumps(mcp_servers, sort_keys=True),
+            self.hardware,
+            json.dumps(self.api_session, sort_keys=True),
         )
         if self.bridge.key == key and self.bridge.alive():
             return
@@ -189,6 +196,10 @@ class NativeChat:
                 "api_key": self.api_key,
                 "model": "local",
                 "model_name": self.model,
+                "hardware": self.hardware,
+                "apis": self.api_session[0],
+                # Keys go to the shell's environment and are masked in tool output, never to the model.
+                "api_env": self.api_session[1],
                 "slot_id": self.slot_id,
                 "mcp_overview": self.mcp_overview,
                 "lora_id": self.lora_id,
@@ -205,7 +216,6 @@ class NativeChat:
                 "system_prompt": agent_prompt.system_prompt(
                     "public" if public else "read" if read_only else "change"
                 ) if agent else agent_prompt.chat_prompt(),
-                "toolbox": toolbox.specs() if agent else [],
                 # translate_machine runs edge_agent.lingua with this same Python
                 "python": sys.executable,
                 "entries": session.entries,

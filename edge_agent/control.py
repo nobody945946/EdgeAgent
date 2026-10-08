@@ -9,6 +9,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
+from edge_agent import apis, undo
 from edge_agent.attachments import decode_attachments
 from edge_agent.core import EdgeAgent
 from edge_agent.inference import InferenceGateway
@@ -134,6 +135,25 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/config":
                 result = self.core.update_config(payload)
                 self._json(HTTPStatus.OK, result)
+                return
+            if self.path == "/apis":
+                # The registry with which APIs have a key (never the keys themselves).
+                self._json(HTTPStatus.OK, {"apis": self.core.config["apis"],
+                                           "has_key": apis.has_key(self.core.config["apis"])})
+                return
+            if self.path == "/apis/key":
+                self._json(HTTPStatus.OK, {"has_key": self.core.set_api_key(
+                    str(payload.get("id") or ""), str(payload.get("key") or ""))})
+                return
+            if self.path in ("/undo", "/undo/restore"):
+                # The Agent's changes the host can put back (edge_agent.undo), per workspace.
+                workspace = Path(str(payload.get("workspace") or ""))
+                if not workspace.is_dir():
+                    raise ValueError("workspace must be an existing folder")
+                if self.path == "/undo":
+                    self._json(HTTPStatus.OK, {"checkpoints": undo.history(workspace)})
+                else:
+                    self._json(HTTPStatus.OK, {"restored": undo.restore(workspace, str(payload.get("id") or ""))})
                 return
             if self.path == "/directories":
                 result = list_directories(payload.get("path"))

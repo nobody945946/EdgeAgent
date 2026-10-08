@@ -229,31 +229,6 @@ def test_real_sdk_the_agent_speaks_as_itself_per_scope(tmp_path, repeating_model
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
-def test_real_sdk_tool_search_finds_the_toolbox_in_chinese(tmp_path, repeating_model):  # noqa: F811
-    """A catalogued tool is not declared until tool_search finds it; a Chinese
-    request finds it (Pi's own search keeps only ASCII words), and it then runs."""
-    port, state = repeating_model
-    (tmp_path / "下載").mkdir()
-    (tmp_path / "下載" / "a.mp4").write_bytes(bytes(5000))
-    (tmp_path / "下載" / "b.txt").write_bytes(bytes(10))
-    state["sequence"] = [
-        ("tool_search", {"query": "找出 最大 的 檔案"}),
-        ("find_large_files", {"folder": "下載", "top": 1}),
-    ]
-    chat = NativeChat(model_port=port)
-    try:
-        list(chat.stream_reply("search", "下載資料夾最大的檔案是哪個", agent=True,
-                               working_dir=tmp_path, scope="read"))
-    finally:
-        chat.close()
-    declared = [[t["function"]["name"] for t in r.get("tools", [])] for r in state["requests"]]
-    assert "find_large_files" not in declared[0] and "find_large_files" in declared[1]
-    results = json.dumps([m for m in state["requests"][-1]["messages"] if m["role"] == "tool"],
-                         ensure_ascii=False)
-    assert "find_large_files" in results and "a.mp4" in results
-
-
-@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
 def test_real_sdk_changed_code_without_a_passing_check_is_flagged(tmp_path, repeating_model):  # noqa: F811
     """Two layers for "done means verified": the prompt asks for run_checks,
     and the host itself says so when code changed and no check passed after."""
@@ -317,24 +292,3 @@ def test_real_sdk_the_host_checks_cited_numbers_against_the_sources(tmp_path, re
     text = "".join(d["text"] for name, d in events if name == "delta")
     assert "主機核對來源" in text and "9000" in text
     assert events[-1][0] == "done" and events[-1][1]["source_problems"]
-
-
-@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
-def test_real_sdk_searching_the_catalog_for_a_job_no_tool_does_stops(tmp_path, repeating_model):  # noqa: F811
-    """A model that learned to search first rewords a search for a job no
-    tool does (measured: 60 searches for a retry decorator). The answer says
-    there is none, and after four fruitless searches tool_search leaves the
-    turn's tool list (a refusal alone did not stop the model calling it)."""
-    port, state = repeating_model
-    state["sequence"] = [("tool_search", {"query": "retry decorator implementation"})] * 7
-    chat = NativeChat(model_port=port)
-    try:
-        list(chat.stream_reply("search", "寫一個 retry decorator", agent=True, working_dir=tmp_path,
-                               permissions={"edit": "allow", "shell": "ask", "web": "deny"}))
-    finally:
-        chat.close()
-    results = [m for m in state["requests"][-1]["messages"] if m["role"] == "tool"]
-    texts = [json.dumps(m, ensure_ascii=False) for m in results]
-    assert all("has no tool for this" in text or "Nothing new" in text for text in texts[:4])
-    offered = ["tool_search" in [t["function"]["name"] for t in r.get("tools") or []] for r in state["requests"]]
-    assert offered[:4] == [True] * 4 and not any(offered[4:])

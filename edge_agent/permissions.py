@@ -3,8 +3,11 @@
 Each client (the browser UI, a Discord bot) has a profile: whether it may use
 the Agent at all, what happens for file edits, shell commands and web access
 ("allow" runs it, "ask" waits for the owner's approval, "deny" refuses), and
-which workspace folders it may open. Shell also supports "routine": the host
-approves native literal reads, and asks for everything else through the bridge.
+which workspace folders it may open. Edits and shell also take "reversible",
+the default (owner, 2026-10-08: approving every command is tiring; what can be
+put back may run): the host copies what a change will touch (edge_agent.undo)
+and lets it run, and asks the owner only for what cannot be put back
+(reversible_shell).
 A single task can be narrowed by its scope (scope_rules): "read" refuses
 edits and makes shell "read", where the host runs the same provable reads and
 refuses everything else without asking; "public" leaves only the web (no
@@ -24,22 +27,23 @@ from pathlib import Path
 from edge_agent.lingua import powershell
 
 DECISIONS = ("allow", "ask", "deny")
+REVERSIBLE = "reversible"  # edits and shell: run what can be put back, ask for the rest
 CATEGORIES = ("edit", "shell", "web")
 CLIENTS = ("ui", "discord")
 
 DEFAULT_PERMISSIONS: dict[str, dict[str, object]] = {
     "ui": {
         "enabled": True,
-        "edit": "ask",
-        "shell": "ask",
+        "edit": REVERSIBLE,
+        "shell": REVERSIBLE,
         "web": "allow",
         "workspaces": [],
     },
-    # Off until the owner turns it on; then every change waits for approval.
+    # Off until the owner turns it on.
     "discord": {
         "enabled": False,
-        "edit": "ask",
-        "shell": "ask",
+        "edit": REVERSIBLE,
+        "shell": REVERSIBLE,
         "web": "allow",
         "workspaces": [],
     },
@@ -56,13 +60,15 @@ def validate_permissions(value: object) -> dict[str, dict[str, object]]:
     result: dict[str, dict[str, object]] = {}
     for client in CLIENTS:
         profile = {**DEFAULT_PERMISSIONS[client], **(value.get(client) or {})}
+        if profile.get("shell") == "routine":  # the earlier reads-only automatic mode, now part of reversible
+            profile["shell"] = REVERSIBLE
         extra = set(profile) - set(DEFAULT_PERMISSIONS[client])
         if extra:
             raise ValueError(f"unknown permission fields: {', '.join(sorted(extra))}")
         if not isinstance(profile["enabled"], bool):
             raise TypeError("permissions enabled must be a boolean")
         for category in CATEGORIES:
-            choices = (*DECISIONS, "routine") if category == "shell" else DECISIONS
+            choices = DECISIONS if category == "web" else (*DECISIONS, REVERSIBLE)
             if profile[category] not in choices:
                 raise ValueError(
                     f"{client}.{category} must be one of {', '.join(choices)}"
@@ -124,77 +130,203 @@ def scope_rules(rules: dict[str, str], scope: str) -> dict[str, str]:
     return {**rules, "edit": "deny", "shell": shell}
 
 
-def routine_shell(command: str, directory: Path) -> bool:
-    """Prove a literal native read-only pipeline inside the current workspace.
+CORE_MODULES = {
+    "Microsoft.PowerShell.Core",
+    "Microsoft.PowerShell.Management",
+    "Microsoft.PowerShell.Utility",
+    "Microsoft.PowerShell.Security",
+}
+# Changing the current folder would make every later relative path mean
+# somewhere the proof did not look.
+LOCATION = {"Set-Location", "Push-Location", "Pop-Location"}
+PATH_PARAMS = {"Path", "LiteralPath", "FilePath", "Destination", "DestinationPath"}
+# Writes whose targets are the named files (copied before they run); any other
+# cmdlet that changes something waits for the owner.
+WRITES = {"Set-Content", "Add-Content", "Out-File", "Export-Csv", "New-Item", "Copy-Item", "Move-Item",
+          "Rename-Item"}
+READ_NEEDS_PATH = {"Get-Content", "Select-String", "Get-FileHash", "Import-Csv"}
 
-    Dynamic code, external programs, provider paths and unknown syntax require
-    an owner decision. Human translation is never used as a security verdict.
-    """
+
+def _inside(value: object, root: Path, wildcards: bool = False) -> Path | None:
+    """A literal filesystem path inside the workspace, or None. Only literal
+    paths prove where a command lands; a wildcard could match a link leading
+    out of the workspace."""
+    if not isinstance(value, str) or not value:
+        return None
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        value = value[1:-1]
+    # Read the way Windows does, whatever runs the check: no UNC or device paths
+    # (\\server, \\?\), a colon only in "X:\" (not "X:name", which means that
+    # drive's own current folder, nor a stream or a provider), and no name ending
+    # in a dot or a space (Windows drops it and writes another file).
+    if value.startswith(("\\\\", "//")) \
+            or (":" in value and not (len(value) > 2 and value[1] == ":" and value[0].isalpha()
+                                      and value[2] in "\\/" and ":" not in value[2:])) \
+            or any(part not in (".", "..") and part[-1:] in (".", " ") for part in value.replace("\\", "/").split("/")) \
+            or (not wildcards and any(char in value for char in "*?[")):
+        return None
+    target = Path(value).expanduser()
+    target = (target if target.is_absolute() else root / target).resolve()
+    # The workspace itself is a place to read; as a write target it is a folder, which undo never covers.
+    if not target.is_relative_to(root) or _repository_internals(target.relative_to(root)):
+        return None
+    return target
+
+
+def _repository_internals(path: Path) -> bool:
+    """Under .git: its config and hooks decide what later git commands run,
+    so nothing there is changed (or proven) without the owner."""
+    return any(part.lower() == ".git" for part in path.parts)
+
+
+# git's reads (owner, 2026-10-08: reading uncommitted changes asked or was
+# refused). Global options (-c, -C, --git-dir, --exec-path, --paginate) come
+# before the subcommand and are refused with it; long options are refused when
+# they abbreviate one that writes a file or runs a program.
+GIT_READS = {"status", "diff", "log", "show", "blame", "ls-files"}
+GIT_BRANCH_LIST = {"-a", "-r", "-v", "-vv", "--list", "--show-current", "--all", "--remotes"}
+GIT_REFUSED = ("output", "ext-diff", "textconv", "no-index", "open-files-in-pager", "contents")
+
+
+def _git_read(item: dict, root: Path) -> bool:
+    """git reading the workspace's own repository: a listed subcommand first,
+    then options and revisions that write nothing and run nothing. The
+    repository is the workspace's (.git right there, so nothing above it is
+    read), and its config can only have changed with the owner's approval
+    (_repository_internals)."""
+    if item["type"] != "Application" or Path(str(item["resolved"])).stem.lower() != "git" \
+            or item["invocation"] != "Unknown" or not (root / ".git").exists():
+        return False
+    source = Path(str(item["source"] or ""))
+    if not source.is_absolute() or source.resolve().is_relative_to(root):
+        return False  # a git.exe in the workspace is the workspace's program, not git
+    args = [str(arg) for arg in item.get("args") or []]
+    if not args:
+        return False
+    command, rest = args[0], args[1:]
+    if command == "branch":
+        return set(rest) <= GIT_BRANCH_LIST
+    if command not in GIT_READS:
+        return False
+    for arg in rest:
+        if arg.startswith("--") and len(arg) > 2:
+            name = arg[2:].split("=", 1)[0]
+            if any(refused.startswith(name) for refused in GIT_REFUSED):
+                return False
+        if _repository_internals(Path(arg.replace("\\", "/"))):
+            return False
+    return True
+
+
+def _prove(command: str, directory: Path) -> tuple[list[Path], bool] | None:
+    """What a command writes and whether it changes anything, when it is proven to touch nothing but the
+    workspace: native cmdlets in plain pipelines with literal arguments that
+    read inside the workspace or write files it names there (returned, to copy
+    first), and git's reads of the workspace's own repository (_git_read).
+    None for anything else: other programs, dynamic code, script blocks,
+    sub-expressions, method calls, folder changes, deleting, the system, the
+    network, a target that is not a literal path, anything under .git."""
     try:
         info = powershell.analyze(command, cwd=str(directory), timeout=20)
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
-        return False
-    if (
-        info["errors"]
-        or info["other_blocks"]
-        or not info["simple_literals"]
-        or any(item.get("background") for item in info["statements"])
-    ):
-        return False
+        return None
+    if info["errors"] or info["other_blocks"] or not info["simple_literals"]:
+        return None
+    statements = info["statements"]
+    if not statements or any(s.get("kind") != "pipeline" or s.get("background") for s in statements):
+        return None
+    elements = [e for s in statements for e in s.get("elements", [])]
     commands = info["all_commands"]
-    if not commands:
-        return False
+    if not commands or any(e.get("kind") != "command" for e in elements) or len(commands) != len(elements):
+        return None
     root = directory.resolve()
+    writes: list[Path] = []
+    changes = False
     for item in commands:
+        git = _git_read(item, root)
         entry = powershell.COMMANDS.get(item["resolved"])
-        kind = item["target_type"] or item["type"]
-        if (
-            kind != "Cmdlet"
-            or entry is None
-            or entry.effect != "read"
-            or item["binding_errors"]
-            or item["redirections"]
-            or item["invocation"] != "Unknown"
-            or item["module"]
-            not in {
-                "Microsoft.PowerShell.Core",
-                "Microsoft.PowerShell.Management",
-                "Microsoft.PowerShell.Utility",
-                "Microsoft.PowerShell.Security",
-            }
-        ):
-            return False
-        if item["resolved"] in {
-            "Get-Content",
-            "Select-String",
-            "Get-FileHash",
-            "Import-Csv",
-        } and not any(
-            param["name"] in {"Path", "LiteralPath"} for param in item["bound"]
-        ):
-            # FileInfo pipeline inputs can follow links outside the workspace.
-            return False
-        for param in item["bound"]:
-            if param["name"] not in entry.params:
-                return False
-            if param["name"] in {"Path", "LiteralPath", "FilePath"}:
-                value = param["literal"]
-                if not isinstance(value, str) or not value:
-                    return False
-                # Only literal filesystem paths can prove the resolved target.
-                # A wildcard could match a link leading outside this workspace.
-                if ":" in value and not (
-                    len(value) > 2 and value[1] == ":" and value[0].isalpha()
-                ):
-                    return False
-                target = Path(value).expanduser()
-                if not target.is_absolute():
-                    target = root / target
-                if (
-                    any(char in value for char in "*?[")
-                    and param["name"] != "LiteralPath"
-                ):
-                    return False
-                if not target.resolve().is_relative_to(root):
-                    return False
-    return True
+        if not git and ((item["target_type"] or item["type"]) != "Cmdlet" or entry is None or item["binding_errors"]
+                        or item["invocation"] != "Unknown" or item["module"] not in CORE_MODULES
+                        or item["resolved"] in LOCATION):
+            return None
+        bound = {param["name"]: param["literal"] for param in item["bound"]}
+        if not git and set(bound) - set(entry.params):
+            return None
+        if item["resolved"] in READ_NEEDS_PATH and not {"Path", "LiteralPath"} & set(bound):
+            return None  # FileInfo pipeline inputs can follow links outside the workspace
+        places = {name: _inside(bound[name], root, wildcards=name == "LiteralPath")
+                  for name in PATH_PARAMS & set(bound)}
+        if None in places.values():
+            return None
+        for redirect in item["redirections"]:
+            if redirect.get("merge"):
+                continue
+            target = _inside(redirect.get("to"), root)
+            if target is None:
+                return None
+            writes.append(target)
+            changes = True
+        if git or entry.effect == "read":
+            continue
+        if item["resolved"] not in WRITES:
+            return None
+        landing = _landing(item["resolved"], places, bound)
+        if landing is None or any(path == root or path.is_dir() for path in landing):
+            return None  # a folder as a write target: nothing a file copy can put back
+        writes.extend(landing)
+        changes = True
+    return writes, changes
+
+
+def _landing(cmdlet: str, places: dict[str, Path], bound: dict) -> list[Path] | None:
+    """The files a write changes (its targets, and a moved file's old place),
+    or None when they cannot be told from the command."""
+    source = places.get("Path") or places.get("LiteralPath")
+    if cmdlet in ("Copy-Item", "Move-Item", "Rename-Item"):
+        if source is None or not source.is_file() or {"Recurse", "Container", "Filter", "Include", "Exclude"} & set(bound):
+            return None
+        if cmdlet == "Rename-Item":
+            name = bound.get("NewName")
+            if not isinstance(name, str) or not name or any(c in name for c in "\\/:*?["):
+                return None
+            moved = source.parent / name
+        else:
+            destination = places.get("Destination")
+            if destination is None:
+                return None
+            moved = destination / source.name if destination.is_dir() else destination
+        return [moved] if cmdlet == "Copy-Item" else [source, moved]
+    if cmdlet == "New-Item":
+        if str(bound.get("ItemType", "File")).lower() not in ("file", "directory"):
+            return None  # links and junctions point at what no copy can put back
+        target = source
+        if target is not None and isinstance(bound.get("Name"), str):
+            target = target / bound["Name"]
+        if target is None:
+            return None
+        return [] if str(bound.get("ItemType", "File")).lower() == "directory" else [target]
+    targets = [places[name] for name in ("Path", "LiteralPath", "FilePath") if name in places]
+    return targets or None
+
+
+def routine_shell(command: str, directory: Path) -> bool:
+    """Prove a literal native read-only pipeline inside the current workspace."""
+    proof = _prove(command, directory)
+    return proof is not None and not proof[1]
+
+
+def reversible_edit(path: str, directory: Path) -> list[Path] | None:
+    """The file to copy before an edit or write lands on `path` (as Pi
+    resolves it); None when the owner decides: outside the workspace, a path
+    Windows reads otherwise, or under .git."""
+    target = _inside(path, directory.resolve(), wildcards=True)
+    return None if target is None else [target]
+
+
+def reversible_shell(command: str, directory: Path) -> list[Path] | None:
+    """The files to copy before `command` runs, when it is proven to read and
+    write only files it names inside the workspace (_prove); None when the
+    owner decides. Programs (scripts, tests, git's writes) and the network
+    always ask: what they do cannot be put back."""
+    proof = _prove(command, directory)
+    return None if proof is None else proof[0]

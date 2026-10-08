@@ -168,6 +168,9 @@ def test_memory_reset_discards_only_target_thread():
     assert chat.session("two").entries == [{"type": "fixture"}]
 
 
+ASK = {"edit": "ask", "shell": "ask", "web": "allow"}
+
+
 def test_disconnected_ui_denies_pending_operation_and_closes_agent(tmp_path):
     chat = RPCFixture(
         [
@@ -181,7 +184,8 @@ def test_disconnected_ui_denies_pending_operation_and_closes_agent(tmp_path):
             }
         ]
     )
-    reply = chat.stream_reply("fixture", "fixture", working_dir=tmp_path)
+    # The owner is asked (permission "ask"); under "reversible" the host would answer a write itself.
+    reply = chat.stream_reply("fixture", "fixture", working_dir=tmp_path, permissions=ASK)
     assert next(reply)[0] == "approval"
     reply.close()
     assert any(record.get("value") == "Deny" for record in chat.records)
@@ -201,7 +205,8 @@ def test_cancelled_silent_transport_cannot_hold_service_forever(tmp_path, monkey
             }
         ]
     )
-    reply = chat.stream_reply("fixture", "fixture", working_dir=tmp_path)
+    # The owner is asked (permission "ask"); under "reversible" the host would answer a write itself.
+    reply = chat.stream_reply("fixture", "fixture", working_dir=tmp_path, permissions=ASK)
     assert next(reply)[0] == "approval"
     chat.cancel("fixture")
     chat.session("fixture").cancelled_at = 0

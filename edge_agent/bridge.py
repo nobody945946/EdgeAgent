@@ -17,7 +17,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from edge_agent.chat_session import ChatSession
-from edge_agent.runtime import NODE_VERSION
+from edge_agent.runtime import NODE_VERSION, tool_paths
 
 
 class PiBridge:
@@ -56,9 +56,9 @@ class PiBridge:
                 **os.environ,
                 "PI_OFFLINE": "1",
                 "PI_TELEMETRY": "0",
-                "PATH": str(self.core_dir / ".runtime/tools")
-                + os.pathsep
-                + os.environ.get("PATH", ""),
+                "PATH": os.pathsep.join(
+                    [*map(str, tool_paths(self.core_dir)), os.environ.get("PATH", "")]
+                ),
             },
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
