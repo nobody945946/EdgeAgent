@@ -208,6 +208,39 @@ def test_search_deployment_repairs_missing_and_corrupt_tools(tmp_path, monkeypat
     assert len(probes) == 4
 
 
+def test_powershell_is_the_benchs_and_is_extracted_again_when_it_changes(
+    tmp_path, monkeypatch
+):
+    dockerfile = (Path(__file__).resolve().parents[1] / "bench/Dockerfile").read_text()
+    assert f"powershell-{deploy.POWERSHELL_VERSION}-linux-x64.tar.gz" in dockerfile
+    probes = []
+
+    def download(url, target, digest):
+        assert (url, digest) == deploy.POWERSHELL
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(target, "w") as bundle:
+            bundle.writestr("pwsh.exe", b"pwsh")
+            bundle.writestr("Modules/Microsoft.PowerShell.Utility/x.psd1", b"m")
+
+    monkeypatch.setattr(deploy, "download", download)
+    monkeypatch.setattr(
+        deploy.subprocess, "run", lambda args, **kwargs: probes.append(args)
+    )
+    deploy.install_powershell(tmp_path)
+    destination = tmp_path / ".runtime/tools/pwsh"
+    assert (destination / "pwsh.exe").read_bytes() == b"pwsh"
+    (destination / "stale.dll").write_bytes(b"old")
+    deploy.install_powershell(tmp_path)
+    assert (destination / "stale.dll").is_file()  # the same release: left alone
+    (destination / ".installed.sha256").write_text("older release")
+    deploy.install_powershell(tmp_path)
+    assert not (destination / "stale.dll").exists()
+    assert probes[-1][0] == str(destination / "pwsh.exe") and len(probes) == 3
+    monkeypatch.setenv("PATH", "system-only")
+    runtime.activate_deployment_tools(tmp_path)
+    assert runtime.os.environ["PATH"].split(runtime.os.pathsep)[0] == str(destination)
+
+
 def test_public_projector_is_pinned_and_belongs_to_exact_shipped_base(
     tmp_path, monkeypatch
 ):
@@ -264,6 +297,7 @@ def test_matching_sdk_receipt_does_not_hide_broken_dependency(
     tmp_path, monkeypatch, repair_succeeds
 ):
     monkeypatch.setattr(deploy, "install_search_tools", lambda root: None)
+    monkeypatch.setattr(deploy, "install_powershell", lambda root: None)
     node = tmp_path / f".runtime/node/node-v{runtime.NODE_VERSION}-win-x64/node.exe"
     node.parent.mkdir(parents=True)
     node.write_bytes(b"fixture")

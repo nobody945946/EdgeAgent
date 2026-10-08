@@ -71,6 +71,15 @@ def ensure_projector(model_path: Path, architecture: str) -> Path | None:
 
 
 NODE_SHA = "2b0ff57b049cda1bbcea2240eec20467018713c1efe1f7360c2681859b90ed71"
+# The Agent's shell is the PowerShell its training was recorded and measured
+# in (bench/Dockerfile), not Windows PowerShell 5.1: 5.1 lacks 7's syntax and
+# writes Chinese in the ANSI code page (laptop 2026-10-07: no PowerShell 7).
+POWERSHELL_VERSION = "7.6.6"
+POWERSHELL = (
+    "https://github.com/PowerShell/PowerShell/releases/download/"
+    f"v{POWERSHELL_VERSION}/PowerShell-{POWERSHELL_VERSION}-win-x64.zip",
+    "02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c860",
+)
 SEARCH_TOOLS = {
     "rg": (
         (
@@ -274,8 +283,31 @@ def install_search_tools(root: Path) -> None:
         )
 
 
+def install_powershell(root: Path) -> None:
+    """Portable PowerShell 7 in .runtime/tools/pwsh (runtime.tool_paths puts
+    it first on PATH), extracted again when the pinned release changes."""
+    url, digest = POWERSHELL
+    archive = root / ".runtime/downloads" / url.rsplit("/", 1)[-1]
+    download(url, archive, digest)
+    destination = root / ".runtime/tools/pwsh"
+    receipt = destination / ".installed.sha256"
+    pwsh = destination / "pwsh.exe"
+    if not pwsh.is_file() or not receipt.is_file() or receipt.read_text() != digest:
+        shutil.rmtree(destination, ignore_errors=True)
+        extract_zip(archive, destination)
+        receipt.write_text(digest, encoding="ascii")
+    subprocess.run(
+        [str(pwsh), "-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"],
+        check=True,
+        timeout=60,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+
 def install_agent_runtime(root: Path) -> None:
-    """Install pinned upstream Pi and portable Node using npm's lockfile."""
+    """Install pinned upstream Pi and portable Node using npm's lockfile, and
+    the tools the Agent calls: its PowerShell, rg and fd."""
+    install_powershell(root)
     install_search_tools(root)
     node_root = root / ".runtime/node"
     name = f"node-v{NODE_VERSION}-win-x64"
