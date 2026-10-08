@@ -325,6 +325,30 @@ def test_an_api_card_needs_its_docs_and_a_json_endpoint() -> None:
     assert scenario_cards.problems({**api_card(), "apis": []}, "J", family)
 
 
+def test_an_api_card_agrees_with_its_docs() -> None:
+    def with_docs(text: str, **api: str) -> dict:
+        one = api_card()
+        one["pages"][0] = {**one["pages"][0], "text": text}
+        one["apis"][0] = {**one["apis"][0], **api}
+        return one
+
+    family = {"web": "api"}
+    listed = "金鑰放在標頭 X-Key。端點：GET /lowest?app=…（回傳 lowest）、GET /stores 列出商店。" * 2
+    assert scenario_cards.problems(with_docs(listed), "J", family) == [
+        "api GamePrice: the docs list /v1/stores, which no endpoint page answers"]
+    template = '{"endpoints": {"/v1/{kind}": {"method": "GET"}}, "auth": "header X-Key"}' * 2
+    assert scenario_cards.problems(with_docs(template), "J", family) == []
+    assert scenario_cards.problems(with_docs(listed.replace("GET /stores", "POST /lowest")), "J", family) == [
+        "api GamePrice: the docs use POST; the stand-in web answers GET only"]
+    assert scenario_cards.problems(with_docs(listed, key_name="X-Token"), "J", family) == [
+        "api GamePrice: the docs never name X-Token, where the key goes"]
+    bearer = "標頭 Authorization: Bearer <金鑰>。GET /lowest?app=123 回傳 lowest。" * 2
+    assert scenario_cards.problems(with_docs(bearer, key_name="Authorization"), "J", family) == []
+    assert scenario_cards.problems(with_docs(bearer, key_name="Authorization", key="Bearer k-1"), "J", family) == [
+        "api GamePrice: the key is the key alone, without a scheme like Bearer"]
+    assert scenario_cards.problems(with_docs(bearer.replace("Bearer", "Token"), key_name="Authorization"), "J", family)
+
+
 def test_api_tasks_point_at_the_stand_in_web_and_endpoints_carry_their_key(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(scenario_cards, "OUT", tmp_path)
     one = {**api_card(), "id": "train-J-001", "family": "J", "topic": "遊戲", "files": {}}
@@ -337,6 +361,11 @@ def test_api_tasks_point_at_the_stand_in_web_and_endpoints_carry_their_key(tmp_p
     assert api["base_url"] == "http://api.gameprice.example:8081/v1" and api["key_env"] == "EDGE_API_GAMEPRICE"
     assert "http://api.gameprice.example:8081/v1/lowest?app=123" in pages[0]["text"]
     assert pages[1]["key"] == {"in": "header", "name": "X-Key", "value": "k-123456"} and "key" not in pages[2]
+    bearer = {**one, "apis": [{**one["apis"][0], "key_name": "Authorization"}]}
+    (tmp_path / "train-cards.jsonl").write_text(json.dumps(bearer, ensure_ascii=False) + "\n", encoding="utf-8")
+    scenario_cards.tasks(type("Args", (), {"split": "train"})())
+    pages = json.loads((task_dir / "web" / "pages.json").read_text(encoding="utf-8"))
+    assert pages[1]["key"] == {"in": "header", "name": "Authorization", "value": "Bearer k-123456"}
 
 
 def test_the_stand_in_web_finds_an_endpoint_whatever_the_order_of_its_parameters() -> None:
