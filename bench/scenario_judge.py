@@ -2,10 +2,11 @@
 
 A conversation passes when every programmatic check of its family passes
 (bench/scenario_checks.py) and the judge model, a different family from the
-teacher (owner, 2026-10-07: Gemma 4 31B), finds every must / must_not item of
-the card met, plus one item every card has (each answer answers its own
-message, in full), twice, with the items in a different order each time. It
-sees what the asker saw plus the tool calls and results, never the thinking.
+teacher (owner, 2026-10-07: Gemma 4 31B), finds that each turn's last answer
+answers its own message in full (one call that sees only the messages and
+those answers), then every must / must_not item of the card met, twice, with
+the items in a different order each time. It sees what the asker saw plus the
+tool calls and results, never the thinking.
 Writes <run>/verdicts.jsonl; bench/dataset.py turns only passing
 conversations into rows.
 
@@ -43,9 +44,20 @@ CORRUPTIONS = ("cut", "swap", "swap_all")
 # Every row is one turn (bench/dataset.py), so every answer must answer its own
 # message. A card's items often check only the process: on spec v2's longer
 # conversations a last answer swapped for another card's still met them all
-# (teacher-cards-1024, 2026-10-08).
-EVERY_ANSWER = ("必須：使用者的每一則訊息，助理在那一輪最後的回答都確實回應了它：答的是那則訊息要的事，話也有講完；"
-                "不能答非所問，也不能講到一半就斷掉（同一輪中間「我查一下」之類的過渡句不算最後的回答）。")
+# (teacher-cards-1024, 2026-10-08). Asked as one more item among the card's,
+# the judge passed 6 of 14 answers cut off mid-sentence (it reads the card's
+# items against a long transcript of tool calls); asked alone, per turn, over
+# the messages and answers only, it has nothing else to read.
+ANSWER_PROMPT = """你是嚴格的評審。下面是一段對話裡使用者說的每一則訊息，以及 AI 助理在那一輪最後給使用者的回答（助理中間查資料、跑工具的過程省略了）。
+
+{turns}
+
+逐輪判斷那一輪的回答：
+1. 有沒有回應那則訊息要的事（照前面的對話理解那則訊息；反問使用者來釐清那則訊息也算回應）；
+2. 話有沒有講完：句子、清單、表格、程式碼都完整，不是講到一半就斷掉。
+兩點都做到才算通過。
+
+只輸出一個 JSON 物件：{{"turns": [{{"turn": 輪次, "pass": true 或 false, "evidence": "沒通過就引用那個回答的最後 20 字，通過寫 無"}}]}}，每一輪都要有。"""
 
 JUDGE_PROMPT = """你是嚴格的評審，要判斷一個 AI 助理在一段對話裡有沒有做到規定。只根據下面的對話紀錄判斷，不要猜測紀錄以外的事。
 
@@ -87,7 +99,6 @@ def transcript(trajectory: list[dict]) -> str:
 def items_for(task: dict, rng: random.Random) -> list[tuple[str, str]]:
     found = [(f"M{i}", f"必須：{text}") for i, text in enumerate(task["must"], 1)]
     found += [(f"N{i}", f"不可：{text}") for i, text in enumerate(task["must_not"], 1)]
-    found.append(("U1", EVERY_ANSWER))
     rng.shuffle(found)
     return found
 
@@ -122,8 +133,40 @@ def rule(port: int, task: dict, trajectory: list[dict], seed: int) -> dict:
             "passed": not missing and all(verdicts[key] for key, _ in items)}
 
 
+def turns(trajectory: list[dict]) -> list[tuple[str, str]]:
+    """(message, the last answer of its turn) for each user message; the answer
+    is empty when the turn has none."""
+    found = []
+    for message in trajectory:
+        if message.get("role") == "user":
+            content = message.get("content")
+            found.append((content if isinstance(content, str) else "".join(
+                i.get("text", "") for i in content or [] if isinstance(i, dict)), ""))
+        elif message.get("role") == "assistant" and found and texts(message):
+            found[-1] = (found[-1][0], "\n".join(texts(message)))
+    return found
+
+
+def answered(port: int, trajectory: list[dict]) -> dict:
+    """The answer check: each turn's last answer answers its message, in full."""
+    pairs = turns(trajectory)
+    listed = "\n\n".join(f"第 {n} 輪\n使用者：{message}\n助理最後的回答：{answer or '（沒有回答）'}"
+                          for n, (message, answer) in enumerate(pairs, 1))
+    match = re.search(r"\{.*\}", ask(port, ANSWER_PROMPT.format(turns=listed)), re.DOTALL)
+    try:
+        found = {int(v["turn"]): v for v in json.loads(match.group(0))["turns"]} if match else {}
+        verdicts = {n: bool(found[n]["pass"]) for n in found}
+        failed = {f"turn {n}": str(found[n].get("evidence", ""))[:80] for n in found if not verdicts[n]}
+    except (ValueError, KeyError, TypeError):
+        verdicts, failed = {}, {}
+    missing = [f"turn {n}" for n in range(1, len(pairs) + 1) if n not in verdicts]
+    return {"turns": verdicts, "failed": failed, "missing": missing,
+            "passed": not missing and all(verdicts.values()) and all(answer for _, answer in pairs)}
+
+
 def verdict(port: int | None, task: dict, record: dict) -> dict:
-    """The programmatic checks, then (with a judge server) the judge twice.
+    """The programmatic checks, then (with a judge server) the answer check
+    and the card's items twice; each pass only runs if the one before passed.
     Without a server (--checks-only: the judge failed its own validation) a
     conversation passes on the checks alone."""
     found = failures(record, family_checks(task["family"]))
@@ -131,11 +174,11 @@ def verdict(port: int | None, task: dict, record: dict) -> dict:
         return {"passed": False, "checks": found}
     if port is None:
         return {"passed": True, "checks": {}, "judge": "checks-only"}
-    passes = []
+    passes = [answered(port, record["trajectory"])]
     for seed in (1, 2):  # the second pass only confirms a first pass
-        passes.append(rule(port, task, record["trajectory"], seed))
         if not passes[-1]["passed"]:
             break
+        passes.append(rule(port, task, record["trajectory"], seed))
     return {"passed": all(p["passed"] for p in passes), "checks": {}, "judge": passes}
 
 
@@ -184,10 +227,28 @@ def answers(trajectory: list[dict]) -> list[int]:
     return [i for i, m in enumerate(trajectory) if m.get("role") == "assistant" and texts(m)]
 
 
+SENTENCE_END = re.compile(r"[。！？!?\n]")
+
+
+def cut_short(text: str) -> str:
+    """The answer stopped in the middle of a sentence: the first sentence of 12
+    characters or more from 40% of the answer on (else its longest), cut in
+    half (cut at 40% alone, an answer could stop right where a sentence ends
+    and read as complete)."""
+    spans, start = [], 0
+    for end in [m.start() for m in SENTENCE_END.finditer(text)] + [len(text)]:
+        if end > start:
+            spans.append((start, end))
+        start = end + 1
+    at = len(text) * 2 // 5
+    start, end = next(((a, b) for a, b in spans if b > at and b - a >= 12), max(spans, key=lambda s: s[1] - s[0]))
+    return text[:start + (end - start) // 2].rstrip("，、：；,;: ")
+
+
 def corrupt(trajectory: list[dict], other: list[dict], how: str) -> list[dict]:
-    """A copy that fails EVERY_ANSWER for sure: the last turn's answer stops
-    mid-sentence (cut), is another card's last answer (swap), or every answer
-    is another card's (swap_all)."""
+    """A copy whose answers fail the answer check for sure: the last turn's
+    answer stops mid-sentence (cut), is another card's last answer (swap), or
+    every answer is another card's (swap_all)."""
     def replaced(index: int, text: str) -> dict:
         message = trajectory[index]
         kept = [x for x in message["content"] if not (isinstance(x, dict) and x.get("type") == "text")]
@@ -196,8 +257,7 @@ def corrupt(trajectory: list[dict], other: list[dict], how: str) -> list[dict]:
     mine, theirs = answers(trajectory), ["\n".join(texts(other[i])) for i in answers(other)]
     out = list(trajectory)
     if how == "cut":
-        text = "\n".join(texts(trajectory[mine[-1]])).strip()
-        out[mine[-1]] = replaced(mine[-1], text[:max(2, len(text) * 2 // 5)].rstrip("。！？!?.\n "))
+        out[mine[-1]] = replaced(mine[-1], cut_short("\n".join(texts(trajectory[mine[-1]])).strip()))
     elif how == "swap":
         out[mine[-1]] = replaced(mine[-1], theirs[-1])
     else:

@@ -95,7 +95,7 @@ def card_why(base_tag: str, new_tag: str, jobs: list[str]) -> list[str]:
         for tag in (base_tag, new_tag):
             found = [json.loads(l) for l in (STATE / tag / "verdicts.jsonl").read_text(encoding="utf-8").splitlines()]
             row = next((v for v in found if v["job"] == job), {})
-            failed = [k for p in row.get("judge") or [] for k, ok in p.get("items", {}).items() if not ok]
+            failed = [k for p in row.get("judge") or [] for k in [*(p.get("failed") or {}), *p.get("missing", [])]]
             lines.append(f"  {tag}: {'PASS' if row.get('passed') else 'fail'} checks {list(row.get('checks') or {})}"
                          f" judge items failed {failed}  (conversation: {STATE / tag / 'traj' / (job + '.json')})")
     return lines

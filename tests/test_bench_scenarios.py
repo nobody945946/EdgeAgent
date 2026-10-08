@@ -148,7 +148,9 @@ def test_corrupted_controls_break_the_answers_for_sure() -> None:
                   {"role": "user", "content": "再問"}, *said("完整的答案，還有很多細節要講。")]
     other = [{"role": "user", "content": "別的問題"}, *said("別張卡的第一答"), *said("別張卡的答案")]
     cut = scenario_judge.corrupt(trajectory, other, "cut")
-    assert cut[:3] == trajectory[:3] and cut[-1]["content"][-1]["text"] == "完整的答案，"
+    assert cut[:3] == trajectory[:3] and cut[-1]["content"][-1]["text"] == "完整的答案，還"
+    # A cut never stops where a sentence ends: at 40% this one would read "明白。" and look complete.
+    assert scenario_judge.cut_short("明白。是我越界了，判斷不是數據，這部分收回。往後只交付數字和來源。") == "明白。是我越界了，判斷不"
     swapped = scenario_judge.corrupt(trajectory, other, "swap")
     assert swapped[:3] == trajectory[:3] and swapped[-1]["content"][-1]["text"] == "別張卡的答案"
     every = scenario_judge.corrupt(trajectory, other, "swap_all")
@@ -185,9 +187,10 @@ def test_searching_a_whole_drive_never_becomes_a_row() -> None:
 
 
 def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path: Path) -> None:
-    """judge and validate against a stand-in judge model that accepts an
-    answer only if it is that card's full answer: originals pass, cut and
-    swapped answers fail, and a conversation without an answer is left out."""
+    """judge and validate against a stand-in judge model whose answer check
+    accepts an answer only if it is that card's full answer: originals pass,
+    cut and swapped answers fail, and a conversation without an answer is left
+    out."""
     import re
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -198,13 +201,16 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
 
         def do_POST(self) -> None:
             prompt = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["messages"][0]["content"]
-            card = re.search(r"目標(\d+)", prompt).group(1)
-            said = [line for line in prompt.splitlines() if line.startswith("助理：")]
-            ok = not Judge.strict and said == [f"助理：答{card}。完整的結尾{card}。"]
-            keys = re.findall(r"^([MNU]\d+)\. ", prompt, re.M)
-            assert "U1" in keys
-            items = [{"id": key, "pass": ok, "evidence": "無"} for key in keys]
-            body = json.dumps({"choices": [{"message": {"content": json.dumps({"items": items})}}]}).encode()
+            if "助理最後的回答：" in prompt:  # the answer check sees messages and answers only
+                assert "目標" not in prompt
+                card = re.search(r"使用者：問(\d+)", prompt).group(1)
+                ok = not Judge.strict and f"助理最後的回答：答{card}。完整的結尾{card}。" in prompt
+                verdict = {"turns": [{"turn": 1, "pass": ok, "evidence": "無"}]}
+            else:
+                keys = re.findall(r"^([MN]\d+)\. ", prompt, re.M)
+                assert keys and "助理：" in prompt
+                verdict = {"items": [{"id": key, "pass": not Judge.strict, "evidence": "無"} for key in keys]}
+            body = json.dumps({"choices": [{"message": {"content": json.dumps(verdict)}}]}).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -223,7 +229,7 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
         (task_root / name / "task.json").write_text(json.dumps(
             {"family": "C", "must": ["做完"], "must_not": ["反問"], "scenario": {"goal": f"目標{n}"}}))
         answer = f"答{n}。完整的結尾{n}。" if n < count - 1 else None
-        trajectory = [{"role": "user", "content": "問"}, *(said(answer) if answer else [])]
+        trajectory = [{"role": "user", "content": f"問{n}"}, *(said(answer) if answer else [])]
         (run_dir / "traj" / f"{name}-r0.json").write_text(json.dumps(trajectory, ensure_ascii=False))
         rows.append({"task": name, "rep": 0, "kind": "scenario", "outcome": "done", "ended": "end",
                      "dialogue": [turn(answer or "")]})
@@ -247,9 +253,9 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
         verdicts = {v["job"]: v for v in map(json.loads, (run_dir / "verdicts.jsonl").read_text().splitlines())}
         assert len(verdicts) == count
         assert all(verdicts[f"train-C-{n:03d}-r0"]["passed"] for n in range(accepted))
-        assert len(verdicts["train-C-000-r0"]["judge"]) == 2
+        assert len(verdicts["train-C-000-r0"]["judge"]) == 3  # the answer check, then the items twice
         last = verdicts[f"train-C-{accepted:03d}-r0"]
-        assert not last["passed"] and len(last["judge"]) == 1 and "U1" in last["judge"][0]["failed"]
+        assert not last["passed"] and len(last["judge"]) == 1 and "turn 1" in last["judge"][0]["failed"]
     finally:
         httpd.shutdown()
 
