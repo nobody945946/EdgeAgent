@@ -154,10 +154,22 @@ def _strings(value: object, low: int, high: int) -> bool:
         isinstance(v, str) and v.strip() for v in value)
 
 
+# A card naming spec v1's tools (the catalog, ready-made tools, run_checks)
+# means nothing in spec v2; a must item asking for the character's tone or
+# terms would have the judge reward sprinkled jargon (owner, 2026-10-06: the
+# character comes from what it wants and how it decides).
+V1_TOOLS = re.compile(r"tool_search|現成工具|run_checks")
+JARGON = re.compile(r"角色的?(語氣|口吻|風格)|口頭禪|萬機之?神")
+
+
 def problems(card: dict, family_id: str, family: dict) -> list[str]:
     """Why a card cannot be used (empty when it can)."""
     found = [f"missing {key}" for key in ("persona", "opening", "goal")
              if not isinstance(card.get(key), str) or not card[key].strip()]
+    if V1_TOOLS.search(json.dumps(card, ensure_ascii=False)):
+        found.append("names a tool of spec v1")
+    if any(JARGON.search(item) for item in card.get("must") or [] if isinstance(item, str)):
+        found.append("a must item asks for the character's tone or jargon")
     if not _strings(card.get("plan"), 2, 5):
         found.append("plan must be 2-5 steps")
     if not _strings(card.get("must"), 1, 5):
@@ -318,7 +330,10 @@ def generate(args: argparse.Namespace) -> None:
                     print(f"{family_id} {topic}: dropped ({'; '.join(why)})", flush=True)
                     continue
                 have[family_id] += 1
-                card_id = f"{args.split}-{family_id}-{have[family_id]:03d}"
+                # Numbered after the family's highest card: retired cards leave gaps, never a reused id.
+                taken = [int(c["id"].rsplit("-", 1)[1]) for c in kept
+                         if c["family"] == family_id and c["id"].rsplit("-", 1)[1].isdigit()]
+                card_id = f"{args.split}-{family_id}-{max(taken, default=0) + 1:03d}"
                 card.update({"id": card_id, "family": family_id, "topic": topic,
                              "source": {"teacher": config["model"], "families_version": spec["version"],
                                         "prompt": hashlib.sha256(CARD_PROMPT.encode()).hexdigest()[:12],
@@ -334,6 +349,25 @@ def generate(args: argparse.Namespace) -> None:
             list(pool.map(family_cards, [(f, w) for f in names for w in range(workers)]))
     finally:
         server.close()
+
+
+def recheck(args: argparse.Namespace) -> None:
+    """Drop the cards that fail today's rules (problems, file_problems) from a
+    split; `generate` then writes new ones up to each family's count."""
+    spec = families()
+    path = OUT / f"{args.split}-cards.jsonl"
+    cards = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    keep = []
+    for card in cards:
+        why = problems(card, card["family"], spec["families"][card["family"]])
+        if "files" in card:
+            why += file_problems(card["files"], card["family"])
+        if why:
+            print(f"{card['id']}: retired ({'; '.join(why)})", flush=True)
+        else:
+            keep.append(card)
+    path.write_text("".join(json.dumps(c, ensure_ascii=False) + "\n" for c in keep), encoding="utf-8")
+    print(f"{args.split}: {len(cards) - len(keep)} cards retired, {len(keep)} kept", flush=True)
 
 
 def files(args: argparse.Namespace) -> None:
@@ -448,10 +482,12 @@ def main() -> None:
     f.add_argument("--split", choices=SPLITS, required=True)
     f.add_argument("--port", type=int, default=18389)
     f.add_argument("--parallel", type=int, default=4, help="cards side by side (fewer if the GPU holds fewer)")
+    r = sub.add_parser("recheck")
+    r.add_argument("--split", choices=SPLITS, required=True)
     t = sub.add_parser("tasks")
     t.add_argument("--split", choices=SPLITS, required=True)
     args = parser.parse_args()
-    {"generate": generate, "files": files, "tasks": tasks}[args.command](args)
+    {"generate": generate, "recheck": recheck, "files": files, "tasks": tasks}[args.command](args)
 
 
 if __name__ == "__main__":

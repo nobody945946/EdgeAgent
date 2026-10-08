@@ -320,3 +320,16 @@ def test_calling_an_api_is_seen_in_the_calls() -> None:
     assert scenario_checks.check("called_api", {"dialogue": [turn("查到了", [fetch])]}) is None
     assert scenario_checks.check("called_api", {"dialogue": [turn("查到了", [shell])]}) is None
     assert scenario_checks.check("called_api", {"dialogue": [turn("我猜是 499")]})
+
+
+def test_cards_naming_v1_tools_or_asking_for_jargon_are_retired(tmp_path, monkeypatch) -> None:
+    family = {"web": "fixture"}
+    assert "names a tool of spec v1" in scenario_cards.problems(card(goal="用 tool_search 找工具"), "F", family)
+    assert scenario_cards.problems(card(must=["保持機魂的角色語氣，提到萬機之神"]), "B", family) == [
+        "a must item asks for the character's tone or jargon"]
+    monkeypatch.setattr(scenario_cards, "OUT", tmp_path)
+    good = {**card(), "id": "train-B-001", "family": "B", "topic": "t", "files": {}}
+    bad = {**card(must=["語氣要有口頭禪"]), "id": "train-B-002", "family": "B", "topic": "t", "files": {}}
+    (tmp_path / "train-cards.jsonl").write_text("".join(json.dumps(c, ensure_ascii=False) + "\n" for c in (good, bad)))
+    scenario_cards.recheck(type("Args", (), {"split": "train"})())
+    assert [json.loads(line)["id"] for line in (tmp_path / "train-cards.jsonl").read_text().splitlines()] == ["train-B-001"]

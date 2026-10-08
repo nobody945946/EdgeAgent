@@ -62,19 +62,6 @@ ROOT = Path(__file__).resolve().parents[1]
 TASKS = ROOT / ".runtime/agentdata/tool-tasks"
 
 
-# The ready-made tool each kind of task is about. A pass that skipped it (the
-# teacher wrote its own PowerShell, or did the sums in its head) would teach
-# the small model what it does worst, so bench/dataset.py keeps only passes
-# that called one of these (a program rule, the same for every task).
-EXPECT_TOOLS = {
-    "organize": ("organize_folder",), "rename_photos": ("rename_photos_by_date",),
-    "convert": ("convert_text_encoding",), "large": ("find_large_files",),
-    "duplicates": ("find_duplicate_files",), "archive": ("archive_files",), "merge": ("merge_csv",),
-    "log": ("log_summary",), "backup": ("backup_folder",), "git": ("git_overview",),
-    "fix": ("run_checks",), "find_code": ("code_outline", "grep"), "calc": ("calculate", "powershell"),
-    "sysinfo": ("system_status",),
-}
-
 GENERATORS = {
     "organize": gen_organize, "rename_photos": gen_rename_photos, "convert": gen_convert,
     "large": gen_large, "duplicates": gen_duplicates, "archive": gen_archive, "merge": gen_merge,

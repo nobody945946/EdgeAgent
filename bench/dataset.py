@@ -52,7 +52,6 @@ from edge_agent import prompt as agent_prompt  # noqa: E402
 from edge_agent.turn import taiwan_traditional  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "bench"))
-from make_tool_tasks import EXPECT_TOOLS  # noqa: E402
 
 EVAL_TASKS = {p.name for p in (ROOT / "bench/tasks").iterdir() if p.is_dir()}
 
@@ -105,11 +104,6 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
             continue
         if not result["passed"] or result["grade"].get("problems") or result.get("outcome") != "done":
             skip("not a clean pass")
-            continue
-        # A tool task passed without its ready-made tool (make_tool_tasks.EXPECT_TOOLS).
-        expected = EXPECT_TOOLS.get(result["task"].rsplit("-", 1)[0])
-        if expected and not set(expected) & set(result.get("tools") or {}):
-            skip("passed without its ready-made tool")
             continue
         records = sorted((run_dir / "records" / job).glob("*.json"))
         requests = [json.loads(p.read_text(encoding="utf-8")) for p in records]
