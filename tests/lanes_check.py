@@ -29,6 +29,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 from edge_agent.config import load_config
@@ -92,6 +93,33 @@ def code(lines: int) -> str:
     return "".join(CODE_LINE.format(i=i, j=i % 7) for i in range(lines))
 
 
+def window_prompt(pool: int, count: Callable[[str], int]) -> tuple[int, str]:
+    """Fill the window up to the output, padding and chat-template reserves.
+
+    Count each whole candidate: later line numbers cost more tokens, so an
+    estimate from the first lines may overshoot and then leave unused space.
+    """
+    budget = pool - 30 - 256 - 200
+
+    def candidate(lines: int) -> str:
+        return f"# b\n{code(lines)}\n用一句話總結這個檔案。"
+
+    low, high = 0, max(1, int(budget / (count(code(100)) / 100)))
+    while count(candidate(high)) <= budget:
+        low, high = high, high * 2
+    while high - low > 1:
+        middle = (low + high) // 2
+        if count(candidate(middle)) <= budget:
+            low = middle
+        else:
+            high = middle
+    prompt = candidate(low)
+    tokens = count(prompt)
+    if tokens > budget:
+        raise ValueError("the context pool cannot hold the measurement prompt")
+    return tokens, prompt
+
+
 def run(core: EdgeAgent, lease_lora: str, config: dict) -> dict[str, object]:
     status = core.switch("character", os.getpid(), {"model": DEFAULT_MODEL, "lora": lease_lora,
                                                     "context_size": 32768, "port": 18088})
@@ -130,19 +158,10 @@ def run(core: EdgeAgent, lease_lora: str, config: dict) -> dict[str, object]:
     result["during_prompt"] = beside(lambda: task(f"# a\n{code(1800)}\n用一句話總結這個檔案。", False, 30), 3, 5)
     # The whole window: a prompt the size of the pool less its output, while the character holds a cache.
     line(6)
-    # The pool less the output, the margin and the template, counted by the
-    # server's own tokenizer on the whole prompt (later lines have longer
-    # numbers, so a count of the first lines falls short: the dev box's dry
-    # run sent more than the pool and got 400).
-    budget = pool - 30 - 256 - 200
-
     def count(text: str) -> int:
         return len(core.router.request("/tokenize", {"content": text, "model": "local"})["tokens"])
 
-    per_line = count(code(100)) / 100
-    lines = int(budget / per_line)
-    while (tokens := count(prompt := f"# b\n{code(lines)}\n用一句話總結這個檔案。")) > budget:
-        lines -= int((tokens - budget) / per_line) + 1
+    tokens, prompt = window_prompt(pool, count)
     result["full_window"] = {"prompt_tokens": tokens, **task(prompt, False, 30)}
     result["after_full_window"] = line(7)
     result["memory_after"] = {**gpu(), **process_memory()}
@@ -181,8 +200,13 @@ def main() -> int:
         control = ExclusiveHTTPServer(("127.0.0.1", CONTROL_PORT), Handler)
         threading.Thread(target=control.serve_forever, daemon=True).start()
         results = []
+        agent_lora = str(core.config["lora"])
         try:
-            for lease_lora in (CHARACTER_ADAPTER, str(core.config["lora"])):
+            for lease_lora, task_lora in ((CHARACTER_ADAPTER, agent_lora),
+                                         (CHARACTER_ADAPTER, CHARACTER_ADAPTER)):
+                # The shared-adapter case must load a real adapter for both
+                # lanes, even when the deployed Agent uses the base model.
+                core.config["lora"] = task_lora
                 results.append(run(core, lease_lora, core.config))
                 print(json.dumps(results[-1], ensure_ascii=False), flush=True)
                 core.switch("base", os.getpid())
