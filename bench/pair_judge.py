@@ -104,7 +104,8 @@ def main() -> None:
             raise SystemExit(f"the judge picked the intact line in only {right}/{len(trials)} broken pairs")
         with ThreadPoolExecutor(server.parallel) as pool:
             verdicts = dict(zip((str(p["n"]) for p in pairs),
-                                pool.map(lambda p: verdict(server.port, p["chat"], p["A"], p["B"]), pairs)))
+                                pool.map(lambda p: verdict(server.port, p["chat"], p["A"], p["B"]), pairs),
+                                strict=True))
         out.with_suffix(".verdicts.json").write_text(json.dumps(verdicts, indent=1), encoding="utf-8")
         print(f"{len(verdicts)} verdicts -> {out.with_suffix('.verdicts.json')}", flush=True)
     finally:
