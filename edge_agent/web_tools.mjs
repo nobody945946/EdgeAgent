@@ -2,9 +2,13 @@
 // data, never instructions; the bridge revokes standing approvals once web
 // content enters a turn. Local and private network addresses are refused, so
 // a page cannot steer the Agent at this machine's own services.
-import { isIP } from 'node:net';
+import { isIP, connect } from 'node:net';
+import { createServer, request as httpRequest } from 'node:http';
 import { lookup } from 'node:dns/promises';
 import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SEARCH_URL = process.env.EDGE_AGENT_SEARCH_URL || 'https://html.duckduckgo.com/html/';
@@ -48,35 +52,110 @@ export function privateAddress(address) {
   return ip === '::' || ip === '::1' || /^f[cd]/.test(ip) || /^fe[89ab]/.test(ip) || /^ff/.test(ip);
 }
 
+// One public address of a host, or a refusal: local and private networks
+// are never reached (a test harness's loopback aside).
+async function publicAddress(hostname) {
+  const host = hostname.replace(/^\[|\]$/g, '');
+  const addresses = isIP(host) ? [host] : (await lookup(host, { all: true })).map(item => item.address);
+  if (!addresses.length || (!ALLOW_LOOPBACK && addresses.some(privateAddress))) {
+    throw new Error('Local and private network addresses are not allowed.');
+  }
+  return addresses[0];
+}
+
 async function checkedURL(value) {
   const url = new URL(value);
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Only http and https addresses can be fetched.');
-  if (ALLOW_LOOPBACK) return url;
-  const host = url.hostname.replace(/^\[|\]$/g, '');
-  const addresses = isIP(host) ? [host] : (await lookup(host, { all: true })).map(item => item.address);
-  if (!addresses.length || addresses.some(privateAddress)) throw new Error('Local and private network addresses are not allowed.');
+  if (!ALLOW_LOOPBACK) await publicAddress(url.hostname);
   return url;
 }
 
+// What went wrong on the way to a page, in words the model can act on: Node
+// itself says only "fetch failed" and keeps the reason in the error's cause
+// (a model told nothing tried the same address again until its time ran out).
+export function networkProblem(error, host) {
+  const code = String(error?.cause?.code ?? error?.code ?? '');
+  if (error?.name === 'TimeoutError' || /TIMEOUT/.test(code)) return `${host} timed out: no answer within ${TIMEOUT_MS / 1000} seconds.`;
+  if (code === 'ENOTFOUND' || code === 'EAI_NONAME') return `${host} does not exist: no such domain. Check the address, or find the page with web_research.`;
+  if (code === 'EAI_AGAIN') return `${host} could not be looked up: the name server did not answer (the network may be down).`;
+  if (code === 'ECONNREFUSED') return `${host} refused the connection.`;
+  if (code === 'ECONNRESET' || code.startsWith('UND_ERR_SOCKET')) return `${host} closed the connection.`;
+  if (/CERT|SSL|TLS|SELF_SIGNED/.test(code)) return `${host} has an invalid security certificate (${code}).`;
+  return `${host} could not be reached (${code || error?.message || 'network error'}).`;
+}
+
+// A refusal, said with what it means: a bot check only a person in a browser
+// passes, a page that is not there, a site asking to wait.
+export function httpProblem(status, headers, host) {
+  const said = `HTTP ${status} from ${host}`;
+  if (headers.get('cf-mitigated') === 'challenge') {
+    return `${said}: the site shows a bot check (Cloudflare) that only a person in a browser passes. `
+      + 'Find the same facts on another site with web_research, or give the user this address to open.';
+  }
+  if (status === 404 || status === 410) return `${said}: there is no page at this address.`;
+  if (status === 429) return `${said}: too many requests; the site asks to wait before trying again.`;
+  if (status === 401 || status === 403) return `${said}: the site refused access (it needs a login or a key, or turns away automated readers).`;
+  if (status >= 500) return `${said}: the site has a problem on its side; it may work later.`;
+  return said;
+}
+
+const network = error => error?.name === 'TimeoutError' || error?.cause !== undefined || error?.code !== undefined;
+
+// A page's text in the character set it declares (older Taiwanese sites are Big5).
+export function decoded(raw, type) {
+  const head = raw.subarray(0, 4096).toString('latin1');
+  const label = (type.match(/charset=["']?([\w-]+)/i) ?? head.match(/<meta[^>]+charset=["']?([\w-]+)/i))?.[1] ?? 'utf-8';
+  try {
+    return new TextDecoder(label).decode(raw);
+  } catch {
+    return raw.toString('utf8');
+  }
+}
+
+// A page that only sends the reader on at once (<meta http-equiv="refresh"
+// content="0; url=...">) is a redirect too; a page that reloads itself every
+// few minutes (news) is not.
+export function refreshTarget(html, base) {
+  const meta = html.match(/<meta\b[^>]*http-equiv=["']?refresh["']?[^>]*>/i)?.[0] ?? '';
+  const [, delay, target] = meta.match(/content=["']?\s*(\d*)\s*;?\s*url\s*=\s*['"]?([^"'>\s]+)/i) ?? [];
+  if (!target || Number(delay || 0) > 5) return '';
+  const onward = new URL(decodeEntities(target), base).toString();
+  return onward === new URL(base).toString() ? '' : onward;
+}
+
 async function get(value, signal) {
-  let url = await checkedURL(value);
-  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const response = await fetch(url, { headers: HEADERS, redirect: 'manual',
-      signal: AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), ...(signal ? [signal] : [])]) });
-    if (response.status >= 300 && response.status < 400 && response.headers.get('location')) {
-      url = await checkedURL(new URL(response.headers.get('location'), url).toString());
-      continue;
+  let url = new URL(value);
+  try {
+    url = await checkedURL(value);
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      const response = await fetch(url, { headers: HEADERS, redirect: 'manual',
+        signal: AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), ...(signal ? [signal] : [])]) });
+      if (response.status >= 300 && response.status < 400 && response.headers.get('location')) {
+        url = await checkedURL(new URL(response.headers.get('location'), url).toString());
+        continue;
+      }
+      if (!response.ok) throw new Error(httpProblem(response.status, response.headers, url.host));
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of response.body) {
+        size += chunk.length;
+        if (size > MAX_BYTES) throw new Error('The page is larger than 2 MB.');
+        chunks.push(chunk);
+      }
+      const raw = Buffer.concat(chunks);
+      const type = response.headers.get('content-type') || '';
+      const body = decoded(raw, type);
+      const onward = /html/i.test(type) ? refreshTarget(body, url) : '';
+      if (onward) {
+        url = await checkedURL(onward);
+        continue;
+      }
+      return { url: url.toString(), type, body, raw };
     }
-    if (!response.ok) throw new Error(`HTTP ${response.status} from ${url.host}`);
-    const chunks = [];
-    let size = 0;
-    for await (const chunk of response.body) {
-      size += chunk.length;
-      if (size > MAX_BYTES) throw new Error('The page is larger than 2 MB.');
-      chunks.push(chunk);
-    }
-    const raw = Buffer.concat(chunks);
-    return { url: url.toString(), type: response.headers.get('content-type') || '', body: raw.toString('utf8'), raw };
+  } catch (error) {
+    // The owner stopping the turn is not the site's fault.
+    if (signal?.aborted || !network(error)) throw error;
+    throw new Error(networkProblem(error, url.host), { cause: error });
   }
   throw new Error('Too many redirects.');
 }
@@ -161,12 +240,143 @@ export async function readable(page, signal) {
   throw new Error(`Unsupported content type: ${page.type || 'unknown'}`);
 }
 
+// A page that builds its text with scripts (shops, weather, vulnerability
+// databases) is nearly empty to a plain request. The machine's own browser
+// (Edge on Windows) reads it headless: incognito in a throwaway profile, one
+// page at a time, and every request the page makes goes through a proxy here
+// that refuses local and private addresses as get() does, so a page's
+// scripts cannot reach this machine's services or the home network.
+const BROWSER_MS = 45_000;
+const BROWSERS = process.platform === 'win32'
+  ? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA].filter(Boolean)
+    .flatMap(dir => [join(dir, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+      join(dir, 'Google', 'Chrome', 'Application', 'chrome.exe')])
+  : ['/usr/bin/microsoft-edge', '/usr/bin/google-chrome', '/usr/bin/chromium'];
+let browserPath;
+
+/** The browser that renders script-built pages; EDGE_AGENT_BROWSER names one, empty for none. */
+export function browser() {
+  browserPath ??= process.env.EDGE_AGENT_BROWSER ?? BROWSERS.find(path => existsSync(path)) ?? '';
+  return browserPath;
+}
+
+export function scriptBuilt(page, text) {
+  return /html/i.test(page.type) && text.length < 500 && /<script\b/i.test(page.body);
+}
+
+/** The proxy the browser must use: tunnels and plain requests to public addresses only. */
+export async function guardProxy() {
+  const sockets = new Set();
+  const server = createServer(async (req, res) => {
+    try {
+      const target = new URL(req.url);
+      const address = await publicAddress(target.hostname);
+      const upstream = httpRequest({ host: address, port: target.port || 80, method: req.method,
+        path: target.pathname + target.search, headers: req.headers }, reply => {
+        res.writeHead(reply.statusCode, reply.headers);
+        reply.pipe(res);
+      });
+      upstream.on('error', () => res.destroy());
+      req.pipe(upstream);
+    } catch {
+      res.writeHead(403).end();
+    }
+  });
+  server.on('connect', async (req, socket, head) => {
+    sockets.add(socket);
+    socket.on('error', () => socket.destroy());
+    try {
+      const [, host, port] = req.url.match(/^\[?([^\]]+?)\]?:(\d+)$/) ?? [];
+      const address = await publicAddress(host ?? '');
+      const upstream = connect(Number(port), address, () => {
+        socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        upstream.write(head);
+        upstream.pipe(socket);
+        socket.pipe(upstream);
+      });
+      sockets.add(upstream);
+      upstream.on('error', () => socket.destroy());
+      socket.on('close', () => upstream.destroy());
+    } catch {
+      socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+    }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  return { port: server.address().port,
+    close() { server.closeAllConnections(); server.close(); for (const socket of sockets) socket.destroy(); } };
+}
+
+function stopTree(child) {
+  try {
+    if (process.platform === 'win32') spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+    else process.kill(-child.pid, 'SIGKILL');
+  } catch { /* already gone */ }
+}
+
+async function renderOnce(value, signal) {
+  const path = browser();
+  if (!path) throw new Error('no browser is available here to run them');
+  const url = await checkedURL(value);
+  const proxy = await guardProxy();
+  const profile = mkdtempSync(join(tmpdir(), 'edge-agent-browser-'));
+  try {
+    const args = ['--headless=new', '--incognito', `--user-data-dir=${profile}`, '--no-first-run',
+      '--no-default-browser-check', '--disable-gpu', '--disable-extensions', '--disable-sync', '--mute-audio',
+      '--disable-background-networking', '--disable-component-update', '--disable-breakpad',
+      // Linux: no wait for a desktop keyring (25 s on a machine without one).
+      '--password-store=basic',
+      `--proxy-server=http://127.0.0.1:${proxy.port}`, '--proxy-bypass-list=<-loopback>',
+      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp', '--blink-settings=imagesEnabled=false',
+      '--virtual-time-budget=5000', '--dump-dom', url.href];
+    return await new Promise((done, fail) => {
+      const child = spawn(path, args, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
+        detached: process.platform !== 'win32' });
+      const out = [];
+      let size = 0;
+      const end = error => { clearTimeout(timer); signal?.removeEventListener('abort', abort); stopTree(child); fail(error); };
+      const abort = () => end(signal.reason ?? new Error('Stopped.'));
+      const timer = setTimeout(() => end(new Error(`the browser did not finish within ${BROWSER_MS / 1000} seconds`)), BROWSER_MS);
+      signal?.addEventListener('abort', abort, { once: true });
+      child.stdout.on('data', chunk => { size += chunk.length; if (size <= MAX_BYTES * 4) out.push(chunk); });
+      child.on('error', error => end(new Error(`the browser could not start (${error.code ?? error.message})`)));
+      child.on('close', code => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
+        if (code === 0 && size) done(Buffer.concat(out).toString('utf8'));
+        else fail(new Error(`the browser could not load it (exit code ${code})`));
+      });
+    });
+  } finally {
+    proxy.close();
+    try { rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); } catch { /* a lingering lock */ }
+  }
+}
+
+let rendering = Promise.resolve();
+/** The page's HTML after its scripts ran, one browser at a time (the laptop's memory is small). */
+export function rendered(value, signal) {
+  const run = rendering.then(() => renderOnce(value, signal));
+  rendering = run.catch(() => {});
+  return run;
+}
+
 export async function webFetch(value, maxChars = 12000, signal) {
   const page = await get(value, signal);
   const limit = Math.max(500, Math.min(maxChars, 40000));
-  const { title, text } = await readable(page, signal);
+  let { title, text } = await readable(page, signal);
+  let note = '';
+  if (scriptBuilt(page, text)) {
+    try {
+      const shown = htmlToText(await rendered(page.url, signal));
+      if (shown.text.length > text.length) ({ title, text } = { title: shown.title || title, text: shown.text });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      note = `\n[Only ${text.length} characters could be read: this page builds its content with scripts, and ${error.message}. `
+        + 'Find the same facts with web_research, or tell the user this page could not be read.]';
+    }
+  }
   const clipped = text.length > limit ? text.slice(0, limit) + `\n[Truncated: ${text.length - limit} more characters]` : text;
-  return `${UNTRUSTED}\nURL: ${page.url}\n${title ? 'Title: ' + title + '\n' : ''}\n${clipped}`;
+  return `${UNTRUSTED}\nURL: ${page.url}\n${title ? 'Title: ' + title + '\n' : ''}\n${clipped}${note}`;
 }
 
 // Research for a small model: the code searches, reads the top pages and keeps

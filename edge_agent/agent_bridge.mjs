@@ -303,13 +303,15 @@ function policy(pi) {
   pi.on('tool_call', async (event, ctx) => {
     const { toolName, input } = event;
     if (++calls > 64) return stop(ctx, 'tool_limit', '本輪已執行 64 次工具操作；停止並保留進度，請縮小範圍或繼續下一輪。');
-    if (['edit', 'write', 'powershell', 'bash'].includes(toolName)) {
+    if (['edit', 'write', 'powershell', 'bash', 'web_fetch', 'web_research'].includes(toolName)) {
       const signature = JSON.stringify([toolName, input]);
       const count = (repeats.get(signature) ?? 0) + 1;
       repeats.set(signature, count);
       // The third identical call is refused with the way out; only a fourth
       // ends the turn, so a model that can still answer gets the chance to
-      // (the bench's repo tasks: 7 of 15 failures ended here with nothing said).
+      // (the bench's repo tasks: 7 of 15 failures ended here with nothing said;
+      // the teacher's recording, 2026-10-09: the same failing addresses fetched
+      // again and again until the conversation's time ran out).
       if (count >= 4) return stop(ctx, 'repeat_limit', '同一操作重複 4 次而未推進工作；已停止，修改與上下文仍保留。');
       if (count === 3) {
         return { block: true, reason: 'You already ran exactly this twice; a third run will not change the result. '

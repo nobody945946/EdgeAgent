@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { connect } from 'node:net';
 
 const { privateAddress, htmlToText, parseSearchResults, normalURL, urlsIn } = await import('../edge_agent/web_tools.mjs');
 assert.deepEqual(urlsIn('看 https://example.org/a?b=1。還有（https://x.example/路徑）和 http://y.example.'),
@@ -99,3 +100,62 @@ assert.deepEqual(research.checkCitations('250 公克以上要註冊 [1]。罰鍰
 assert.deepEqual(research.checkCitations('罰鍰 9000 元 [1]。', sources), ['「9000」在引用的段落 [1] 裡找不到']);
 assert.deepEqual(research.checkCitations('價格約 12000 元 [4]。', sources), ['「12000」只有一個二級來源支持']);
 assert.deepEqual(research.checkCitations('沒有引用的 123 不檢查。', sources), []);
+
+
+// Why a page could not be read, said so the model can act on it (Node says only
+// "fetch failed"; the teacher fetched the same dead addresses until its time ran out).
+process.env.EDGE_AGENT_BROWSER = '';  // no rendering until the browser check below
+const big5 = Buffer.from('a578c657', 'hex');  // 台灣
+const reasons = createServer((req, res) => {
+  if (req.url === '/challenge') { res.writeHead(403, { 'cf-mitigated': 'challenge' }); return res.end('Just a moment...'); }
+  if (req.url === '/gone') { res.writeHead(404); return res.end(); }
+  if (req.url === '/moved') { res.writeHead(200, { 'content-type': 'text/html' }); return res.end('<meta http-equiv="refresh" content="0; url=/big5">'); }
+  if (req.url === '/news') { res.writeHead(200, { 'content-type': 'text/html' }); return res.end('<meta http-equiv="refresh" content="300; url=/news"><p>新聞</p>'); }
+  if (req.url === '/big5') { res.writeHead(200, { 'content-type': 'text/html; charset=big5' }); return res.end(Buffer.concat([Buffer.from('<p>'), big5, Buffer.from('</p>')])); }
+  if (req.url === '/big5-meta') { res.writeHead(200, { 'content-type': 'text/html' }); return res.end(Buffer.concat([Buffer.from('<meta charset="big5"><p>'), big5, Buffer.from('</p>')])); }
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+  res.end('<html><head><title>App</title><script>addEventListener("DOMContentLoaded", () => '
+    + '{ document.getElementById("app").textContent = "由腳本產生：特價 499 元"; })</script></head><body><div id="app"></div></body></html>');
+});
+await new Promise(resolve => reasons.listen(0, '127.0.0.1', resolve));
+const site = `http://127.0.0.1:${reasons.address().port}`;
+const closed = createServer();
+await new Promise(resolve => closed.listen(0, '127.0.0.1', resolve));
+const closedPort = closed.address().port;
+await new Promise(resolve => closed.close(resolve));
+await assert.rejects(local.webFetch(`http://127.0.0.1:${closedPort}/`), /127\.0\.0\.1:\d+ refused the connection\./);
+for (const module of [local, strict]) {
+  await assert.rejects(module.webFetch('http://no-such-host.invalid/'), /no-such-host\.invalid (does not exist: no such domain|could not be looked up)/);
+}
+await assert.rejects(local.webFetch(site + '/challenge'), /^Error: HTTP 403 from [\d.:]+: the site shows a bot check \(Cloudflare\)/);
+await assert.rejects(local.webFetch(site + '/gone'), /HTTP 404 from [\d.:]+: there is no page at this address/);
+assert.ok((await local.webFetch(site + '/big5')).includes('台灣'));
+const moved = await local.webFetch(site + '/moved');
+assert.ok(moved.includes('台灣') && moved.includes(`URL: ${site}/big5`), moved);
+assert.ok((await local.webFetch(site + '/news')).includes('新聞'));
+assert.equal(local.refreshTarget('<meta content="0;URL=\'/a\'" http-equiv="Refresh">', 'https://x.example/b'), 'https://x.example/a');
+assert.equal(local.refreshTarget('<meta http-equiv="refresh" content="600">', 'https://x.example/'), '');
+assert.ok((await local.webFetch(site + '/big5-meta')).includes('台灣'));
+const unrendered = await local.webFetch(site + '/app');
+assert.ok(unrendered.includes('builds its content with scripts, and no browser is available here to run them'), unrendered);
+
+// With a browser (Edge on the owner's laptop), the script-built page is read
+// after its scripts ran; the browser's own proxy refuses private addresses.
+const guard = await strict.guardProxy();
+const ask = request => new Promise(resolve => {
+  const socket = connect(guard.port, '127.0.0.1', () => socket.write(request));
+  socket.once('data', data => { resolve(data.toString()); socket.destroy(); });
+});
+assert.match(await ask(`CONNECT 127.0.0.1:${reasons.address().port} HTTP/1.1\r\nHost: x\r\n\r\n`), /^HTTP\/1\.1 403/);
+assert.match(await ask(`GET ${site}/ HTTP/1.1\r\nHost: x\r\n\r\n`), /^HTTP\/1\.1 403/);
+guard.close();
+delete process.env.EDGE_AGENT_BROWSER;
+const browsing = await import('../edge_agent/web_tools.mjs?browser');
+if (browsing.browser()) {
+  const shown = await browsing.webFetch(site + '/app');
+  assert.ok(shown.includes('由腳本產生：特價 499 元') && shown.includes('Title: App'), shown);
+  console.log('script-built page read with', browsing.browser());
+} else {
+  console.log('no browser here: rendering not checked');
+}
+reasons.close();

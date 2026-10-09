@@ -43,6 +43,25 @@ def test_real_sdk_stops_repeated_noop_without_writing_or_disk_sessions(
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_stops_fetching_the_same_dead_address(tmp_path, repeating_model):  # noqa: F811
+    """The teacher fetched the same dead addresses until its time ran out
+    (2026-10-09): the model hears why a fetch failed, a third identical web
+    call is refused with the way out, and a fourth ends the turn."""
+    port, state = repeating_model
+    state["tool"], state["input"] = "web_fetch", {"url": "http://no-such-host.invalid/"}
+    chat = NativeChat(model_port=port)
+    try:
+        events = permission_run(chat, tmp_path, {"edit": "ask", "shell": "ask", "web": "allow"}, approve=True,
+                                prompt="讀 http://no-such-host.invalid/")
+        assert events[-1][0] == "error" and events[-1][1]["reason"] == "repeat_limit"
+        results = [str(m["content"]) for r in state["requests"] for m in r["messages"] if m["role"] == "tool"]
+        assert any("does not exist: no such domain" in r or "could not be looked up" in r for r in results)
+        assert any("a third run will not change the result" in r for r in results)
+    finally:
+        chat.close()
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
 def test_real_sdk_tells_the_model_todays_date(tmp_path, repeating_model):  # noqa: F811
     """The host states the date and time zone, so the model never assumes one
     from its training data."""
