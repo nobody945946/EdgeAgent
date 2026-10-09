@@ -21,6 +21,7 @@ always asks (once): the model built it, and it could carry data out.
 
 from __future__ import annotations
 
+import fnmatch
 import subprocess
 from pathlib import Path
 
@@ -144,7 +145,13 @@ PATH_PARAMS = {"Path", "LiteralPath", "FilePath", "Destination", "DestinationPat
 # cmdlet that changes something waits for the owner.
 WRITES = {"Set-Content", "Add-Content", "Out-File", "Export-Csv", "New-Item", "Copy-Item", "Move-Item",
           "Rename-Item"}
-READ_NEEDS_PATH = {"Get-Content", "Select-String", "Get-FileHash", "Import-Csv"}
+# What a command takes from the pipeline as a path is proven by what passes
+# it along: the files Get-Item names (their links resolved by the proof), and
+# the file each line of Get-Content came from (a property, so only commands
+# that take paths by property, not the line itself as a path). Get-ChildItem
+# lists what it finds, links included, so only a digest of each may follow.
+PASSES_NAMED = {"Get-Item": "object", "Get-Content": "property"}
+DIGESTS = {"Get-FileHash"}
 # Reads of the machine itself, outside any workspace, for the chores an owner
 # asks about ("how much memory", "how full is C:"): each from the module
 # Windows ships it in, so a same-named function from anywhere else is not it.
@@ -158,18 +165,129 @@ SYSTEM_READS = {
     "Get-PhysicalDisk": "Storage",
     "Get-Partition": "Storage",
 }
-# The CIM classes a read may name: hardware, Windows itself, disks, power,
-# services and startup programs. Not processes (their command lines carry
-# passwords and keys), accounts, or environment variables (API keys).
+# The CIM classes a read may name: hardware, Windows itself, disks, power and
+# services. Not processes or startup programs (what shows of them is their
+# command lines, which carry passwords and keys), accounts, or environment
+# variables (API keys).
 CIM_CLASSES = {name.lower() for name in (
     "Win32_ComputerSystem", "Win32_OperatingSystem", "Win32_Processor", "Win32_PhysicalMemory",
     "Win32_LogicalDisk", "Win32_DiskDrive", "Win32_DiskPartition", "Win32_Volume",
     "Win32_VideoController", "Win32_Battery", "Win32_BIOS", "Win32_BaseBoard", "Win32_SoundDevice",
-    "Win32_NetworkAdapter", "Win32_Service", "Win32_StartupCommand",
+    "Win32_NetworkAdapter", "Win32_Service",
     "Win32_PerfFormattedData_PerfOS_Processor", "Win32_PerfFormattedData_PerfOS_Memory",
     "MSFT_PhysicalDisk", "MSFT_Disk", "MSFT_Volume", "MSFT_Partition",
 )}
 CIM_NAMESPACES = {"root/cimv2", "root\\cimv2", "root/microsoft/windows/storage", "root\\microsoft\\windows\\storage"}
+# Command lines (a process's, a service's) and the views that show every
+# property at once: a read never names them, so a key on some program's
+# command line never reaches the model. A property pattern that could match
+# one is refused too.
+HIDDEN_MEMBERS = {"commandline", "binarypathname", "pathname", "startinfo", "environment",
+                  "environmentvariables", "psobject", "psbase", "psadapted", "psextended",
+                  "ciminstanceproperties"}
+VIEW_PARAMS = {"Property", "ExpandProperty"}
+# Common parameters that only say what to do with errors and warnings.
+QUIET_PARAMS = {"ErrorAction", "WarningAction"}
+
+# The script around the commands (a read-only task could not even count a
+# log's errors): variables, operators, script blocks, if and foreach, as long
+# as everything in them is proven too. Not: method calls but the listed pure
+# ones, types but the listed value types, setting a property (a file's
+# attributes and dates are properties), redirection but to $null or another
+# stream, other statements (switch -File reads any file), other scopes'
+# variables ($env:, $global:, a drive's ${c:\...}), or a variable the script
+# did not set itself (a session's earlier commands could have put a key there).
+PROVABLE_NODES = {
+    "ScriptBlockAst", "NamedBlockAst", "PipelineAst", "CommandAst", "CommandParameterAst",
+    "CommandExpressionAst", "StringConstantExpressionAst", "ExpandableStringExpressionAst",
+    "ConstantExpressionAst", "ArrayLiteralAst", "ArrayExpressionAst", "HashtableAst", "ScriptBlockExpressionAst",
+    "VariableExpressionAst", "BinaryExpressionAst", "UnaryExpressionAst", "ParenExpressionAst",
+    "SubExpressionAst", "MemberExpressionAst", "InvokeMemberExpressionAst", "IndexExpressionAst",
+    "TypeExpressionAst", "ConvertExpressionAst", "TypeConstraintAst", "AssignmentStatementAst",
+    "StatementBlockAst", "IfStatementAst", "ForEachStatementAst", "FileRedirectionAst", "MergingRedirectionAst",
+}
+AUTOMATIC_READS = {"_", "psitem", "true", "false", "null", "matches", "psversiontable"}
+# Value types: converting to them parses (a type with a constructor, such as
+# a file writer, would run it).
+PURE_TYPES = {"int", "int32", "long", "int64", "double", "decimal", "float", "single", "string", "char", "bool",
+              "boolean", "byte", "datetime", "timespan", "version", "regex", "text.regularexpressions.regex",
+              "pscustomobject", "management.automation.pscustomobject", "ordered", "hashtable",
+              "collections.hashtable", "array", "object", "math", "convert", "stringsplitoptions"}
+STATIC_METHODS = {
+    "math": None,  # every one
+    "string": {"join", "format", "isnullorempty", "isnullorwhitespace", "concat", "compare", "equals"},
+    "regex": {"match", "matches", "ismatch", "replace", "split", "escape", "unescape"},
+    "datetime": {"parse", "parseexact", "daysinmonth", "isleapyear"},
+    "timespan": {"parse", "fromdays", "fromhours", "fromminutes", "fromseconds", "frommilliseconds"},
+    "convert": {"toint32", "toint64", "todouble", "todecimal", "tostring", "toboolean", "tobase64string",
+                "frombase64string"},
+    "char": {"isdigit", "isletter", "isletterordigit", "iswhitespace", "isupper", "islower", "toupper", "tolower"},
+    **{name: {"parse"} for name in ("int", "int32", "long", "int64", "double", "decimal")},
+}
+# Methods that only compute, whatever object they are called on (not Replace:
+# a file's Replace swaps files; not ForEach: given a name, it calls that method).
+PURE_METHODS = {"trim", "trimstart", "trimend", "tolower", "toupper", "tolowerinvariant", "toupperinvariant",
+                "split", "substring", "contains", "containskey", "containsvalue", "startswith", "endswith",
+                "indexof", "lastindexof", "padleft", "padright", "tostring", "equals", "compareto",
+                "getenumerator", "normalize", "adddays", "addhours", "addminutes", "addseconds", "addmonths",
+                "addyears"}
+
+
+def _type(name: str) -> str:
+    name = name.lower().removesuffix("[]")
+    return name.removeprefix("system.")
+
+
+def _pure_script(info: dict) -> bool:
+    """Everything around the commands only computes (PROVABLE_NODES and the
+    rules above); the commands themselves are proven one by one."""
+    if not set(info["node_types"]) <= PROVABLE_NODES or info["background"]:
+        return False
+    if not all(redirect in ("discard", "merge") for redirect in info["redirects"]):
+        return False  # into a file: not proven (Set-Content and Out-File are)
+    if any(kind not in ("variable", "index") for kind in info["assignments"] + info["increments"]):
+        return False
+    if any(_type(name) not in PURE_TYPES for name in info["types"]) \
+            or any(kind != "TypeExpressionAst" for kind in info["conversions"]):
+        return False
+    for member in info["members"]:
+        name = (member["name"] or "").lower()
+        if not name or name in HIDDEN_MEMBERS:
+            return False
+        if member["static"]:
+            owner = _type(member["type"] or "")
+            if member["invoke"] and (owner not in STATIC_METHODS
+                                     or STATIC_METHODS[owner] is not None and name not in STATIC_METHODS[owner]):
+                return False
+        elif member["invoke"] and name not in PURE_METHODS:
+            return False
+    if any(str(text).lower() in HIDDEN_MEMBERS for text in info["strings"]):
+        return False
+    ready: dict[str, int] = {}
+    for variable in sorted(info["variables"], key=lambda v: v["at"]):
+        name = str(variable["name"]).lower()
+        if not variable["plain"] or variable["splatted"]:
+            return False
+        if variable["assigned"] is not None:
+            if variable["builtin"] and name != "null":
+                return False
+            if variable["op"] != "Equals" and name not in ready:
+                return False  # += reads what was there first
+            ready.setdefault(name, variable["assigned"])
+        elif name not in AUTOMATIC_READS and not (name in ready and ready[name] <= variable["at"]):
+            return False
+    return True
+
+
+def _hidden_view(item: dict) -> bool:
+    """A property list that names, or could match, a hidden member, or that
+    is computed when it runs."""
+    for param in item["bound"]:
+        if param["name"] in VIEW_PARAMS and (param.get("dynamic") or any(
+                fnmatch.fnmatchcase(hidden, str(text).lower()) for text in param.get("strings") or []
+                for hidden in HIDDEN_MEMBERS)):
+            return True
+    return False
 
 
 def _system_read(item: dict, bound: dict) -> bool:
@@ -238,6 +356,8 @@ def _git_read(item: dict, root: Path) -> bool:
     if not source.is_absolute() or source.resolve().is_relative_to(root):
         return False  # a git.exe in the workspace is the workspace's program, not git
     args = [str(arg) for arg in item.get("args") or []]
+    while args[:1] == ["--no-pager"] or args[:1] == ["-C"] and len(args) > 1 and _inside(args[1], root) == root:
+        args = args[1:] if args[0] == "--no-pager" else args[2:]  # -C the workspace itself: the same as no -C
     if not args:
         return False
     command, rest = args[0], args[1:]
@@ -257,30 +377,25 @@ def _git_read(item: dict, root: Path) -> bool:
 
 def _prove(command: str, directory: Path) -> tuple[list[Path], bool] | None:
     """What a command writes and whether it changes anything, when it is proven to touch nothing but the
-    workspace: native cmdlets in plain pipelines with literal arguments that
-    read inside the workspace or write files it names there (returned, to copy
-    first), git's reads of the workspace's own repository (_git_read), and
-    reads of the machine itself (_system_read). None for anything else: other
-    programs, dynamic code, script blocks, sub-expressions, method calls,
-    folder changes, deleting, changing the system, the network, a target that
-    is not a literal path, anything under .git."""
+    workspace: native cmdlets with literal arguments that read inside the
+    workspace or write files it names there (returned, to copy first), git's
+    reads of the workspace's own repository (_git_read), and reads of the
+    machine itself (_system_read), in a script that only computes around them
+    (_pure_script). None for anything else: other programs, dynamic code,
+    method calls but pure ones, folder changes, deleting, changing the system,
+    the network, a target that is not a literal path, a path passed along a
+    pipeline, anything under .git, a command line."""
     try:
         info = powershell.analyze(command, cwd=str(directory), timeout=20)
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
         return None
-    if info["errors"] or info["other_blocks"] or not info["simple_literals"]:
-        return None
-    statements = info["statements"]
-    if not statements or any(s.get("kind") != "pipeline" or s.get("background") for s in statements):
-        return None
-    elements = [e for s in statements for e in s.get("elements", [])]
-    commands = info["all_commands"]
-    if not commands or any(e.get("kind") != "command" for e in elements) or len(commands) != len(elements):
+    if info["errors"] or info["other_blocks"] or not _pure_script(info):
         return None
     root = directory.resolve()
     writes: list[Path] = []
     changes = False
-    for item in commands:
+    by_offset = {item["at"]: item for item in info["all_commands"]}
+    for item in info["all_commands"]:
         git = _git_read(item, root)
         entry = powershell.COMMANDS.get(item["resolved"])
         bound = {param["name"]: param["literal"] for param in item["bound"]}
@@ -291,32 +406,44 @@ def _prove(command: str, directory: Path) -> tuple[list[Path], bool] | None:
                         or not (system and kind in ("Cmdlet", "Function")
                                 or kind == "Cmdlet" and item["module"] in CORE_MODULES)):
             return None
-        if not git and set(bound) - set(entry.params):
+        if not git and (set(bound) - set(entry.params) - QUIET_PARAMS or _hidden_view(item)):
             return None
-        if item["resolved"] in READ_NEEDS_PATH and not {"Path", "LiteralPath"} & set(bound):
-            return None  # FileInfo pipeline inputs can follow links outside the workspace
-        places = {name: _inside(bound[name], root, wildcards=name == "LiteralPath")
+        if not _piped_paths_proven(item, by_offset):
+            return None
+        places = {name: [_inside(value, root, wildcards=name == "LiteralPath")
+                         for value in (bound[name] if isinstance(bound[name], list) else [bound[name]])]
                   for name in PATH_PARAMS & set(bound)}
-        if None in places.values():
+        if any(None in paths for paths in places.values()):
             return None
-        for redirect in item["redirections"]:
-            if redirect.get("merge"):
-                continue
-            target = _inside(redirect.get("to"), root)
-            if target is None:
-                return None
-            writes.append(target)
-            changes = True
         if git or entry.effect == "read":
             continue
-        if item["resolved"] not in WRITES:
-            return None
-        landing = _landing(item["resolved"], places, bound)
+        if item["resolved"] not in WRITES or any(len(paths) != 1 for paths in places.values()):
+            return None  # a write names its one target
+        landing = _landing(item["resolved"], {name: paths[0] for name, paths in places.items()}, bound)
         if landing is None or any(path == root or path.is_dir() for path in landing):
             return None  # a folder as a write target: nothing a file copy can put back
         writes.extend(landing)
         changes = True
     return writes, changes
+
+
+def _piped_paths_proven(item: dict, by_offset: dict[int, dict]) -> bool:
+    """Whatever the previous command passes along cannot land on a path
+    parameter ("C:\\Users" | Get-ChildItem), or it is a path the proof has
+    seen (PASSES_NAMED, DIGESTS). A command that names its own path leaves none
+    open: the alternatives exclude each other."""
+    if not item["position"] or {"Path", "LiteralPath", "FilePath"} & {param["name"] for param in item["bound"]}:
+        return True
+    if item["piped"] is None or item["piped_value"] is None:
+        return False
+    paths = PATH_PARAMS | {"PSPath"}
+    if not set(item["piped"]) & paths:
+        return True
+    previous = by_offset.get(item["previous"]) or {}
+    passes = PASSES_NAMED.get(previous.get("resolved"))
+    if passes == "object" or passes == "property" and not set(item["piped_value"]) & paths:
+        return True
+    return previous.get("resolved") == "Get-ChildItem" and item["resolved"] in DIGESTS
 
 
 def _landing(cmdlet: str, places: dict[str, Path], bound: dict) -> list[Path] | None:

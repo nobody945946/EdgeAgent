@@ -171,7 +171,7 @@ def test_native_provider_parameters_are_not_reported_as_binding_errors(tmp_path)
     assert "-File：只列檔案" in text
     assert "參數錯誤" not in text
     info = powershell.analyze(script, cwd=str(tmp_path))
-    assert info["simple_literals"] is True
+    assert [command["position"] for command in info["all_commands"]] == [0, 1, 2]
     assert all(not command["binding_errors"] for command in info["all_commands"])
     for name in ("one.tmp", "two.tmp", "other.txt"):
         (tmp_path / name).write_text("fixture")

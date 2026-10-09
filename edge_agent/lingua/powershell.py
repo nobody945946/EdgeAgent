@@ -26,12 +26,48 @@ from edge_agent.lingua.engines import find_pwsh
 ANALYZE = r"""
 [Console]::InputEncoding = [Text.Encoding]::UTF8
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
+# The variables a fresh session already has (automatic and preference ones), before this script makes any.
+$builtin = @(Get-Variable | ForEach-Object { $_.Name })
 $src = [Console]::In.ReadToEnd()
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseInput($src, [ref]$tokens, [ref]$errors)
 $Lang = 'System.Management.Automation.Language'
 
 function Text($node) { if ($node) { $node.Extent.Text } else { '' } }
+
+function Same($a, $b) { [object]::ReferenceEquals($a, $b) }
+
+# What a parameter's value says outside the script blocks in it: its string
+# constants, and whether anything there is computed when it runs.
+function Outer($node) {
+  $strings = @(); $dynamic = $false
+  if ($node) {
+    foreach ($n in @($node.FindAll({ param($x) $true }, $true))) {
+      $up = $n; $inner = $false
+      while ($up -and -not (Same $up $node)) {
+        $up = $up.Parent
+        if ($up -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) { $inner = $true; break }
+      }
+      if ($inner) { continue }
+      $t = $n.GetType().Name
+      if ($t -eq 'StringConstantExpressionAst') { $strings += $n.Value }
+      elseif ($t -eq 'VariableExpressionAst') { if ($n.VariablePath.UserPath -notin @('true', 'false', 'null')) { $dynamic = $true } }
+      elseif ($t -notin @('ConstantExpressionAst', 'ArrayLiteralAst', 'HashtableAst', 'ScriptBlockExpressionAst',
+                          'PipelineAst', 'CommandExpressionAst', 'CommandParameterAst')) { $dynamic = $true }
+    }
+  }
+  [pscustomobject]@{ strings = @($strings); dynamic = $dynamic }
+}
+
+# A string, or a list of strings, written out literally; else nothing.
+function Literal($node) {
+  if ($node -is [System.Management.Automation.Language.StringConstantExpressionAst]) { return $node.Value }
+  if ($node -is [System.Management.Automation.Language.ArrayLiteralAst] -and
+      @($node.Elements | Where-Object { $_ -isnot [System.Management.Automation.Language.StringConstantExpressionAst] }).Count -eq 0) {
+    return ,@($node.Elements | ForEach-Object { $_.Value })
+  }
+  $null
+}
 
 function Command($c) {
   $name = $c.GetCommandName()
@@ -88,9 +124,10 @@ function Command($c) {
       }
       if ($p.Value -and -not ($p.Value -is [System.Management.Automation.Language.CommandParameterAst])) { $value = $p.Value.Extent.Text }
       elseif ($p.Value -is [System.Management.Automation.Language.CommandParameterAst] -and $p.Value.Argument) { $value = $p.Value.Argument.Extent.Text }
-      $literal = $null
-      if ($p.Value -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $literal = $p.Value.Value }
-      $bound += [pscustomobject]@{ name = [string]$kv.Key; value = $value; literal = $literal; switch = $isSwitch; at = $at }
+      $valueNode = if ($p.Value -is [System.Management.Automation.Language.CommandParameterAst]) { $p.Value.Argument } else { $p.Value }
+      $outer = Outer $valueNode
+      $bound += [pscustomobject]@{ name = [string]$kv.Key; value = $value; literal = (Literal $valueNode); switch = $isSwitch; at = $at
+                                   strings = $outer.strings; dynamic = $outer.dynamic }
     }
     foreach ($kv in $b.BindingExceptions.GetEnumerator()) {
       $ex = $kv.Value.BindingException
@@ -111,9 +148,9 @@ function Command($c) {
             $isSwitch = $parameter.ParameterType -eq [System.Management.Automation.SwitchParameter]
             $valueNode = $e.Argument
             if (-not $isSwitch -and -not $valueNode -and $index + 1 -lt $elements.Count) { $valueNode = $elements[$index + 1] }
-            $literal = $null
-            if ($valueNode -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $literal = $valueNode.Value }
-            $bound += [pscustomobject]@{ name = $parameter.Name; value = (Text $valueNode); literal = $literal; switch = $isSwitch; at = $e.Extent.StartOffset }
+            $outer = Outer $valueNode
+            $bound += [pscustomobject]@{ name = $parameter.Name; value = (Text $valueNode); literal = (Literal $valueNode); switch = $isSwitch
+                                         at = $e.Extent.StartOffset; strings = $outer.strings; dynamic = $outer.dynamic }
             break
           }
           continue
@@ -129,9 +166,29 @@ function Command($c) {
       [pscustomobject]@{ text = (Text $r); stream = [string]$r.FromStream; to = ''; append = $false; merge = [string]$r.ToStream }
     }
   })
+  $position = 0; $previous = $null
+  if ($c.Parent -is [System.Management.Automation.Language.PipelineAst]) {
+    $elements = @($c.Parent.PipelineElements)
+    for ($i = 0; $i -lt $elements.Count; $i++) { if (Same $elements[$i] $c) { $position = $i } }
+    if ($position) { $previous = $elements[$position - 1].Extent.StartOffset }
+  }
+  # The parameters that take what the previous command in the pipeline passes
+  # along: any way, and as the object itself (a string is taken as it is).
+  $piped = @(); $pipedValue = @()
+  $meta = if ($info -and $info.CommandType -eq 'Alias') { $targetCmd } else { $info }
+  if ($meta -and ($kind -eq 'Cmdlet' -or $kind -eq 'Function')) {
+    try {
+      foreach ($p in $meta.Parameters.Values) {
+        $sets = @($p.ParameterSets.Values)
+        if (@($sets | Where-Object { $_.ValueFromPipeline -or $_.ValueFromPipelineByPropertyName }).Count) { $piped += $p.Name }
+        if (@($sets | Where-Object { $_.ValueFromPipeline }).Count) { $pipedValue += $p.Name }
+      }
+    } catch { $piped = $null; $pipedValue = $null }  # unknown: the proof takes it as anything
+  }
   [pscustomobject]@{
     kind = 'command'; text = (Text $c); name = [string]$name; invocation = [string]$c.InvocationOperator
     resolved = $resolved; type = $type; target_type = $targetType; module = $module; source = $source
+    at = $c.Extent.StartOffset; position = $position; previous = $previous; piped = $piped; piped_value = $pipedValue
     bound = @($bound); binding_errors = @($bindErrors); redirections = @($redirections)
     args = @($c.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.Extent.Text })
   }
@@ -163,19 +220,72 @@ function Statement($s) {
   [pscustomobject]@{ kind = 'other'; text = (Text $s); type = $t; commands = $inner }
 }
 
+# What an assignment or an increment changes: a variable, an element of one, or something else.
+function Target($n) {
+  if ($n -is [System.Management.Automation.Language.ConvertExpressionAst]) { $n = $n.Child }
+  if ($n -is [System.Management.Automation.Language.VariableExpressionAst]) { return 'variable' }
+  if ($n -is [System.Management.Automation.Language.IndexExpressionAst] -and
+      $n.Target -is [System.Management.Automation.Language.VariableExpressionAst]) { return 'index' }
+  $n.GetType().Name
+}
+
 $statements = @()
 if ($ast.EndBlock) { $statements = @($ast.EndBlock.Statements | ForEach-Object { Statement $_ }) }
 $all = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { Command $_ })
+# Every node of the script, for what edge_agent.permissions weighs beyond the commands.
+$nodes = @($ast.FindAll({ param($n) $true }, $true))
 $out = [pscustomobject]@{
   version = $PSVersionTable.PSVersion.ToString(); edition = [string]$PSVersionTable.PSEdition
   windows = [bool]([Environment]::OSVersion.Platform -eq 'Win32NT')
   errors = @($errors | ForEach-Object { [pscustomobject]@{ message = $_.Message; offset = $_.Extent.StartOffset } })
   statements = $statements; all_commands = $all
   other_blocks = [bool]($ast.BeginBlock -or $ast.ProcessBlock -or $ast.ParamBlock)
-  simple_literals = @($ast.FindAll({ param($n) $n.GetType().Name -notin @(
-    'ScriptBlockAst', 'NamedBlockAst', 'PipelineAst', 'CommandAst',
-    'CommandParameterAst', 'StringConstantExpressionAst', 'ConstantExpressionAst', 'ArrayLiteralAst'
-  ) }, $true)).Count -eq 0
+  node_types = @($nodes | ForEach-Object { $_.GetType().Name } | Sort-Object -Unique)
+  background = @($nodes | Where-Object { $_.GetType().Name -in @('PipelineAst', 'PipelineChainAst') -and $_.Background }).Count -gt 0
+  # Each variable: assigned (where its value is ready) or read (where).
+  variables = @(foreach ($v in $nodes) {
+    if ($v -isnot [System.Management.Automation.Language.VariableExpressionAst]) { continue }
+    $p = $v.Parent; $left = $v; $ready = $null; $op = ''
+    if ($p -is [System.Management.Automation.Language.ConvertExpressionAst]) { $left = $p; $p = $p.Parent }
+    if ($p -is [System.Management.Automation.Language.AssignmentStatementAst] -and (Same $p.Left $left)) {
+      $ready = $p.Extent.EndOffset; $op = [string]$p.Operator
+    } elseif ($p -is [System.Management.Automation.Language.ForEachStatementAst] -and (Same $p.Variable $v)) {
+      $ready = $p.Condition.Extent.EndOffset; $op = 'Equals'
+    }
+    $path = $v.VariablePath
+    [pscustomobject]@{ name = $path.UserPath; plain = [bool]$path.IsUnqualified; splatted = [bool]$v.Splatted
+                       at = $v.Extent.StartOffset; assigned = $ready; op = $op; builtin = $builtin -contains $path.UserPath }
+  })
+  assignments = @(foreach ($a in $nodes) { if ($a -is [System.Management.Automation.Language.AssignmentStatementAst]) { Target $a.Left } })
+  increments = @(foreach ($u in $nodes) {
+    if ($u -is [System.Management.Automation.Language.UnaryExpressionAst] -and
+        [string]$u.TokenKind -in @('PlusPlus', 'MinusMinus', 'PostfixPlusPlus', 'PostfixMinusMinus')) { Target $u.Child }
+  })
+  types = @(foreach ($t in $nodes) {
+    if ($t -is [System.Management.Automation.Language.TypeExpressionAst] -or
+        $t -is [System.Management.Automation.Language.TypeConstraintAst]) { $t.TypeName.FullName }
+  })
+  members = @(foreach ($m in $nodes) {
+    if ($m -isnot [System.Management.Automation.Language.MemberExpressionAst]) { continue }
+    [pscustomobject]@{
+      name = $(if ($m.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $m.Member.Value } else { $null })
+      static = [bool]$m.Static; invoke = $m -is [System.Management.Automation.Language.InvokeMemberExpressionAst]
+      type = $(if ($m.Expression -is [System.Management.Automation.Language.TypeExpressionAst]) { $m.Expression.TypeName.FullName } else { $null })
+    }
+  })
+  # -as converts to the type its right side names, which a string can name too.
+  conversions = @(foreach ($b in $nodes) {
+    if ($b -is [System.Management.Automation.Language.BinaryExpressionAst] -and [string]$b.Operator -eq 'As') { $b.Right.GetType().Name }
+  })
+  strings = @($nodes | Where-Object { $_ -is [System.Management.Automation.Language.StringConstantExpressionAst] } | ForEach-Object { $_.Value })
+  # Each redirection, of a command or an expression: into another stream, discarded ($null), or into a file.
+  redirects = @(foreach ($r in $nodes) {
+    if ($r -is [System.Management.Automation.Language.MergingRedirectionAst]) { 'merge' }
+    elseif ($r -is [System.Management.Automation.Language.FileRedirectionAst]) {
+      if ($r.Location -is [System.Management.Automation.Language.VariableExpressionAst] -and
+          $r.Location.VariablePath.UserPath -eq 'null') { 'discard' } else { 'file' }
+    }
+  })
 }
 ConvertTo-Json -InputObject $out -Depth 12 -Compress
 """
@@ -262,7 +372,11 @@ COMMANDS: dict[str, Cmd] = {
         "CaseSensitive": "區分大小寫", "NotMatch": "改找不符合的行",
         "Context": "同時列出前後幾行", "List": "每個檔案只列第一個符合的行"}),
     "Where-Object": Cmd("篩選：只留下符合條件的項目", {"FilterScript": "條件"}),
-    "ForEach-Object": Cmd("對每一個項目執行一段程式", {"Process": "要執行的程式"}),
+    "ForEach-Object": Cmd("對每一個項目執行一段程式", {"Process": "要執行的程式", "Begin": "開始前先執行一次的程式",
+                                                   "End": "全部做完後執行一次的程式"}),
+    "Group-Object": Cmd("依屬性分組，並算出每組有幾個", {"Property": "依哪個屬性分組",
+                                                 "NoElement": "只留組名和數量", "CaseSensitive": "區分大小寫"}),
+    "ConvertFrom-Json": Cmd("把 JSON 文字轉成物件", {"InputObject": "JSON 文字"}),
     "Sort-Object": Cmd("排序", {"Property": "依哪個屬性排序", "Descending": "由大到小",
                                "Unique": "去掉重複的項目"}),
     "Select-Object": Cmd("選出一部分的項目或屬性", {
@@ -320,6 +434,7 @@ COMMANDS: dict[str, Cmd] = {
         **PATHS, "DestinationPath": "解壓到哪裡", "Force": "已有同名檔案時覆蓋"}, effect="overwrite",
         targets=("DestinationPath",)),
     "Write-Output": Cmd("把內容送到輸出（可以接著傳給下一個指令）", {"InputObject": "要輸出的內容"}),
+    "Out-Null": Cmd("丟掉前面的輸出，不顯示", {"InputObject": "要丟掉的內容"}),
     "Write-Host": Cmd("把文字直接顯示在畫面上（不會傳給下一個指令）", {"Object": "要顯示的內容"}),
     "Set-Location": Cmd("切換目前所在的資料夾", {**PATHS}),
     "Get-Location": Cmd("顯示目前所在的資料夾"),
@@ -332,7 +447,8 @@ COMMANDS: dict[str, Cmd] = {
         **PATHS, "NoTypeInformation": "不加型別說明的第一行", "Append": "加在檔案結尾",
         "Encoding": "用哪種文字編碼寫", **WHAT_IF}, effect="overwrite"),
     "Import-Csv": Cmd("讀取 CSV 檔，每一列變成一個項目", {**PATHS, "Encoding": "用哪種文字編碼讀"}),
-    "Format-Table": Cmd("用表格顯示（只用於顯示，之後不宜再處理）", {"Property": "要顯示的屬性"}),
+    "Format-Table": Cmd("用表格顯示（只用於顯示，之後不宜再處理）", {"Property": "要顯示的屬性",
+                                                         "AutoSize": "依內容調整欄寬", "Wrap": "太長的內容換行顯示"}),
     "Format-List": Cmd("一行一個屬性地顯示（只用於顯示）", {"Property": "要顯示的屬性"}),
     "Stop-Service": Cmd("停止 Windows 服務", {"Name": "服務名稱", "Force": "連依賴它的服務一起停止",
                                             **WHAT_IF}, effect="system", targets=("Name",),
