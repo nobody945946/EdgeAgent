@@ -104,13 +104,16 @@ def gen_rename_photos(rng: random.Random) -> Task:
     folder = rng.choice(("照片", "手機照片", "相機", "Photos", "旅行照片"))
     pattern = rng.choice((("2024-05-01_143000", r"\d{4}-\d{2}-\d{2}_\d{6}"),
                           ("20240501_143000", r"\d{8}_\d{6}")))
-    t = Task("tool", "change", f"「{folder}」資料夾裡的照片檔名是 IMG_xxxx、DSC_xxxx 這種亂碼，使用者想把每張照片改成拍攝的日期時間，"
-                               f"格式像「{pattern[0]}」，副檔名不變，照片內容不能動。", [folder, pattern[0]])
+    # Every photo, whatever its camera's prefix: a request that names only IMG_ asks for less than the check wants.
+    t = Task("tool", "change", f"「{folder}」資料夾裡的每一張照片都要改名（檔名是 IMG_、DSC_、PXL_ 開頭的亂碼，三種都有，"
+                               f"一張都不能漏），使用者想改成拍攝的日期時間，格式像「{pattern[0]}」，副檔名不變，照片內容不能動。",
+             [folder, pattern[0]])
     start = datetime(2023, 1, 1) + timedelta(days=rng.randint(0, 600))
     expected = {}
     for i in range(rng.randint(4, 8)):
         when = start + timedelta(hours=rng.randint(0, 2000), seconds=rng.randint(0, 3599))
-        name = f"{rng.choice(('IMG_', 'DSC_', 'PXL_'))}{rng.randint(1000, 9999)}{i}.jpg"
+        prefix = ('IMG_', 'DSC_', 'PXL_')[i] if i < 3 else rng.choice(('IMG_', 'DSC_', 'PXL_'))
+        name = f"{prefix}{rng.randint(1000, 9999)}{i}.jpg"
         t.files[f"{folder}/{name}"] = exif_jpeg(when, 2000, rng)
         expected[name] = when.strftime("%Y%m%d%H%M%S")
     t.check = f'''
