@@ -110,6 +110,10 @@ def test_the_earlier_routine_shell_becomes_reversible_without_enabling_a_client(
         ("python -m pytest -q", False),
         ("Get-ChildItem -NotAParameter", False),
         ("Get-ChildItem HKLM:\\Software -File", False),
+        # A list of literals is literal; a path must still be one literal path.
+        ("Get-ChildItem . -File | Select-Object Name, Length", True),
+        ("Get-Content ./README.md, ../private.txt", False),
+        ("Get-ChildItem ., .. -File", False),
     ],
 )
 def test_routine_shell_uses_native_syntax_and_workspace_scope(
@@ -129,3 +133,32 @@ def test_a_task_scope_narrows_but_never_widens():
         "edit": "deny", "shell": "deny", "web": "ask"}
     with pytest.raises(ValueError):
         scope_rules(full, "everything")
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        ("Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory", True),
+        ("Get-CimInstance -ClassName Win32_LogicalDisk -Filter \"DeviceID='C:'\"", True),
+        ("Get-Volume C", True),
+        ("Get-PhysicalDisk | Select-Object FriendlyName, MediaType, HealthStatus", True),
+        ("Get-PSDrive -PSProvider FileSystem", True),
+        # Process command lines and environment variables carry keys and passwords.
+        ("Get-CimInstance Win32_Process", False),
+        ("Get-CimInstance Win32_Environment", False),
+        ("Get-CimInstance -Query 'SELECT * FROM Win32_ComputerSystem'", False),
+        ("Get-CimInstance Win32_ComputerSystem -ComputerName server01", False),
+        ("Get-CimInstance Win32_ComputerSystem -Namespace root/subscription", False),
+        # Get-ComputerInfo here comes from the sandbox's stand-in, not Windows' own module.
+        ("Get-ComputerInfo", False),
+    ],
+)
+def test_a_read_only_task_reads_the_machine_from_windows_own_modules(tmp_path, monkeypatch, command, expected):
+    windows = Path(__file__).resolve().parents[1] / "bench" / "windows"
+    monkeypatch.setenv("PSModulePath", f"{windows}{os.pathsep}{os.environ.get('PSModulePath', '')}")
+    assert routine_shell(command, tmp_path) is expected
+
+
+def test_a_function_named_like_a_system_read_is_not_one(tmp_path):
+    assert not routine_shell("function Get-CimInstance { Remove-Item x }; Get-CimInstance Win32_BIOS", tmp_path)
+    assert not routine_shell("Get-CimInstance Win32_BIOS", tmp_path)  # no CimCmdlets here: nothing to prove

@@ -145,6 +145,43 @@ PATH_PARAMS = {"Path", "LiteralPath", "FilePath", "Destination", "DestinationPat
 WRITES = {"Set-Content", "Add-Content", "Out-File", "Export-Csv", "New-Item", "Copy-Item", "Move-Item",
           "Rename-Item"}
 READ_NEEDS_PATH = {"Get-Content", "Select-String", "Get-FileHash", "Import-Csv"}
+# Reads of the machine itself, outside any workspace, for the chores an owner
+# asks about ("how much memory", "how full is C:"): each from the module
+# Windows ships it in, so a same-named function from anywhere else is not it.
+SYSTEM_READS = {
+    "Get-CimInstance": "CimCmdlets",
+    "Get-ComputerInfo": "Microsoft.PowerShell.Management",
+    "Get-PSDrive": "Microsoft.PowerShell.Management",
+    "Get-Service": "Microsoft.PowerShell.Management",
+    "Get-Volume": "Storage",
+    "Get-Disk": "Storage",
+    "Get-PhysicalDisk": "Storage",
+    "Get-Partition": "Storage",
+}
+# The CIM classes a read may name: hardware, Windows itself, disks, power,
+# services and startup programs. Not processes (their command lines carry
+# passwords and keys), accounts, or environment variables (API keys).
+CIM_CLASSES = {name.lower() for name in (
+    "Win32_ComputerSystem", "Win32_OperatingSystem", "Win32_Processor", "Win32_PhysicalMemory",
+    "Win32_LogicalDisk", "Win32_DiskDrive", "Win32_DiskPartition", "Win32_Volume",
+    "Win32_VideoController", "Win32_Battery", "Win32_BIOS", "Win32_BaseBoard", "Win32_SoundDevice",
+    "Win32_NetworkAdapter", "Win32_Service", "Win32_StartupCommand",
+    "Win32_PerfFormattedData_PerfOS_Processor", "Win32_PerfFormattedData_PerfOS_Memory",
+    "MSFT_PhysicalDisk", "MSFT_Disk", "MSFT_Volume", "MSFT_Partition",
+)}
+CIM_NAMESPACES = {"root/cimv2", "root\\cimv2", "root/microsoft/windows/storage", "root\\microsoft\\windows\\storage"}
+
+
+def _system_read(item: dict, bound: dict) -> bool:
+    """A read of the machine from SYSTEM_READS, from its own module; a CIM
+    read names one of CIM_CLASSES (in its own namespace) and this computer."""
+    if SYSTEM_READS.get(item["resolved"]) != item["module"]:
+        return False
+    if item["resolved"] != "Get-CimInstance":
+        return True
+    name, namespace = bound.get("ClassName"), bound.get("Namespace", "root/cimv2")
+    return (isinstance(name, str) and name.lower() in CIM_CLASSES
+            and isinstance(namespace, str) and namespace.lower() in CIM_NAMESPACES)
 
 
 def _inside(value: object, root: Path, wildcards: bool = False) -> Path | None:
@@ -222,10 +259,11 @@ def _prove(command: str, directory: Path) -> tuple[list[Path], bool] | None:
     """What a command writes and whether it changes anything, when it is proven to touch nothing but the
     workspace: native cmdlets in plain pipelines with literal arguments that
     read inside the workspace or write files it names there (returned, to copy
-    first), and git's reads of the workspace's own repository (_git_read).
-    None for anything else: other programs, dynamic code, script blocks,
-    sub-expressions, method calls, folder changes, deleting, the system, the
-    network, a target that is not a literal path, anything under .git."""
+    first), git's reads of the workspace's own repository (_git_read), and
+    reads of the machine itself (_system_read). None for anything else: other
+    programs, dynamic code, script blocks, sub-expressions, method calls,
+    folder changes, deleting, changing the system, the network, a target that
+    is not a literal path, anything under .git."""
     try:
         info = powershell.analyze(command, cwd=str(directory), timeout=20)
     except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
@@ -245,11 +283,14 @@ def _prove(command: str, directory: Path) -> tuple[list[Path], bool] | None:
     for item in commands:
         git = _git_read(item, root)
         entry = powershell.COMMANDS.get(item["resolved"])
-        if not git and ((item["target_type"] or item["type"]) != "Cmdlet" or entry is None or item["binding_errors"]
-                        or item["invocation"] != "Unknown" or item["module"] not in CORE_MODULES
-                        or item["resolved"] in LOCATION):
-            return None
         bound = {param["name"]: param["literal"] for param in item["bound"]}
+        system = not git and entry is not None and entry.effect == "read" and _system_read(item, bound)
+        kind = item["target_type"] or item["type"]
+        if not git and (entry is None or item["binding_errors"] or item["invocation"] != "Unknown"
+                        or item["resolved"] in LOCATION
+                        or not (system and kind in ("Cmdlet", "Function")
+                                or kind == "Cmdlet" and item["module"] in CORE_MODULES)):
+            return None
         if not git and set(bound) - set(entry.params):
             return None
         if item["resolved"] in READ_NEEDS_PATH and not {"Path", "LiteralPath"} & set(bound):

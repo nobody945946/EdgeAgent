@@ -174,7 +174,7 @@ $out = [pscustomobject]@{
   other_blocks = [bool]($ast.BeginBlock -or $ast.ProcessBlock -or $ast.ParamBlock)
   simple_literals = @($ast.FindAll({ param($n) $n.GetType().Name -notin @(
     'ScriptBlockAst', 'NamedBlockAst', 'PipelineAst', 'CommandAst',
-    'CommandParameterAst', 'StringConstantExpressionAst', 'ConstantExpressionAst'
+    'CommandParameterAst', 'StringConstantExpressionAst', 'ConstantExpressionAst', 'ArrayLiteralAst'
   ) }, $true)).Count -eq 0
 }
 ConvertTo-Json -InputObject $out -Depth 12 -Compress
@@ -272,6 +272,24 @@ COMMANDS: dict[str, Cmd] = {
         "Property": "對哪個屬性計算", "Sum": "總和", "Average": "平均", "Maximum": "最大值",
         "Minimum": "最小值", "Line": "行數", "Word": "字數", "Character": "字元數"}),
     "Get-Process": Cmd("列出正在執行的程式", {"Name": "程式名稱", "Id": "程式編號（PID）"}),
+    "Get-CimInstance": Cmd("讀取這台電腦的系統資訊（硬體、Windows、磁碟、服務等，只讀不改）", {
+        "ClassName": "要讀的資訊類別（例如 Win32_ComputerSystem 是整台電腦，Win32_LogicalDisk 是各磁碟）",
+        "Namespace": "類別所在的命名空間", "Filter": "只取符合這個條件的項目", "Property": "只取這些屬性",
+        "Shallow": "不包含衍生的類別", "OperationTimeoutSec": "最多等幾秒"}, windows_only=True),
+    "Get-ComputerInfo": Cmd("讀取這台電腦的系統摘要（Windows 版本、硬體、記憶體等）", {
+        "Property": "只取這些屬性"}, windows_only=True),
+    "Get-PSDrive": Cmd("列出磁碟機，以及各自已用、可用的空間", {
+        "Name": "磁碟機名稱（例如 C）", "PSProvider": "只列這種磁碟機（FileSystem 是真正的磁碟）"}),
+    "Get-Service": Cmd("列出 Windows 服務和它們的狀態（執行中或已停止）", {
+        "Name": "服務名稱", "DisplayName": "服務的顯示名稱"}, windows_only=True),
+    "Get-Volume": Cmd("列出磁碟區，以及各自的大小和剩餘空間", {
+        "DriveLetter": "磁碟機代號", "FileSystemLabel": "磁碟區名稱"}, windows_only=True),
+    "Get-Disk": Cmd("列出這台電腦的磁碟", {"Number": "磁碟編號"}, windows_only=True),
+    "Get-PhysicalDisk": Cmd("列出實體磁碟（型號、種類、健康狀態）", {"FriendlyName": "磁碟名稱"},
+                            windows_only=True),
+    "Get-Partition": Cmd("列出磁碟上的分割區", {
+        "DiskNumber": "哪一顆磁碟", "DriveLetter": "磁碟機代號", "PartitionNumber": "分割區編號"},
+        windows_only=True),
     "Stop-Process": Cmd("強制結束正在執行的程式（未存的資料會遺失）", {
         "Name": "程式名稱", "Id": "程式編號（PID）", **WHAT_IF,
         "Force": "不詢問直接結束，包括不是自己啟動的程式"}, effect="system", targets=("Name", "Id")),
