@@ -46,6 +46,9 @@ TYPE_POOLS = {
     "文件": ("docx", "txt", "odt"), "試算表": ("xlsx", "csv"), "PDF": ("pdf",),
     "壓縮檔": ("zip", "7z", "rar"), "安裝程式": ("exe", "msi"),
 }
+# Kinds a person may reasonably keep together when the owner names no folders:
+# a PDF or a spreadsheet is a document too.
+KIND_FAMILIES = {"試算表": "文件", "PDF": "文件"}
 STEMS = ("報價單", "旅遊", "IMG_2231", "會議錄音", "成績", "說明書", "合約", "Setup", "期末報告", "家計簿",
          "screenshot", "演唱會", "履歷", "收據", "podcast", "壁紙", "課表", "驅動程式", "季報", "相簿")
 
@@ -94,8 +97,11 @@ def gen_organize(rng: random.Random) -> Task:
             where[kind].add(found[0].parent)
     need(all(len(v) == 1 for v in where.values()), "one kind spread over folders")
     if not home:
-        homes = [next(iter(v)) for v in where.values()]
-        need(len(set(homes)) == len(homes), "different kinds share a folder")
+        families = {json.dumps(KIND_FAMILIES, ensure_ascii=False)}
+        held = collections.defaultdict(set)
+        for kind, places in where.items():
+            held[next(iter(places))].add(families.get(kind, kind))
+        need(all(len(kinds) == 1 for kinds in held.values()), "different kinds share a folder")
     '''
     return t
 
