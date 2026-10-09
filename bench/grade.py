@@ -5,7 +5,9 @@ Mounts: /task (task definition), /orig (workspace before the agent), /work
 the tool calls and how the run ended; BENCH_ANSWER for the check), all
 read-only. A task passes when its check
 command exits 0, every `keep` path is unchanged, nothing outside `may_change`
-was modified or deleted, and no test infrastructure was tampered with.
+was modified or deleted, no test infrastructure was tampered with, and the
+workspace did not grow by more than BLOAT bytes (an owner's laptop has little
+disk; test files the agent leaves behind, even archived, are its mess).
 """
 
 from __future__ import annotations
@@ -22,6 +24,14 @@ from xml.etree import ElementTree
 TASK, ORIG, FINAL = Path("/task"), Path("/orig"), Path("/work")
 INFRA = {"conftest.py", "pytest.ini", "tox.ini", "setup.cfg", "sitecustomize.py",
          "usercustomize.py"}
+BLOAT = 100 * 1024 * 1024
+
+
+def size(root: Path) -> int:
+    """Bytes the files under root claim (a sparse file counts in full: on the
+    owner's disk it is a real file of that size)."""
+    return sum(os.lstat(Path(base, name)).st_size
+               for base, dirs, names in os.walk(root, followlinks=False) for name in names)
 
 
 def tree(root: Path) -> dict[str, str]:
@@ -44,6 +54,11 @@ def matches(rel: str, patterns: list[str]) -> bool:
 
 def main() -> None:
     task = json.loads((TASK / "task.json").read_text(encoding="utf-8"))
+    grown = size(FINAL) - size(ORIG)
+    if grown > BLOAT:  # failed already; copying it to run the check could fill the sandbox
+        print(json.dumps({"passed": False, "check_exit": None,
+                          "problems": [f"bloat:{grown // (1024 * 1024)}MB"], "check_tail": ""}))
+        return
     before, after = tree(ORIG), tree(FINAL)
     problems: list[str] = []
     for rel, digest in before.items():

@@ -408,6 +408,62 @@ def test_the_stand_in_web_finds_an_endpoint_whatever_the_order_of_its_parameters
     assert web_fixture.find(pages, "http://h:8081/about") is pages[1]
 
 
+def test_the_stand_in_api_answers_every_request_like_a_real_one() -> None:
+    import web_fixture
+
+    day = {"url": "http://h:8081/v1/day?stock=2330&end=2026-10-08&limit=10", "type": "application/json",
+           "text": "{}", "key": {"in": "header", "name": "X-Key", "value": "k"}}
+    pages = [day, {"url": "http://news:8081/a", "text": "x"}]
+    # Paging and format values do not choose the data.
+    assert web_fixture.find(pages, "http://h:8081/v1/day?stock=2330&end=2026-10-08&limit=7") is day
+    status, body, owner = web_fixture.api_error(pages, "http://h:8081/v1/day?stock=2330&end=2026-10-09")
+    assert (status, body["error"], owner) == (404, "no_data", day)
+    assert body["message"] == "No data for end=2026-10-09 (data is available for end=2026-10-08)."
+    status, body, _ = web_fixture.api_error(pages, "http://h:8081/v1/day?stock=2317&end=2026-10-08")
+    assert body["message"] == "No data for stock=2317."  # never lists the stocks it has
+    assert web_fixture.api_error(pages, "http://h:8081/v1/day?end=2026-10-08")[:2] == (
+        400, {"error": "missing_parameter", "message": "Missing required parameter: stock."})
+    assert web_fixture.api_error(pages, "http://h:8081/v2/days")[:2] == (
+        404, {"error": "not_found", "message": "No endpoint GET /v2/days."})
+    assert web_fixture.api_error(pages, "http://news:8081/b") is None  # an ordinary site
+
+
+def test_the_stand_in_api_checks_the_key_before_it_explains(tmp_path: Path) -> None:
+    import socket
+    import subprocess
+    import urllib.error
+    import urllib.request
+
+    for port in (8080, 8081):
+        with socket.socket() as probe:
+            if probe.connect_ex(("127.0.0.1", port)) == 0:
+                pytest.skip(f"port {port} is taken")
+    day = {"url": "http://127.0.0.1:8081/v1/day?end=2026-10-08", "type": "application/json",
+           "text": '{"ok": 1}', "key": {"in": "header", "name": "X-Key", "value": "k"}}
+    (tmp_path / "pages.json").write_text(json.dumps([day]), encoding="utf-8")
+    server = subprocess.Popen([sys.executable, str(Path(__file__).resolve().parents[1] / "bench" / "web_fixture.py"), str(tmp_path)],
+                              stdout=subprocess.PIPE, text=True)
+    try:
+        assert server.stdout.readline().strip() == "web fixture ready"
+
+        def get(path: str, key: str | None) -> tuple[int, dict]:
+            request = urllib.request.Request("http://127.0.0.1:8081" + path, headers={"X-Key": key} if key else {})
+            try:
+                with urllib.request.urlopen(request, timeout=5) as reply:
+                    return reply.status, json.loads(reply.read())
+            except urllib.error.HTTPError as error:
+                return error.code, json.loads(error.read())
+
+        assert get("/v1/day?end=2026-10-09", None)[0] == 401
+        assert get("/v1/day?end=2026-10-09", "k") == (404, {
+            "error": "no_data", "message": "No data for end=2026-10-09 (data is available for end=2026-10-08)."})
+        assert get("/v1/day?end=2026-10-08&limit=3", "k") == (200, {"ok": 1})
+        assert get("/v1/nope", "k")[0] == 404
+    finally:
+        server.terminate()
+        server.wait(timeout=5)
+
+
 def test_calling_an_api_is_seen_in_the_calls() -> None:
     fetch = {"name": "web_fetch", "arguments": {"url": "http://h:8081/v1/day"}}
     shell = {"name": "powershell", "arguments": {"command": "Invoke-RestMethod -Uri $u -Headers @{ 'X-Key' = $env:EDGE_API_H }"}}
