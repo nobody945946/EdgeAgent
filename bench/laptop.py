@@ -24,6 +24,7 @@ import random
 GPU = "NVIDIA GeForce RTX 3050 Ti Laptop GPU"
 GPU_MIB = 4096
 RAM_GB = 8
+TOTAL_KB = 8_225_676  # MemTotal: 8 GB less what the firmware and the integrated GPU keep
 GPU_LAYERS = 41
 # The runtime section's sentence (edge_agent.hardware.describe on the laptop).
 HARDWARE = f"Windows、{GPU}（4 GB 顯示記憶體）、{RAM_GB} GB RAM；模型有 {GPU_LAYERS} 層放在顯示卡，其餘在 CPU"
@@ -70,7 +71,7 @@ def machine(task: str) -> dict:
     rng = random.Random(int(hashlib.sha256(task.encode("utf-8")).hexdigest()[:16], 16))
     name, cores, threads, mhz, integrated, vendor, identifier = rng.choice(CPUS)
     maker, model = rng.choice(MAKERS)
-    total_kb = 8_225_676  # 8 GB less what the firmware and the integrated GPU keep
+    total_kb = TOTAL_KB
     free_mib = rng.randint(350, 1500)
     disk_bytes = 512_110_190_592
     c_size = 510_833_381_376

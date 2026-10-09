@@ -12,6 +12,7 @@ import random
 import struct
 from datetime import datetime, timedelta
 
+import laptop
 from tool_tasks_writer import Task
 
 FOLDERS = ("下載", "Downloads", "桌面雜物", "收件夾", "暫放", "整理區")
@@ -383,8 +384,10 @@ def gen_calc(rng: random.Random) -> Task:
 
 def gen_sysinfo(rng: random.Random) -> Task:
     t = Task("tool", "read", rng.choice(("使用者想知道他這台電腦的記憶體總共多大。", "使用者覺得電腦很慢，想知道記憶體總共多大。")), ["記憶體"])
-    t.check = '''
-    total_kb = int(next(l.split()[1] for l in open("/proc/meminfo") if l.startswith("MemTotal")))
+    # The stand-in laptop's memory (what its Get-CimInstance and the runtime
+    # section say), not the container's: the check runs on the dev box.
+    t.check = f'''
+    total_kb = {laptop.TOTAL_KB}
     gib = total_kb / 1024 / 1024
     found = [float(x.replace(",", "")) for x in re.findall(r"([\\d,]+(?:\\.\\d+)?)\\s*(?:GB|GiB|G)", ANSWER)]
     found += [float(x.replace(",", "")) / 1024 for x in re.findall(r"([\\d,]+(?:\\.\\d+)?)\\s*(?:MB|MiB)", ANSWER)]

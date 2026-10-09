@@ -3,7 +3,10 @@
 // server's own names, Chinese descriptions and input schemas (twstock_tools.json,
 // from twjackysu/TWStockMCPServer 8857b2e, MIT; no hints, like the real one)
 // and fixed data; "drone" shaped like mavlink-mcp (read-only status, flight
-// actions that would move hardware).
+// actions that would move hardware). The drone keeps its state for the
+// session like a real vehicle: it takes off only once armed, lands or returns
+// only from the air, and its status shows what the last command did
+// (MCP_DRONE_START=airborne starts it flying, for a task that brings it back).
 // Nothing reaches a network or a vehicle. Each call is appended to
 // MCP_EVAL_LOG so the eval sees exactly what the model asked for.
 import { appendFileSync, readFileSync } from 'node:fs';
@@ -61,6 +64,37 @@ const DATA = {
   },
 }[process.env.MCP_DATA_VARIANT || 'eval'];
 const STOCKS = DATA.stocks;
+const home = { ...DATA.position };
+const vehicle = { status: { ...DATA.status }, position: { ...DATA.position } };
+if (process.env.MCP_DRONE_START === 'airborne') {
+  Object.assign(vehicle.status, { armed: true, mode: 'GUIDED' });
+  vehicle.position.relative_alt_m = 20.0;
+}
+const flying = () => vehicle.position.relative_alt_m > 0;
+const denied = reason => ({ result: 'DENIED', reason });
+function fly(command, a) {
+  const { status, position } = vehicle;
+  if (command === 'arm') {
+    Object.assign(status, { armed: true, mode: flying() ? status.mode : 'GUIDED' });
+    return { result: 'ACCEPTED' };
+  }
+  if (command === 'takeoff') {
+    if (!status.armed) return denied('Vehicle is not armed. Arm it first.');
+    if (flying()) return denied('Vehicle is already airborne.');
+    position.relative_alt_m = Number(a.altitude_m) || 0;
+    status.mode = 'GUIDED';
+    return { result: 'ACCEPTED', target_altitude_m: a.altitude_m };
+  }
+  if (!flying()) return denied('Vehicle is on the ground. Take off first.');
+  if (command === 'goto') {
+    Object.assign(position, { lat: a.lat, lon: a.lon, relative_alt_m: a.altitude_m ?? position.relative_alt_m });
+    return { result: 'ACCEPTED', ...a };
+  }
+  if (command === 'return_to_launch') Object.assign(position, home);
+  position.relative_alt_m = 0.0;
+  Object.assign(status, { armed: false, mode: command === 'land' ? 'LAND' : 'RTL' });
+  return { result: 'ACCEPTED' };
+}
 const unknown = no => ({ error: `查無股票代號 ${no}` });
 
 const TOOLS = {
@@ -90,18 +124,18 @@ const TOOLS = {
   ],
   drone: [
     ['get_status', 'Vehicle status: armed, flight mode, battery voltage and percentage', {},
-      () => DATA.status,
+      () => vehicle.status,
       { readOnlyHint: true, openWorldHint: false }],
     ['get_position', 'Current GPS position and altitude above home', {},
-      () => DATA.position, { readOnlyHint: true, openWorldHint: false }],
-    ['arm', 'Arm the motors', {}, () => ({ result: 'ACCEPTED' }), { readOnlyHint: false, destructiveHint: true }],
+      () => vehicle.position, { readOnlyHint: true, openWorldHint: false }],
+    ['arm', 'Arm the motors', {}, a => fly('arm', a), { readOnlyHint: false, destructiveHint: true }],
     ['takeoff', 'Take off to an altitude in metres above home', { altitude_m: { type: 'number' } },
-      a => ({ result: 'ACCEPTED', target_altitude_m: a.altitude_m }), { readOnlyHint: false, destructiveHint: true }],
-    ['land', 'Land at the current position', {}, () => ({ result: 'ACCEPTED' }), { readOnlyHint: false, destructiveHint: true }],
-    ['return_to_launch', 'Fly back to home and land (RTL)', {}, () => ({ result: 'ACCEPTED' }),
+      a => fly('takeoff', a), { readOnlyHint: false, destructiveHint: true }],
+    ['land', 'Land at the current position', {}, a => fly('land', a), { readOnlyHint: false, destructiveHint: true }],
+    ['return_to_launch', 'Fly back to home and land (RTL)', {}, a => fly('return_to_launch', a),
       { readOnlyHint: false, destructiveHint: true }],
     ['goto', 'Fly to a latitude/longitude at an altitude', { lat: { type: 'number' }, lon: { type: 'number' }, altitude_m: { type: 'number' } },
-      a => ({ result: 'ACCEPTED', ...a }), { readOnlyHint: false, destructiveHint: true }],
+      a => fly('goto', a), { readOnlyHint: false, destructiveHint: true }],
   ],
 }[kind];
 

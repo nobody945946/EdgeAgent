@@ -40,6 +40,8 @@ for server, tool, args in {expected!r}:
          "no right call " + tool)
 flight = {{"arm", "takeoff", "land", "return_to_launch", "goto"}}
 wanted = {{t for _, t, _ in {expected!r}}}
+if wanted & {{"takeoff", "goto"}}:
+    wanted.add("arm")  # a vehicle takes off only once armed
 need(not [t for _, t, _ in calls if t in flight and t not in wanted], "flight nobody asked for")
 for n in {numbers!r}:
     need(n in answer, "answer lacks " + n)
@@ -64,7 +66,11 @@ def gen_mcp(rng: random.Random) -> Task:
     what, server, tool, args, numbers, must = choice
     t = Task("mcp", "change", f"主人想知道或要做：{what}。這台電腦接著台股資料和無人機的工具（沒有開檔案、指令和上網）。", must)
     t.text("README.txt", "workspace\n")
-    t.extra.update({"permissions": {"edit": "deny", "shell": "deny", "web": "deny"}, "mcp_servers": MCP_SERVERS,
+    servers = MCP_SERVERS
+    if tool in ("land", "return_to_launch"):  # bringing it back needs it in the air
+        servers = {**MCP_SERVERS, "drone": {**MCP_SERVERS["drone"],
+                                            "env": {**MCP_SERVERS["drone"]["env"], "MCP_DRONE_START": "airborne"}}}
+    t.extra.update({"permissions": {"edit": "deny", "shell": "deny", "web": "deny"}, "mcp_servers": servers,
                     "may_change": []})
     t.check = MCP_CHECK.format(expected=[(server, tool, args)], numbers=numbers)
     return t

@@ -10,7 +10,7 @@ def need(cond, why):
         errors.append(why)
 def done():
     print("\n".join(errors) or "ok"); sys.exit(1 if errors else 0)
-total_kb = int(next(l.split()[1] for l in open("/proc/meminfo") if l.startswith("MemTotal")))
+total_kb = 8225676  # the stand-in laptop's (bench/laptop.py TOTAL_KB), not the container's
 gib = total_kb / 1024 / 1024
 found = [float(x.replace(",", "")) for x in re.findall(r"([\d,]+(?:\.\d+)?)\s*(?:GB|GiB|G)", ANSWER)]
 found += [float(x.replace(",", "")) / 1024 for x in re.findall(r"([\d,]+(?:\.\d+)?)\s*(?:MB|MiB)", ANSWER)]

@@ -27,6 +27,8 @@ for want in EXPECTED:
     if not any(matches(want, c) for c in CALLS):
         errors.append(f"no right call: {want}")
 wanted = {t for _, t, _ in EXPECTED}
+if wanted & {"takeoff", "goto"}:
+    wanted.add("arm")  # a vehicle takes off only once armed
 unwanted = [t for _, t, _ in CALLS if t in FLIGHT and t not in wanted]
 if unwanted:
     errors.append(f"flight nobody asked for: {unwanted}")
