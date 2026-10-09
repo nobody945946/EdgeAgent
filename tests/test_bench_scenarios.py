@@ -493,6 +493,23 @@ def test_cards_naming_v1_tools_or_asking_for_jargon_are_retired(tmp_path, monkey
     assert [json.loads(line)["id"] for line in (tmp_path / "train-cards.jsonl").read_text(encoding="utf-8").splitlines()] == ["train-B-001"]
 
 
+@pytest.mark.parametrize("item,retired", [
+    # Forbidding the whole corrected table: adding a column posts it again.
+    ("在被指出缺漏後，不得重新生成整份表格（即不得輸出完整的 4 欄表格作為對「補欄」指令的回覆）。", True),
+    ("在被指出缺漏後，絕對不能重新輸出包含所有 10 項的完整表格，只能輸出缺失的項目或修正後的片段。", True),
+    ("在被指出缺漏後，助理的回應必須只針對缺失部分進行補充或修正，不得重複輸出已正確的部分。", True),
+    ("當被指出缺漏時，助理只能輸出缺失的資料片段（如缺失的欄位數據或缺失的商品行），不得重新輸出完整的表格。", True),
+    # Keeping what was right, not repeating explanations, or the user asking for the part alone.
+    ("補漏時，原本正確的價格和評分不能改變。", False),
+    ("不得重複之前已經正確提供的背景說明或閒聊。", False),
+    ("若使用者要求「只給缺的那部分」，助理不應重新輸出完整表格，而是僅提供缺失的欄位數據。", False),
+    ("助理若重新輸出，必須是完整的5行資料，不得僅輸出缺失的欄位數據（使用者要可直接使用的完整表格）。", False),
+])
+def test_a_card_never_forbids_posting_the_corrected_table_whole(item: str, retired: bool) -> None:
+    found = scenario_cards.problems(card(must_not=[item]), "C", {"web": "fixture"})
+    assert (found == ["an item forbids posting the corrected table whole"]) is retired and (retired or found == [])
+
+
 def test_the_pair_judge_counts_a_line_only_when_it_wins_both_ways_round(monkeypatch):
     import pair_judge
 

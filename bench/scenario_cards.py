@@ -178,6 +178,20 @@ TONE = re.compile(r"(機魂|人設|人格|角色)[」』]?的?[^。；，、]{0,
 # a card to Traditional turned its Simplified examples into nonsense the judge
 # then enforced (「如「運轉」寫成「運轉」」, train-B-018, 2026-10-08).
 SIMPLIFIED = re.compile(r"簡體|简体")
+# Adding a column or a row means posting the table again with what was right
+# unchanged (family C). 2026-10-10: 22 of 52 training cards forbade the whole
+# corrected table or "repeating the correct rows", the judge rejected the
+# teacher's full corrected tables, and train-C-028 demanded the opposite. Only
+# a user who asked for just the missing part (「只給…」) wants that alone.
+_NO = r"(?:不得|不能|不可|禁止|不應|不要|絕不|只能|僅能)"
+REPOST = re.compile(
+    _NO + r"[^。；，]{0,12}(?:重新|重複|再次|再)?(?:輸出|貼出|重貼|貼|生成|給出|列出|重寫)[^。；]{0,8}"
+    r"(?:完整|整份|整張|整個|全部|所有)[^。；]{0,12}(?:表|清單|行程|版本|資料|行|列|項)"
+    r"|" + _NO + r"[^。；，]{0,8}(?:重複|再次|重新)(?:輸出|貼出|列出|貼)[^。；]{0,12}(?:已|之前|原本|未變|未被|使用者已)"
+    r"[^。；]{0,6}(?:正確|確認|認可|變動|質疑)"
+    r"|(?<!不得)(?<!不能)(?<!不可)(?<!不應)(?<!不要)(?:只|僅)(?:能|需|應)?(?:輸出|提供|給出?)[^。；]{0,20}(?:缺|漏)"
+    r"[^。；]{0,6}(?:的)?(?:部分|項目|片段|欄位|行|資料)")
+ASKED_PART = re.compile(r"(?:若|如果|當)使用者[^。；]{0,8}(?:要求|說|強調)[^。；]{0,4}[「『](?:只|僅)")
 
 
 def problems(card: dict, family_id: str, family: dict) -> list[str]:
@@ -192,6 +206,8 @@ def problems(card: dict, family_id: str, family: dict) -> list[str]:
         found.append("an item asks for the character's tone or jargon")
     if any(SIMPLIFIED.search(item) for item in items):
         found.append("an item is about Simplified Chinese (every row becomes Traditional)")
+    if any(REPOST.search(item) and not ASKED_PART.search(item) for item in items):
+        found.append("an item forbids posting the corrected table whole")
     if not _strings(card.get("plan"), 2, 5):
         found.append("plan must be 2-5 steps")
     if not _strings(card.get("must"), 1, 5):
