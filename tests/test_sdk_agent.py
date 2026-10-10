@@ -62,6 +62,25 @@ def test_real_sdk_stops_fetching_the_same_dead_address(tmp_path, repeating_model
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_samples_as_the_adapter_says_for_the_mode(tmp_path, repeating_model):  # noqa: F811
+    """An Agent adapter's stamped temperature per mode reaches every request; a
+    model without one samples at 0.2, where the base did best both ways."""
+    port, state = repeating_model
+    state["answer"] = True
+    for sampling, effort, want in (({"off": 1.0, "thinking": 0.2}, "off", 1.0),
+                                   ({"off": 1.0, "thinking": 0.2}, "high", 0.2), ({}, "off", 0.2)):
+        state["requests"] = []
+        chat = NativeChat(model_port=port)
+        chat.sampling = sampling
+        try:
+            list(chat.stream_reply("t", "嗨", agent=True, working_dir=tmp_path, thinking_effort=effort,
+                                   permissions={"edit": "ask", "shell": "ask", "web": "deny"}))
+        finally:
+            chat.close()
+        assert state["requests"] and all(r.get("temperature") == want for r in state["requests"]), (sampling, effort)
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
 def test_real_sdk_tells_the_model_todays_date(tmp_path, repeating_model):  # noqa: F811
     """The host states the date and time zone, so the model never assumes one
     from its training data."""
