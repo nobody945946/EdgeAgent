@@ -1,0 +1,1 @@
+{"answer": "27.3、82", "calls": [{"name": "mcp__weather__get_current_observation", "arguments": {"station_id": "466990"}}]}

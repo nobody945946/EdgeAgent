@@ -1,0 +1,58 @@
+{
+ "kind": "mcp",
+ "prompt": "把浴室的抽風機打開。",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "permissions": {
+  "edit": "deny",
+  "shell": "deny",
+  "web": "deny"
+ },
+ "mcp_servers": {
+  "home": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "home"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "智慧家庭：燈光、冷氣、溫濕度感測器、用電"
+  },
+  "drone": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "drone"
+   ],
+   "permission": "ask",
+   "hardware": true,
+   "clients": [
+    "ui"
+   ],
+   "description": "無人機（MAVLink）：狀態、位置、解鎖、起飛、降落、返航、移動"
+  },
+  "parcel": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "parcel"
+   ],
+   "permission": "allow",
+   "read_only_tools": [
+    "track",
+    "list_watched",
+    "estimate_fee"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "包裹追蹤：黑貓、新竹物流、郵局、超商取貨"
+  }
+ }
+}

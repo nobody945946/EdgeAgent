@@ -1,0 +1,89 @@
+{
+ "kind": "mcp",
+ "prompt": "臺北 307 公車在捷運西門站，往板橋方向的下一班還要幾分鐘到？",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "permissions": {
+  "edit": "deny",
+  "shell": "deny",
+  "web": "deny"
+ },
+ "mcp_servers": {
+  "parcel": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "parcel"
+   ],
+   "permission": "allow",
+   "read_only_tools": [
+    "track",
+    "list_watched",
+    "estimate_fee"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "包裹追蹤：黑貓、新竹物流、郵局、超商取貨"
+  },
+  "transit": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "transit"
+   ],
+   "permission": "allow",
+   "read_only_tools": [
+    "find_rail_station",
+    "get_rail_timetable",
+    "get_train_delay",
+    "get_bus_arrival"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "交通：臺鐵時刻表與誤點、公車到站時間"
+  },
+  "stock": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "stock"
+   ],
+   "permission": "allow",
+   "tools": [
+    "get_stock_daily_trading",
+    "get_stock_history",
+    "get_twse_institutional_investors_summary",
+    "get_twse_institutional_investors_by_stock",
+    "get_company_monthly_revenue",
+    "get_company_dividend",
+    "get_company_income_statement",
+    "get_company_balance_sheet",
+    "get_company_cash_flow_statement",
+    "get_taiex_index_history",
+    "get_exchange_rates"
+   ],
+   "read_only_tools": [
+    "get_stock_daily_trading",
+    "get_stock_history",
+    "get_twse_institutional_investors_summary",
+    "get_twse_institutional_investors_by_stock",
+    "get_company_monthly_revenue",
+    "get_company_dividend",
+    "get_company_income_statement",
+    "get_company_balance_sheet",
+    "get_company_cash_flow_statement",
+    "get_taiex_index_history",
+    "get_exchange_rates"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "台股資料：股價、三大法人買賣超、月營收、股利、財報、加權指數、匯率"
+  }
+ }
+}

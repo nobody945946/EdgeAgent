@@ -1,0 +1,63 @@
+{
+ "kind": "mcp",
+ "prompt": "《城市裡的小森林》現在哪幾間分館有書在架上可以借？",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "permissions": {
+  "edit": "deny",
+  "shell": "deny",
+  "web": "deny"
+ },
+ "mcp_servers": {
+  "shop": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "shop"
+   ],
+   "permission": "ask",
+   "read_only_tools": [
+    "search_products",
+    "get_stock",
+    "list_orders",
+    "get_order"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "網路商店後台：商品、庫存、訂單、出貨"
+  },
+  "library": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "library"
+   ],
+   "permission": "allow",
+   "read_only_tools": [
+    "search_catalog",
+    "get_holdings",
+    "list_loans"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "市立圖書館：館藏查詢、我的借閱、續借、預約"
+  },
+  "weather": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "weather"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "天氣：氣象測站即時觀測、縣市預報、雨量紀錄"
+  }
+ }
+}

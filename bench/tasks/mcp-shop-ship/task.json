@@ -1,0 +1,63 @@
+{
+ "kind": "mcp",
+ "prompt": "周先生那張訂單已經用新竹物流寄出了，單號 6420019920，幫我在後台改成已出貨。",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "permissions": {
+  "edit": "deny",
+  "shell": "deny",
+  "web": "deny"
+ },
+ "mcp_servers": {
+  "shop": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "shop"
+   ],
+   "permission": "ask",
+   "read_only_tools": [
+    "search_products",
+    "get_stock",
+    "list_orders",
+    "get_order"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "網路商店後台：商品、庫存、訂單、出貨"
+  },
+  "parcel": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "parcel"
+   ],
+   "permission": "allow",
+   "read_only_tools": [
+    "track",
+    "list_watched",
+    "estimate_fee"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "包裹追蹤：黑貓、新竹物流、郵局、超商取貨"
+  },
+  "home": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "home"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "智慧家庭：燈光、冷氣、溫濕度感測器、用電"
+  }
+ }
+}

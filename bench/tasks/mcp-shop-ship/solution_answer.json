@@ -1,0 +1,1 @@
+{"answer": "好了", "calls": [{"name": "mcp__shop__ship_order", "arguments": {"order_no": "SO20260930-0118", "carrier": "hct", "tracking_no": "6420019920"}}]}

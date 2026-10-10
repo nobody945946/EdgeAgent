@@ -1,0 +1,58 @@
+{
+ "kind": "mcp",
+ "prompt": "2026 年 10 月 6 日晚上 6 點以後，從松山到花蓮的第一班火車是幾次？幾點開、幾點到？",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "permissions": {
+  "edit": "deny",
+  "shell": "deny",
+  "web": "deny"
+ },
+ "mcp_servers": {
+  "weather": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "weather"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "天氣：氣象測站即時觀測、縣市預報、雨量紀錄"
+  },
+  "transit": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "transit"
+   ],
+   "permission": "allow",
+   "read_only_tools": [
+    "find_rail_station",
+    "get_rail_timetable",
+    "get_train_delay",
+    "get_bus_arrival"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "交通：臺鐵時刻表與誤點、公車到站時間"
+  },
+  "calendar": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "calendar"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "行事曆：查行程、找空檔、新增和刪除行程"
+  }
+ }
+}

@@ -1,0 +1,53 @@
+{
+ "kind": "mcp",
+ "prompt": "臺北測站 2026 年 9 月 25 日到 9 月 30 日總共下了多少雨？",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "permissions": {
+  "edit": "deny",
+  "shell": "deny",
+  "web": "deny"
+ },
+ "mcp_servers": {
+  "home": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "home"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "智慧家庭：燈光、冷氣、溫濕度感測器、用電"
+  },
+  "weather": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "weather"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "天氣：氣象測站即時觀測、縣市預報、雨量紀錄"
+  },
+  "drone": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "drone"
+   ],
+   "permission": "ask",
+   "hardware": true,
+   "clients": [
+    "ui"
+   ],
+   "description": "無人機（MAVLink）：狀態、位置、解鎖、起飛、降落、返航、移動"
+  }
+ }
+}

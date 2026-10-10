@@ -201,6 +201,7 @@ def test_the_stand_in_drone_flies_like_a_vehicle() -> None:
     assert back["result"] == "ACCEPTED" and status["armed"] is False
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
 def test_arming_is_part_of_a_takeoff_the_owner_asked_for(tmp_path: Path) -> None:
     import tool_tasks_mcp
 
@@ -209,7 +210,7 @@ def test_arming_is_part_of_a_takeoff_the_owner_asked_for(tmp_path: Path) -> None
         "A = json.loads(Path(os.environ['BENCH_ANSWER']).read_text(encoding='utf-8'))\n" \
         "ANSWER = A.get('answer', ''); CALLS = A.get('calls', []); errors = []\n" \
         "def need(c, why):\n    errors.append(why) if not c else None\n" \
-        + tool_tasks_mcp.MCP_CHECK.format(expected=expected, numbers=[]) \
+        + tool_tasks_mcp.mcp_check(expected, [], {"drone": tool_tasks_mcp.MCP_SERVERS["drone"]}) \
         + "print('\\n'.join(errors) or 'ok'); sys.exit(1 if errors else 0)\n"
     (tmp_path / "check.py").write_text(code, encoding="utf-8")
     for calls, passed in (([("arm", {}), ("takeoff", {"altitude_m": 15})], True),
@@ -220,6 +221,6 @@ def test_arming_is_part_of_a_takeoff_the_owner_asked_for(tmp_path: Path) -> None
                              check=False, env={**os.environ, "BENCH_ANSWER": str(tmp_path / "answer.json")})
         assert (run.returncode == 0) is passed, run.stdout
     for task in ("mcp-d-takeoff", "mcp-d-rtl"):
-        assert 'wanted.add("arm")' in (BENCH / "tasks" / task / "check.py").read_text(encoding="utf-8")
+        assert 'wanted.add(("drone", "arm"))' in (BENCH / "tasks" / task / "check.py").read_text(encoding="utf-8")
     rtl = json.loads((BENCH / "tasks" / "mcp-d-rtl" / "task.json").read_text(encoding="utf-8"))
     assert rtl["mcp_servers"]["drone"]["env"]["MCP_DRONE_START"] == "airborne"
