@@ -153,7 +153,8 @@ def describe(port: int, workers: int, seed: int) -> None:
                    if not json.loads(p.read_text(encoding="utf-8")).get("prompt")]
         print(f"described {done}; {len(pending)} left")
         if not pending:
-            break
+            return
+    raise SystemExit(f"{len(pending)} tasks have no request after three tries (e.g. {pending[0][0].parent.name})")
 
 
 def main() -> None:

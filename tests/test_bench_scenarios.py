@@ -4,6 +4,7 @@ judge's corrupted controls, without a model."""
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -291,28 +292,30 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
         httpd.shutdown()
 
 
-def test_results_of_a_changed_task_are_dropped_to_play_again(tmp_path: Path, monkeypatch) -> None:
+def test_results_of_a_changed_or_retired_task_are_dropped(tmp_path: Path, monkeypatch) -> None:
     import run
 
     tasks, run_dir = tmp_path / "tasks", tmp_path / "run"
-    for name in ("a", "b", "c"):
+    for name in ("a", "b", "c", "d"):
         (tasks / name / "workspace").mkdir(parents=True)
         (tasks / name / "task.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(run, "TASK_ROOT", tasks)
-    digests = {name: run.task_digest(tasks / name) for name in ("a", "b")}
+    digests = {name: run.task_digest(tasks / name) for name in ("a", "b", "d")}
     (tasks / "a" / "task.json").write_text('{"must": ["judged only"]}', encoding="utf-8")  # judging changed: not re-played
     assert run.task_digest(tasks / "a") == digests["a"]
     rows = [{"task": "a", "rep": 0, "task_digest": digests["a"]},
             {"task": "b", "rep": 0, "task_digest": digests["b"]},
-            {"task": "c", "rep": 0}]  # from before digests: kept
+            {"task": "c", "rep": 0},  # from before digests: kept
+            {"task": "d", "rep": 0, "task_digest": digests["d"]}]
     (run_dir / "records" / "b-r0").mkdir(parents=True)
     (run_dir / "traj").mkdir()
     (run_dir / "traj" / "b-r0.json").write_text("[]", encoding="utf-8")
     (run_dir / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     (run_dir / "verdicts.jsonl").write_text('{"job": "a-r0"}\n{"job": "b-r0"}\n', encoding="utf-8")
     run.drop_superseded(run_dir)
-    assert len((run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()) == 3
+    assert len((run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()) == 4
     (tasks / "b" / "workspace" / "app.log").write_text("[ERROR] x", encoding="utf-8")
+    shutil.rmtree(tasks / "d")  # its card retired
     run.drop_superseded(run_dir)
     left = [json.loads(line)["task"] for line in (run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()]
     assert left == ["a", "c"]

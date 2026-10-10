@@ -197,8 +197,9 @@ def task_digest(task_dir: Path) -> str:
 def drop_superseded(run_dir: Path) -> None:
     """Results of a task that changed since they were recorded (2026-10-08:
     cards got the files their users talk about) are no result of the task as
-    it is: drop them with their recording, trajectory and verdict, so a
-    resumed run plays them again. Rows from before digests are kept."""
+    it is, and those of a task that is gone (a retired card) are no result of
+    any: drop them with their recording, trajectory and verdict, so a resumed
+    run plays a changed task again. Rows from before digests are kept."""
     results = run_dir / "results.jsonl"
     if not results.is_file():
         return
@@ -208,8 +209,7 @@ def drop_superseded(run_dir: Path) -> None:
         if row["task"] not in current:
             task_dir = TASK_ROOT / row["task"]
             current[row["task"]] = task_digest(task_dir) if task_dir.is_dir() else None
-    stale = [row for row in rows if row.get("task_digest") and current[row["task"]]
-             and row["task_digest"] != current[row["task"]]]
+    stale = [row for row in rows if row.get("task_digest") and row["task_digest"] != current[row["task"]]]
     if not stale:
         return
     jobs = {f"{row['task']}-r{row['rep']}" for row in stale}
@@ -223,8 +223,7 @@ def drop_superseded(run_dir: Path) -> None:
         lines = verdicts.read_text(encoding="utf-8").splitlines()
         verdicts.write_text("".join(line + "\n" for line in lines if json.loads(line)["job"] not in jobs),
                             encoding="utf-8")
-    print(f"{len(stale)} results were recorded on an earlier version of their task; dropped to play again",
-          flush=True)
+    print(f"{len(stale)} results were recorded on a task that has changed or is gone since; dropped", flush=True)
 
 
 def free_vram_mib() -> int:
