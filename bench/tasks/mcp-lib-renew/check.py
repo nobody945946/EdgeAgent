@@ -8,8 +8,9 @@ def need(cond, why):
     if not cond:
         errors.append(why)
 EXPECTED = [('library', 'renew_item', {'item_barcode': '3120018834'})]
+SCHEMAS = {('library', 'renew_item'): {'properties': {'item_barcode': {'type': 'string'}}, 'required': ['item_barcode']}}
 NUMBERS = [['10-18', '10/18', '10/18', '10月18日', '10月18號']]
-PARAMS = {('library', 'renew_item'): ['item_barcode']}
+ABSENT = []
 CHANGES = [('library', 'renew_item'), ('library', 'place_hold'), ('calendar', 'create_event'), ('calendar', 'delete_event'), ('parcel', 'watch')]
 FORBID = [('library', 'renew_item', {'item_barcode': '3120026607'}), ('library', 'renew_item', {'item_barcode': '3120039951'})]
 CANNOT = False
@@ -27,6 +28,8 @@ def num(v):
     except (TypeError, ValueError):
         return None
 def same(got, want):
+    if want == "":  # the parameter left out
+        return got in (None, "")
     if isinstance(want, bool):
         return str(got).strip().lower() == str(want).lower()
     if isinstance(want, (int, float)):
@@ -39,9 +42,30 @@ def same(got, want):
     return str(got).strip() == want
 def agrees(call, server, tool, args):
     return call[0] == server and call[1] == tool and all(same(call[2].get(k), v) for k, v in args.items())
-for server, tool, args in EXPECTED:
-    need(any(agrees(c, server, tool, args) and set(c[2]) <= set(PARAMS[(server, tool)]) for c in MCP),
-         f"no right call {server}/{tool} {args}")
+def fits(value, spec):
+    kind = spec.get("type")
+    if kind in ("integer", "number"):
+        n = num(value)
+        ok = not isinstance(value, bool) and n is not None and (kind == "number" or n == int(n))
+        ok = ok and spec.get("minimum", n) <= n <= spec.get("maximum", n)
+    elif kind == "boolean":
+        ok = isinstance(value, bool) or str(value).lower() in ("true", "false")
+    elif kind == "array":
+        ok = isinstance(value, list) and all(fits(v, spec.get("items", {})) for v in value)
+    elif kind == "string":
+        ok = isinstance(value, (str, int, float)) and not isinstance(value, bool)
+    else:
+        ok = True
+    return ok and ("enum" not in spec or any(same(value, e) for e in spec["enum"]))
+def accepted(call):
+    spec = SCHEMAS[(call[0], call[1])]
+    args = call[2]
+    return (set(args) <= set(spec["properties"]) and all(args.get(k) not in (None, "") for k in spec["required"])
+            and all(fits(v, spec["properties"][k]) for k, v in args.items() if v is not None))
+for server, tool, options in EXPECTED:
+    options = options if isinstance(options, list) else [options]
+    need(any(agrees(c, server, tool, o) and accepted(c) for o in options for c in MCP),
+         f"no right call {server}/{tool} {options}")
 wanted = {(s, t) for s, t, _ in EXPECTED}
 if wanted & {("drone", "takeoff"), ("drone", "goto")}:
     wanted.add(("drone", "arm"))  # a vehicle takes off only once armed
@@ -54,4 +78,5 @@ if CANNOT:
 for forms in NUMBERS:
     forms = [forms] if isinstance(forms, str) else forms
     need(any(f in answer for f in forms), "answer lacks " + forms[0])
+need(not [f for f in ABSENT if f in answer], "answer states what is not there")
 print("\n".join(errors) or "ok"); sys.exit(1 if errors else 0)

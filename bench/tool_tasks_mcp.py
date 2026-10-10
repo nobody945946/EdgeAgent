@@ -1,25 +1,28 @@
 """train-mcp tasks: questions and commands for the stand-in MCP servers.
 
 A small model that met only two servers learns their habits, not how to read
-a tool: it sent a stock tool a parameter the schema does not have, swapped two
-arguments, and retried its own invented names. These tasks spread over every
-stand-in server (bench/mcp_eval: stock, drone and seven everyday ones whose
-schemas use other names, types, enums and date forms) with two or three
-servers connected at once, so the model has to pick the server and then call
-the tool with the parameters its schema declares; a malformed call gets the
-server's error naming the parameter, which the model must read and correct.
+a tool: it sent a stock tool several names in one parameter, swapped two
+arguments, and retried its own invented names. These tasks spread over the
+stand-in servers (bench/mcp_eval: stock, drone and everyday ones whose schemas
+use other names, types, enums and date forms) with two or three servers
+connected at once, so the model has to pick the server and then call the tool
+with the parameters its schema declares; a malformed call gets the server's
+error naming the parameter, which the model must read and correct. The
+calendar server never appears in training (HELD_OUT): its exam tasks measure
+a server the model has never seen.
 Kinds:
   mcp_ask     the request carries what the schema needs, in the owner's words
               (a date to write as the tool wants, a city to give by its code);
               a few ask for something that does not exist;
   mcp_lookup  the tool needs an ID the owner never says (a station, a device,
               an order, a parcel), found first with another tool;
-  mcp_do      a command that changes state (a light, an order, a loan, the
-              calendar, the drone); a few ask for what no tool can do.
-The check grades the calls and the answer: the right tool with the right
-arguments and nothing its schema does not declare, the facts in the answer,
-no state-changing call nobody asked for, and a plain "cannot" or "no such"
-where that is the answer.
+  mcp_do      a command that changes state (a light, an order, a loan, a
+              watched parcel, the drone); a few ask for what no tool can do.
+The check (MCP_CHECK, also the check of the bench mcp-* exam tasks written
+by bench/mcp_exam.py) grades the calls and the answer: the right tool with
+the right arguments in a call its schema accepts, the facts in the answer, no
+state-changing call nobody asked for, and a plain "cannot" or "no such" where
+that is the answer.
 """
 
 from __future__ import annotations
@@ -41,22 +44,20 @@ TRAIN = {"MCP_DATA_VARIANT": "train"}
 
 def _server(name: str, permission: str, description: str, **extra: object) -> dict:
     return {"command": "node", "args": ["/opt/bench/mcp/servers.mjs", name], "permission": permission, **extra,
-            "env": dict(TRAIN), "clients": ["ui"], "description": description}
+            "clients": ["ui"], "description": description}
 
 
-# The stand-in servers as an owner would add them, with their training data
-# (MCP_DATA_VARIANT=train): other entities than the eval's, so a training task
-# never carries an eval answer. Servers that mark no tool read-only get the
-# owner's read_only_tools, as TWStockMCPServer does. Files, shell and web are
-# off, as in the eval.
 MCP_STOCK_TOOLS = ["get_stock_daily_trading", "get_stock_history", "get_twse_institutional_investors_summary",
                    "get_twse_institutional_investors_by_stock", "get_company_monthly_revenue", "get_company_dividend",
                    "get_company_income_statement", "get_company_balance_sheet", "get_company_cash_flow_statement",
                    "get_taiex_index_history", "get_exchange_rates"]
-MCP_SERVERS = {
+# Every stand-in server as an owner would add it (with the eval data, the
+# servers' default). Servers that mark no tool read-only get the owner's
+# read_only_tools, as TWStockMCPServer does.
+SERVERS = {
     "stock": _server("stock", "allow", "台股資料：股價、三大法人買賣超、月營收、股利、財報、加權指數、匯率",
                      tools=MCP_STOCK_TOOLS, read_only_tools=MCP_STOCK_TOOLS),
-    "drone": _server("drone", "ask", "無人機（MAVLink）：狀態、位置、解鎖、起飛、降落、返航、移動、拍照", hardware=True),
+    "drone": _server("drone", "ask", "無人機（MAVLink）：狀態、位置、解鎖、起飛、降落、返航、移動", hardware=True),
     "weather": _server("weather", "allow", "天氣：氣象測站即時觀測、縣市預報、雨量紀錄"),
     "transit": _server("transit", "allow", "交通：臺鐵時刻表與誤點、公車到站時間",
                        read_only_tools=["find_rail_station", "get_rail_timetable", "get_train_delay", "get_bus_arrival"]),
@@ -69,6 +70,14 @@ MCP_SERVERS = {
     "parcel": _server("parcel", "allow", "包裹追蹤：黑貓、新竹物流、郵局、超商取貨",
                       read_only_tools=["track", "list_watched", "estimate_fee"]),
 }
+# Training never connects the calendar, not even beside another server, so the
+# calendar exam tasks measure how the model reads a server it has never seen.
+# The parcel server goes the other way: training only, no exam task.
+HELD_OUT = ("calendar",)
+# The servers training connects, with their training data
+# (MCP_DATA_VARIANT=train): other entities than the eval's, so a training task
+# never carries an eval answer. Files, shell and web are off, as in the eval.
+MCP_SERVERS = {name: {**config, "env": dict(TRAIN)} for name, config in SERVERS.items() if name not in HELD_OUT}
 
 
 def stand_in(server: str, messages: list[dict], env: dict[str, str] | None = None) -> list[dict]:
@@ -91,6 +100,15 @@ def declared(server: str) -> dict[str, list[str]]:
     return {t["name"]: list(t["inputSchema"].get("properties", {})) for t in tool_list(server)}
 
 
+def schema(server: str, tool: str) -> dict:
+    """What of a tool's schema decides whether Pi passes a call on: each
+    parameter's type, enum and range, and which are required."""
+    spec = next(t for t in tool_list(server) if t["name"] == tool)["inputSchema"]
+    keep = ("type", "enum", "minimum", "maximum", "items")
+    return {"properties": {k: {f: v[f] for f in keep if f in v} for k, v in spec.get("properties", {}).items()},
+            "required": spec.get("required", [])}
+
+
 def changing(servers: dict[str, dict]) -> list[tuple[str, str]]:
     """The tools that change state, by the bridge's rule (agent_bridge.mjs
     mcpGate): read-only only if the server says so, or says nothing and the
@@ -105,13 +123,18 @@ def changing(servers: dict[str, dict]) -> list[tuple[str, str]]:
 
 
 # The grading that follows a check head (re, need(), ANSWER, CALLS) and the
-# constants mcp_check() writes: EXPECTED calls (server, tool, args), NUMBERS
-# the answer must state (a text, or a list of its accepted forms), PARAMS each
-# expected tool declares, CHANGES the task's state-changing tools, FORBID calls
-# that would touch what the owner did not ask about, CANNOT when the right
-# answer is "it cannot be done" or "there is no such thing". A call counts
-# whether or not it was the model's first try: reading an error and correcting
-# the call is the skill.
+# constants mcp_check() writes: EXPECTED calls (server, tool, args, or a list
+# of the args that would each do), SCHEMAS of the expected tools, NUMBERS the
+# answer must state (a text, or a list of its accepted forms), ABSENT facts it
+# must not state, CHANGES the task's state-changing tools (server, tool),
+# FORBID calls that would touch what the owner did not ask about, CANNOT when
+# the right answer is "it cannot be done" or "there is no such thing".
+# A right call is one Pi passes on and the server accepts as far as the schema
+# tells (declared parameters only, required ones given, types, enums and
+# ranges, with Pi's coercion of "15" to 15): one Pi refused never reached the
+# server. It counts whether or not it was the model's first try: reading an
+# error and correcting the call is the skill. A state-changing call nobody
+# asked for fails the task even if it was refused: the model meant it.
 MCP_CHECK = '''
 from datetime import datetime
 MCP = []
@@ -126,6 +149,8 @@ def num(v):
     except (TypeError, ValueError):
         return None
 def same(got, want):
+    if want == "":  # the parameter left out
+        return got in (None, "")
     if isinstance(want, bool):
         return str(got).strip().lower() == str(want).lower()
     if isinstance(want, (int, float)):
@@ -138,9 +163,30 @@ def same(got, want):
     return str(got).strip() == want
 def agrees(call, server, tool, args):
     return call[0] == server and call[1] == tool and all(same(call[2].get(k), v) for k, v in args.items())
-for server, tool, args in EXPECTED:
-    need(any(agrees(c, server, tool, args) and set(c[2]) <= set(PARAMS[(server, tool)]) for c in MCP),
-         f"no right call {server}/{tool} {args}")
+def fits(value, spec):
+    kind = spec.get("type")
+    if kind in ("integer", "number"):
+        n = num(value)
+        ok = not isinstance(value, bool) and n is not None and (kind == "number" or n == int(n))
+        ok = ok and spec.get("minimum", n) <= n <= spec.get("maximum", n)
+    elif kind == "boolean":
+        ok = isinstance(value, bool) or str(value).lower() in ("true", "false")
+    elif kind == "array":
+        ok = isinstance(value, list) and all(fits(v, spec.get("items", {})) for v in value)
+    elif kind == "string":
+        ok = isinstance(value, (str, int, float)) and not isinstance(value, bool)
+    else:
+        ok = True
+    return ok and ("enum" not in spec or any(same(value, e) for e in spec["enum"]))
+def accepted(call):
+    spec = SCHEMAS[(call[0], call[1])]
+    args = call[2]
+    return (set(args) <= set(spec["properties"]) and all(args.get(k) not in (None, "") for k in spec["required"])
+            and all(fits(v, spec["properties"][k]) for k, v in args.items() if v is not None))
+for server, tool, options in EXPECTED:
+    options = options if isinstance(options, list) else [options]
+    need(any(agrees(c, server, tool, o) and accepted(c) for o in options for c in MCP),
+         f"no right call {server}/{tool} {options}")
 wanted = {(s, t) for s, t, _ in EXPECTED}
 if wanted & {("drone", "takeoff"), ("drone", "goto")}:
     wanted.add(("drone", "arm"))  # a vehicle takes off only once armed
@@ -153,14 +199,15 @@ if CANNOT:
 for forms in NUMBERS:
     forms = [forms] if isinstance(forms, str) else forms
     need(any(f in answer for f in forms), "answer lacks " + forms[0])
+need(not [f for f in ABSENT if f in answer], "answer states what is not there")
 '''
 
 
-def mcp_check(expected: list[tuple[str, str, dict]], numbers: list, servers: dict[str, dict],
-              forbid: list[tuple[str, str, dict]] = (), cannot: bool = False) -> str:
+def mcp_check(expected: list[tuple[str, str, dict | list[dict]]], numbers: list, servers: dict[str, dict],
+              forbid: list[tuple[str, str, dict]] = (), cannot: bool = False, absent: list[str] = ()) -> str:
     """The check for a task with these servers: its constants, then MCP_CHECK."""
-    params = {(s, t): declared(s)[t] for s, t, _ in expected}
-    return (f"EXPECTED = {expected!r}\nNUMBERS = {numbers!r}\nPARAMS = {params!r}\n"
+    schemas = {(s, t): schema(s, t) for s, t, _ in expected}
+    return (f"EXPECTED = {expected!r}\nSCHEMAS = {schemas!r}\nNUMBERS = {numbers!r}\nABSENT = {list(absent)!r}\n"
             f"CHANGES = {changing(servers)!r}\nFORBID = {list(forbid)!r}\nCANNOT = {cannot!r}\n" + MCP_CHECK)
 
 
@@ -184,7 +231,8 @@ def clock(hhmm: str) -> list[str]:
 class Scenario(NamedTuple):
     what: str                      # what the owner wants, for the teacher who writes the request
     server: str
-    expected: tuple = ()           # (tool, args) calls the check requires, replayable as written
+    expected: tuple = ()           # (tool, args) calls the check requires, replayable as written;
+                                   # args may list the alternatives that would each do
     numbers: tuple = ()            # facts the answer must state: a text, or a list of its forms
     must: tuple = ()               # words the request must contain
     before: tuple = ()             # (tool, args) lookups a model needs first (the tests replay them)
@@ -192,10 +240,12 @@ class Scenario(NamedTuple):
     cannot: bool = False           # the answer is "it cannot be done" or "there is no such thing"
     env: tuple = ()                # server env beyond the training data, as (name, value)
     loose: tuple = ()              # arguments the check leaves to the model (a range to search)
+    absent: tuple = ()             # facts the answer must not state (another entity's numbers)
 
 
 S = Scenario
 AIRBORNE = (("MCP_DRONE_START", "airborne"),)
+MARKET = {"stock_no": "", "name": ""}  # the whole market's snapshot, which holds every stock
 ASK = [
     S("臺中市接下來 5 天哪一天降雨機率最高、是多少", "weather", (("get_county_forecast", {"location_name": "臺中市"}),),
       ("80", day("2026-09-20")), ("臺中", "5 天")),
@@ -215,22 +265,23 @@ ASK = [
       (("get_energy", {"start_date": "2026-09-01", "end_date": "2026-09-07"}),), ("74.7",), ("2026 年 9 月 1 日", "9 月 7 日")),
     S("2026 年 9 月 17 日那天下了哪幾張訂單、各是誰買的", "shop", (("list_orders", {}),), ("林小姐", "張先生"), ("2026 年 9 月 17 日",)),
     S("後台還沒付款的訂單有哪幾張", "shop", (("list_orders", {}),), ("0045", "0050"), ("還沒付款",)),
-    S("2026 年 9 月 22 日我有哪些行程", "calendar",
-      (("list_events", {"time_min": "2026-09-22T00:00:00+08:00", "time_max": "2026-09-23T00:00:00+08:00"}),),
-      ("牙醫回診", "專案檢討會"), ("2026 年 9 月 22 日",), loose=("time_min", "time_max")),
-    S("2026 年 9 月 23 日上班時間找一段至少 2 小時的空檔", "calendar",
-      (("find_free_time", {"date": "2026-09-23", "duration_minutes": 120}),), (clock("11:30"),), ("2026 年 9 月 23 日", "2 小時")),
     S("郵局單號 71234560018822 的包裹送到了沒", "parcel", (("track", {"carrier": "post", "tracking_no": "71234560018822"}),),
       ("已投遞",), ("71234560018822",)),
     S("用黑貓寄一箱三邊加起來 100 公分、8 公斤的箱子要多少錢", "parcel",
       (("estimate_fee", {"carrier": "tcat", "size_cm": 100, "weight_kg": 8}),), ("210",), ("黑貓", "100 公分", "8 公斤")),
-    S("聯發科（2454）最近一個交易日的收盤價和成交量", "stock", (("get_stock_daily_trading", {"stock_no": "2454"}),),
-      ("1412", "6720"), ("聯發科",)),
+    S("聯發科（2454）最近一個交易日的收盤價和成交量", "stock",
+      (("get_stock_daily_trading", [{"stock_no": "2454"}, {"name": "聯發科"}]),), ("1412", "6720"), ("聯發科",)),
+    S("中華電今天漲跌多少", "stock", (("get_stock_daily_trading", [{"name": "中華電"}, {"stock_no": "2412"}]),), ("0.5",),
+      ("中華電",)),
+    S("中華電和富邦金今天各漲跌多少、哪一個比較好", "stock",
+      (("get_stock_daily_trading", [{"name": "中華電"}, {"stock_no": "2412"}, MARKET]),
+       ("get_stock_daily_trading", [{"name": "富邦金"}, {"stock_no": "2881"}, MARKET])), ("0.5", "1.1"), ("中華電", "富邦金")),
     S("中華電（2412）今年每股配多少現金股利", "stock", (("get_company_dividend", {"code": "2412"}),), ("4.98",), ("中華電",)),
     S("富邦金（2881）最新一季的 EPS", "stock", (("get_company_income_statement", {"code": "2881"}),), ("7.86",), ("富邦金",)),
     S("聯發科（2454）最新一個月的營收年增率", "stock", (("get_company_monthly_revenue", {"code": "2454"}),), ("18.6",), ("聯發科",)),
     S("歐元的即期賣出匯率", "stock", (("get_exchange_rates", {}),), ("35.52",), ("歐元",)),
-    S("外資今天在整個市場是買超還是賣超、多少", "stock", (("get_twse_institutional_investors_summary", {}),), ("42.7",), ("外資",)),
+    S("外資今天在整個市場是買超還是賣超、多少", "stock",
+      (("get_twse_institutional_investors_summary", {"date": "20260918"}),), ("42.7",), ("外資",), loose=("date",)),
     S("無人機現在電池還剩多少", "drone", (("get_status", {}),), ("64",), ("無人機", "電池")),
     S("無人機現在在哪個位置（經緯度）", "drone", (("get_position", {}),), ("24.14", "120.67"), ("無人機",)),
     S("無人機能不能起飛，只要先檢查狀態，不要真的起飛", "drone", (("get_status", {}),), (), ("無人機",)),
@@ -238,7 +289,8 @@ ASK = [
 NOT_FOUND = [
     S("黑貓單號 9055-7771-3579 的包裹到哪了", "parcel", (("track", {"carrier": "tcat", "tracking_no": "905577713579"}),),
       must=("9055-7771-3579",), cannot=True),
-    S("股票代號 1234 今天的收盤價", "stock", (("get_stock_daily_trading", {"stock_no": "1234"}),), must=("1234",), cannot=True),
+    S("股票代號 1234 今天的收盤價", "stock", (("get_stock_daily_trading", {"stock_no": "1234"}),), must=("1234",), cannot=True,
+      absent=("1412", "128.5", "92.3")),
     S("ISBN 9789860000017 這本書館裡有沒有", "library", (("get_holdings", {"isbn13": "9789860000017"}),),
       must=("9789860000017",), cannot=True),
     S("第 999 次列車今天誤點多久", "transit", (("get_train_delay", {"TrainNo": "999"}),), must=("999",), cannot=True),
@@ -273,9 +325,12 @@ LOOKUP = [
       (("search_products", {"keyword": "烏龍茶"}),)),
     S("陳先生那張訂單買了什麼、總共多少錢", "shop", (("get_order", {"order_no": "SO20260916-0042"}),), ("1720", "烏龍茶", "紅茶"),
       ("陳先生",), (("list_orders", {}),)),
-    S("健身房下一次排在哪天、幾點", "calendar",
-      (("list_events", {"time_min": "2026-09-18T00:00:00+08:00", "time_max": "2026-10-01T00:00:00+08:00", "query": "健身"}),),
-      (day("2026-09-24"), clock("07:00")), ("健身房",), loose=("time_min", "time_max", "query")),
+    S("林小姐那張訂單買了幾組手工皂、總共多少錢", "shop", (("get_order", {"order_no": "SO20260917-0045"}),), ("720",), ("林小姐",),
+      (("list_orders", {}),)),
+    S("2026 年 9 月 26 日下午 4 點以後，從苗栗到嘉義的火車是幾次、幾點到", "transit",
+      (("get_rail_timetable", {"OriginStationID": "3160", "DestinationStationID": "4080", "TrainDate": "2026-09-26"}),),
+      ("123", clock("19:13")), ("2026 年 9 月 26 日", "苗栗", "嘉義"),
+      (("find_rail_station", {"StationName": "苗栗"}), ("find_rail_station", {"StationName": "嘉義"}))),
     S("我那個叫「鍵盤」的包裹現在到哪了、預計哪天到", "parcel", (("track", {"carrier": "tcat", "tracking_no": "905588120034"}),),
       ("西屯", day("2026-09-18")), ("鍵盤",), (("list_watched", {}),)),
     S("「書」那個包裹到了哪一家 7-11、最晚哪天要去拿", "parcel", (("track", {"carrier": "seven", "tracking_no": "C5520184736"}),),
@@ -312,18 +367,14 @@ DO = [
       before=(("list_orders", {"status": "unpaid"}),),
       forbid=tuple(("cancel_order", {"order_no": o}) for o in ("SO20260916-0042", "SO20260917-0045", "SO20260917-0047")),
       loose=("reason",)),
-    S("刪掉 2026 年 9 月 24 日的健身房行程", "calendar", (("delete_event", {"event_id": "evt_t05"}),),
-      must=("2026 年 9 月 24 日", "健身房"),
-      before=(("list_events", {"time_min": "2026-09-24T00:00:00+08:00", "time_max": "2026-09-25T00:00:00+08:00"}),),
-      forbid=tuple(("delete_event", {"event_id": e}) for e in ("evt_t01", "evt_t02", "evt_t03", "evt_t04", "evt_t06"))),
-    S("2026 年 9 月 25 日下午 2 點加一個 1 小時的行程「看房」", "calendar",
-      (("create_event", {"summary": "看房", "start": "2026-09-25T14:00:00+08:00", "duration_minutes": 60}),),
-      must=("2026 年 9 月 25 日", "看房", "1 小時")),
     S("把新竹物流單號 6411002947 加進追蹤清單，取名叫「印表機」", "parcel",
       (("watch", {"carrier": "hct", "tracking_no": "6411002947", "nickname": "印表機"}),), must=("6411002947", "印表機")),
     S("讓無人機起飛到 15 公尺", "drone", (("takeoff", {"altitude_m": 15}),), must=("無人機", "15"),
       before=(("arm", {}),)),
     S("讓無人機回到起飛點降落", "drone", (("return_to_launch", {}),), must=("無人機",), env=AIRBORNE),
+    S("無人機在天上，讓它就地降落", "drone", (("land", {}),), must=("無人機", "降落"), env=AIRBORNE),
+    S("無人機在天上，讓它飛到緯度 24.15、經度 120.68，高度維持 30 公尺", "drone",
+      (("goto", {"lat": 24.15, "lon": 120.68, "altitude_m": 30}),), must=("24.15", "120.68", "30 公尺"), env=AIRBORNE),
 ]
 CANNOT = [
     S("讓無人機拍一張照片傳過來", "drone", must=("無人機", "照片"), cannot=True),
@@ -349,11 +400,19 @@ def task_of(scenario: Scenario, rng: random.Random) -> Task:
     t.text("README.txt", "workspace\n")
     t.extra.update({"permissions": {"edit": "deny", "shell": "deny", "web": "deny"}, "mcp_servers": servers,
                     "may_change": []})
-    expected = [(scenario.server, tool, {k: v for k, v in args.items() if k not in scenario.loose})
-                for tool, args in scenario.expected]
-    t.check = mcp_check(expected, list(scenario.numbers), servers,
-                        [(scenario.server, tool, args) for tool, args in scenario.forbid], scenario.cannot)
+    t.check = check_of(scenario, servers)
     return t
+
+
+def check_of(scenario: Scenario, servers: dict[str, dict]) -> str:
+    """The scenario's check, with these servers connected."""
+    def graded(args: dict) -> dict:
+        return {k: v for k, v in args.items() if k not in scenario.loose}
+    expected = [(scenario.server, tool, [graded(a) for a in args] if isinstance(args, list) else graded(args))
+                for tool, args in scenario.expected]
+    return mcp_check(expected, list(scenario.numbers), servers,
+                     [(scenario.server, tool, args) for tool, args in scenario.forbid], scenario.cannot,
+                     list(scenario.absent))
 
 
 _DECKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()

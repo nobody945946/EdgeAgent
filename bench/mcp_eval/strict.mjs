@@ -1,12 +1,14 @@
-// What the everyday stand-in servers (weather.mjs, transit.mjs, ...) share:
-// parameter builders whose published inputSchema is plain JSON Schema, and
-// the argument check a real server runs before a tool (pydantic in FastMCP,
-// zod in the TypeScript SDK). An unknown or missing parameter, a wrong type,
-// a value outside its enum or range, or a malformed value comes back as an
-// error result (isError) naming the parameter and the form it expects: that
-// message is what a model has to read to correct its call. Value formats
-// (dates, IDs) are stated only in the description and checked here, as most
-// real servers do; Pi's own validation sees types, required and enums.
+// What every stand-in server (stock.mjs, drone.mjs, weather.mjs, ...) shares:
+// parameter builders whose published inputSchema is plain JSON Schema (or a
+// real server's own schema, published as it is), and the argument check a
+// real server runs before a tool (pydantic in FastMCP, zod in the TypeScript
+// SDK). An unknown or missing parameter, a wrong type, a value outside its
+// enum or range, or a malformed value comes back as an error result
+// (isError) naming the parameter, the value received and the form it
+// expects: that message is what a model has to read to correct its call.
+// Value formats (dates, IDs) are stated only in the description and checked
+// here, as most real servers do; Pi's own validation sees types, required
+// and enums.
 // A schema never mentions the data, so a tool has one definition in both
 // data variants (bench/dataset.py refuses rows with two).
 
@@ -32,7 +34,7 @@ export const fail = (error, extra = {}) => { throw new Problem({ error, ...extra
 const WORDS = {
   zh: {
     invalid: '參數錯誤', noTool: (name, names) => `沒有工具 ${name}；這個伺服器的工具：${names.join('、')}`,
-    unknown: names => `不認得這個參數；這個工具的參數只有：${names.join('、') || '（無）'}`,
+    unknown: names => `這個工具沒有這個參數；它的參數只有：${names.join('、') || '（無）'}`,
     missing: '缺少必填參數', type: type => `型別應為 ${{ string: '字串', integer: '整數', number: '數字', boolean: '布林值（true/false）', array: '陣列' }[type]}`,
     enum: values => `只能是其中之一：${values.join('、')}`, min: m => `不能小於 ${m}`, max: m => `不能大於 ${m}`,
     format: form => `格式不對，應為 ${form}`,
@@ -56,12 +58,13 @@ function typeOk(value, type) {
 function problems(schema, args, words) {
   const found = [];
   const props = schema.properties;
-  for (const name of Object.keys(args)) {
-    if (!(name in props)) found.push({ parameter: name, message: words.unknown(Object.keys(props)) });
+  for (const [name, value] of Object.entries(args)) {
+    if (!(name in props)) found.push({ parameter: name, message: words.unknown(Object.keys(props)), received: value });
   }
   for (const name of schema.required ?? []) {
     if (args[name] === undefined || args[name] === null || args[name] === '') {
-      found.push({ parameter: name, message: words.missing, expected: props[name].description });
+      found.push({ parameter: name, message: words.missing,
+        expected: props[name].description ?? props[name][FORMAT]?.[1] ?? props[name].title });
     }
   }
   for (const [name, value] of Object.entries(args)) {
@@ -91,13 +94,21 @@ function problems(schema, args, words) {
 // get their schema default first.
 export const tool = (name, description, properties, required, run, annotations) =>
   ({ name, description, properties, required, run, annotations });
+// A tool whose real server's inputSchema is known (TWStockMCPServer): published
+// exactly as the real one, and checked with the value formats its description
+// states ({ parameter: [RegExp, expected form] }).
+export const published = (name, description, schema, formats, run, annotations) => ({
+  name, description, run, annotations, schema, required: schema.required ?? [],
+  properties: Object.fromEntries(Object.entries(schema.properties ?? {})
+    .map(([key, spec]) => [key, formats[key] ? { ...spec, [FORMAT]: formats[key] } : spec])),
+});
 
 export function serve(tools, lang) {
   const words = WORDS[lang];
   const byName = new Map(tools.map(t => [t.name, t]));
   const schemaOf = t => ({ type: 'object', properties: t.properties, ...(t.required.length ? { required: t.required } : {}) });
   return {
-    tools: tools.map(t => ({ name: t.name, description: t.description, inputSchema: JSON.parse(JSON.stringify(schemaOf(t))),
+    tools: tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.schema ?? JSON.parse(JSON.stringify(schemaOf(t))),
       ...(t.annotations ? { annotations: t.annotations } : {}) })),
     call(name, args) {
       const t = byName.get(name);

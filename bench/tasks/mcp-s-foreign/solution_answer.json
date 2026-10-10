@@ -1,1 +1,1 @@
-{"answer": "85.3", "calls": [{"name": "mcp__stock__get_twse_institutional_investors_summary", "arguments": {}}]}
+{"answer": "85.3", "calls": [{"name": "mcp__stock__get_twse_institutional_investors_summary", "arguments": {"date": "20261002"}}]}

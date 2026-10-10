@@ -35,7 +35,7 @@
    "clients": [
     "ui"
    ],
-   "description": "無人機（MAVLink）：狀態、位置、解鎖、起飛、降落、返航、移動、拍照"
+   "description": "無人機（MAVLink）：狀態、位置、解鎖、起飛、降落、返航、移動"
   },
   "parcel": {
    "command": "node",

@@ -221,6 +221,6 @@ def test_arming_is_part_of_a_takeoff_the_owner_asked_for(tmp_path: Path) -> None
                              check=False, env={**os.environ, "BENCH_ANSWER": str(tmp_path / "answer.json")})
         assert (run.returncode == 0) is passed, run.stdout
     for task in ("mcp-d-takeoff", "mcp-d-rtl"):
-        assert 'wanted.add("arm")' in (BENCH / "tasks" / task / "check.py").read_text(encoding="utf-8")
+        assert 'wanted.add(("drone", "arm"))' in (BENCH / "tasks" / task / "check.py").read_text(encoding="utf-8")
     rtl = json.loads((BENCH / "tasks" / "mcp-d-rtl" / "task.json").read_text(encoding="utf-8"))
     assert rtl["mcp_servers"]["drone"]["env"]["MCP_DRONE_START"] == "airborne"

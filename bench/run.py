@@ -118,7 +118,7 @@ def code_mounts(bridge: Path | None = None,
     mounts = [(product, "/opt/edgeagent/edge_agent", "ro"),
               (BENCH / "relay.py", "/opt/bench/relay.py", "ro"),
               (BENCH / "agent_runner.py", "/opt/bench/agent_runner.py", "ro"),
-              # Stand-in MCP servers (stock data, a drone) for tasks that enable them.
+              # Stand-in MCP servers (stock, drone, everyday ones) for tasks that enable them.
               (BENCH / "mcp_eval", "/opt/bench/mcp", "ro"),
               # The laptop's Windows commands (bench/laptop.py).
               (BENCH / "windows", "/opt/bench/windows", "ro"),

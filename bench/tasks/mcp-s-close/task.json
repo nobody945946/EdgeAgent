@@ -45,10 +45,10 @@
     "get_taiex_index_history",
     "get_exchange_rates"
    ],
-   "description": "台股資料：股價、三大法人買賣超、月營收、股利、財報、加權指數、匯率",
    "clients": [
     "ui"
-   ]
+   ],
+   "description": "台股資料：股價、三大法人買賣超、月營收、股利、財報、加權指數、匯率"
   },
   "drone": {
    "command": "node",
@@ -58,10 +58,10 @@
    ],
    "permission": "ask",
    "hardware": true,
-   "description": "無人機（MAVLink）：狀態、位置、解鎖、起飛、降落、返航、移動、拍照",
    "clients": [
     "ui"
-   ]
+   ],
+   "description": "無人機（MAVLink）：狀態、位置、解鎖、起飛、降落、返航、移動"
   }
  }
 }
