@@ -46,11 +46,13 @@ def test_the_final_answer_keeps_its_reasoning() -> None:
 def test_both_thinking_modes_from_one_row() -> None:
     row = {"messages": [{"role": "user", "content": "問"},
                         {"role": "assistant", "content": "答", "reasoning_content": "想"}], "tools": []}
-    on, off = dataset.with_thinking_modes(row, both=True)
+    on, off = dataset.with_thinking_modes(row, "both")
     assert on["thinking"] and on["messages"][1]["reasoning_content"] == "想"
     assert not off["thinking"] and "reasoning_content" not in off["messages"][1]
-    assert dataset.with_thinking_modes({"messages": [{"role": "user", "content": "問"}]}, both=True) == [
+    assert dataset.with_thinking_modes({"messages": [{"role": "user", "content": "問"}]}, "both") == [
         {"messages": [{"role": "user", "content": "問"}], "thinking": False}]
+    (only,) = dataset.with_thinking_modes(row, "none")
+    assert only == off
 
 
 def test_a_thought_the_budget_cut_short_is_never_a_target() -> None:
@@ -58,8 +60,8 @@ def test_a_thought_the_budget_cut_short_is_never_a_target() -> None:
                         {"role": "assistant", "content": "", "reasoning_content": "先讀檔"},
                         {"role": "assistant", "content": "答", "reasoning_content": f"想到一半{dataset.BUDGET_CUT}"}],
            "tools": []}
-    for both in (True, False):
-        (only,) = dataset.with_thinking_modes(row, both=both)
+    for mode in dataset.THINKING:
+        (only,) = dataset.with_thinking_modes(row, mode)
         assert not only["thinking"] and not any("reasoning_content" in m for m in only["messages"])
 
 
