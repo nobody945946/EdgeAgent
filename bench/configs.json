@@ -436,6 +436,21 @@
   "search_tools": true,
   "lora": "machine-spirit-fw3n.q8_0.gguf"
  },
+ "e4b-laptop-ms3n-scen": {
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 5000,
+  "vram_slot_mib": 1200,
+  "search_tools": true,
+  "lora": "machine-spirit-fw3n.q8_0.gguf",
+  "_note": "e4b-laptop-ms3-scen with machine-spirit-fw3n (the same conversations without the teacher's thoughts), which beat the base with thinking on (91 of 126 against 86-89): the held-out cards for its ship gate.",
+  "simulator": "teacher-38-sim"
+ },
  "e4b-laptop-ms3-scen": {
   "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
   "vision": true,
