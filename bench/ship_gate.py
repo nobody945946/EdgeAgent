@@ -6,7 +6,10 @@ now, on the same tasks:
   1. the product bench, thinking off and high: total pass rate not lower;
   2. every chat probe (the owner's past complaints: a greeting, praise,
      "where do you run"...) passes in every run;
-  3. the held-out scenario cards: more cards pass the judge.
+  3. the held-out scenario cards: more cards pass the judge;
+  4. the tool and MCP tasks, thinking off and high: not lower on their own,
+     whatever the total does (owner, 2026-10-10: the plugins added later
+     work through them).
 
     python bench/ship_gate.py --off base-old fw2-eval --high base-old-high fw2-eval-high \
         --cards scen-eval-base scen-eval-fw2
@@ -27,6 +30,7 @@ from collections import defaultdict
 from pathlib import Path
 
 STATE = Path(__file__).resolve().parents[1] / ".runtime/bench"
+KEPT_KINDS = ("tool", "mcp")  # rule 4
 
 
 def results(tag: str) -> dict[tuple[str, int], dict]:
@@ -63,6 +67,7 @@ def bench_gate(base_tag: str, new_tag: str) -> dict:
         "better": sorted(task for task, (b, n) in by_task.items() if n > b),
         "chat_failed": sorted(f"{task} r{rep}" for task, rep in chat if not new[(task, rep)]["passed"]),
         "chat_runs": len(chat),
+        "lowered": [kind for kind in KEPT_KINDS if kind in kinds and kinds[kind][1] < kinds[kind][0]],
         "passed": new_pass >= base_pass and len(common) > 0,
     }
 
@@ -139,6 +144,7 @@ def main() -> None:
         "bench_off": off["passed"], "bench_high": high["passed"],
         "chat_probes": not chat_failed and off["chat_runs"] > 0 and high["chat_runs"] > 0,
         "held_out_cards": cards["passed"],
+        "tools_and_mcp": not off["lowered"] and not high["lowered"],
     }
     report = {"gates": gates, "ship": all(gates.values()), "off": off, "high": high, "cards": cards,
               "chat_failed": chat_failed}
@@ -157,6 +163,7 @@ def main() -> None:
         for kind, k in gate["kinds"].items():
             print(f"   {kind}: {k['base']} -> {k['new']} of {k['runs']}")
         print(f"   worse: {gate['worse']}\n   better: {gate['better']}")
+        print(f"   tool/mcp lower: {gate['lowered'] or 'none'}")
     print(f"chat probes failed: {chat_failed or 'none'}")
     print(f"held-out cards: {cards['base']} -> {cards['new']} of {cards['cards']} "
           f"({'ok' if cards['passed'] else 'NOT HIGHER'}); missing {cards['missing']}")
