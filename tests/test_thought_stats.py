@@ -48,3 +48,10 @@ def test_too_many_cut_stops_the_queue(tmp_path: Path, monkeypatch) -> None:
 def test_nothing_cut_passes(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(sys, "argv", ["thought_stats", str(_recording(tmp_path, cut=False))])
     thought_stats.main()
+
+
+def test_the_base_median_step(tmp_path: Path) -> None:
+    (tmp_path / "traj").mkdir()
+    steps = [{"role": "assistant", "content": [{"type": "thinking", "thinking": "想" * n}]} for n in (100, 300, 900)]
+    (tmp_path / "traj" / "tool-a-r0.json").write_text(json.dumps(steps), encoding="utf-8")
+    assert thought_stats.base_median(tmp_path) == 300

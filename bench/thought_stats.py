@@ -8,7 +8,10 @@ the teacher thinks at least as long as the base E4B).
 Per kind of job (scenario, train-tool, code...): the steps, the share whose
 thought was cut, the median and 90th percentile thought in characters, and
 the median minutes a job took. Exits 1 when any kind's share cut is over
---max-cut.
+--max-cut. With --base (an exam run of the base E4B with thinking on) each
+kind's median is also set against the base's median step: the teacher at
+xhigh thought 288 characters a tool step and 245 a Python step where the
+base thinks 650 (2026-10-10), so a short teacher shows at every check.
 """
 
 from __future__ import annotations
@@ -44,6 +47,19 @@ def thoughts(run_dir: Path, job: str) -> list[str]:
     return found
 
 
+def base_median(run_dir: Path) -> int:
+    """The base's median thought per step over an exam run's trajectories."""
+    lengths = []
+    for path in (run_dir / "traj").glob("*.json"):
+        for message in json.loads(path.read_text(encoding="utf-8")):
+            items = message.get("content") if message.get("role") == "assistant" else None
+            thought = "\n".join(i.get("thinking", "") for i in items or []
+                                if isinstance(i, dict) and i.get("type") == "thinking")
+            if thought.strip():
+                lengths.append(len(thought))
+    return int(statistics.median(lengths)) if lengths else 0
+
+
 def stats(run_dir: Path) -> dict[str, dict]:
     kinds: dict[str, dict] = {}
     for line in (run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines():
@@ -68,10 +84,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("runs", nargs="+", type=Path)
     parser.add_argument("--max-cut", type=float, default=0.02)
+    parser.add_argument("--base", type=Path, help="an exam run of the base E4B with thinking on")
     args = parser.parse_args()
     over = []
+    base = base_median(args.base) if args.base else 0
+    if base:
+        print(json.dumps({"run": args.base.name, "base_median_chars": base}), flush=True)
     for run_dir in args.runs:
         for name, row in stats(run_dir).items():
+            if base:
+                row["of_base"] = round(row["median_chars"] / base, 2)
             print(json.dumps({"run": run_dir.name, "kind": name, **row}), flush=True)
             if row["cut_share"] > args.max_cut:
                 over.append(f"{run_dir.name} {name} {row['cut_share']:.1%}")
