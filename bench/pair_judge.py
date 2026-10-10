@@ -57,11 +57,19 @@ def ask(port: int, chat: str, a: str, b: str) -> str:
     return match.group(1) if match else "tie"
 
 
-def verdict(port: int, chat: str, a: str, b: str) -> str:
+def both_ways(port: int, chat: str, a: str, b: str) -> tuple[str, str]:
+    """The judge's answer with a shown as A, and with a shown as B."""
+    return ask(port, chat, a, b), ask(port, chat, b, a)
+
+
+def agreed(answers: tuple[str, str]) -> str:
     """A or B only when the judge says so both ways round."""
-    first, second = ask(port, chat, a, b), ask(port, chat, b, a)
-    swapped = {"A": "B", "B": "A"}.get(second, "tie")
+    first, swapped = answers[0], {"A": "B", "B": "A"}.get(answers[1], "tie")
     return first if first == swapped and first != "tie" else "tie"
+
+
+def verdict(port: int, chat: str, a: str, b: str) -> str:
+    return agreed(both_ways(port, chat, a, b))
 
 
 def broken(pairs: list[dict], rng: random.Random) -> list[tuple[str, str, str, str]]:
@@ -95,18 +103,22 @@ def main() -> None:
         rng = random.Random(11)
         trials = broken(rng.sample(pairs, min(args.limit, len(pairs))), rng)
         with ThreadPoolExecutor(server.parallel) as pool:
-            picked = list(pool.map(lambda t: verdict(server.port, t[0], t[1], t[2]), trials))
+            answers = list(pool.map(lambda t: both_ways(server.port, t[0], t[1], t[2]), trials))
+        picked = [agreed(a) for a in answers]
         right = sum(p == "A" for p in picked)
-        # Per kind of break, and every trial it missed, so a failed check says
-        # whether the judge or the break is at fault.
+        # Per kind of break, every trial it missed with its two raw answers
+        # (the same letter both ways round is the slot, not the line), so a
+        # failed check says whether the judge or the break is at fault.
         kinds = {how: [sum(1 for t, p in zip(trials, picked, strict=True) if t[3] == how and p == "A"),
                        sum(1 for t in trials if t[3] == how)] for how in sorted({t[3] for t in trials})}
-        missed = [{"how": t[3], "chat": t[0][-300:], "intact": t[1], "broken": t[2], "verdict": p}
-                  for t, p in zip(trials, picked, strict=True) if p != "A"]
+        missed = [{"how": t[3], "chat": t[0][-300:], "intact": t[1], "broken": t[2], "answers": a}
+                  for t, a, p in zip(trials, answers, picked, strict=True) if p != "A"]
+        same_slot = sum(a[0] == a[1] != "tie" for a in answers)
         summary = {"trials": len(trials), "intact_picked": right, "trusted": right >= REJECT_NEEDED * len(trials),
-                   "by_kind": kinds, "missed": missed}
+                   "by_kind": kinds, "same_slot": same_slot, "missed": missed}
         out.with_suffix(".judge-validation.json").write_text(json.dumps(summary), encoding="utf-8")
-        print(json.dumps({k: summary[k] for k in ("trials", "intact_picked", "trusted", "by_kind")}), flush=True)
+        print(json.dumps({k: summary[k] for k in ("trials", "intact_picked", "trusted", "by_kind", "same_slot")}),
+              flush=True)
         if not summary["trusted"]:
             raise SystemExit(f"the judge picked the intact line in only {right}/{len(trials)} broken pairs")
         with ThreadPoolExecutor(server.parallel) as pool:
