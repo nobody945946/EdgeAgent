@@ -47,7 +47,6 @@ FAMILIES = BENCH / "scenarios" / "families.json"
 OUT = run.ROOT / ".runtime/agentdata/scenarios"
 SPLITS = ("train", "eval")
 EVAL_EVERY = 4  # every 4th topic is held out for eval cards only
-WEB_PORT = 8081  # web_fixture.py serves the pages under their own host names on this port
 TIMEOUT_S = 1800
 
 CARD_PROMPT = """你要為一個 AI 助理的訓練與測驗設計一張「情境卡」：一段多輪對話的劇本大綱，之後會由另一個模型照卡扮演使用者，和助理真的對話。
@@ -327,14 +326,6 @@ def header_value(api: dict) -> str:
     return api["key"]
 
 
-def to_fixture(text: str, hosts: set[str]) -> str:
-    """Addresses on the card's hosts as the stand-in web serves them (http, WEB_PORT)."""
-    if not hosts:
-        return text
-    pattern = re.compile(r"https?://(" + "|".join(map(re.escape, sorted(hosts))) + r")(?::\d+)?")
-    return pattern.sub(lambda m: f"http://{m.group(1)}:{WEB_PORT}", text)
-
-
 def env_name(api: dict, index: int) -> str:
     """EDGE_API_<NAME> as edge_agent.apis names it, from the API's host for a card's made-up API."""
     label = urllib.parse.urlsplit(api["base_url"]).hostname or f"api{index}"
@@ -541,17 +532,13 @@ def tasks(args: argparse.Namespace) -> None:
             target = task_dir / "workspace" / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text, encoding="utf-8")
-        # The stand-in web serves every page on its own host name at WEB_PORT,
-        # over http: page addresses and every mention of those hosts (API docs
-        # name their endpoints) point there.
-        hosts = {urllib.parse.urlsplit(page["url"]).hostname for page in card.get("pages") or []}
-        apis = [{**api, "base_url": to_fixture(api["base_url"], hosts), "docs": to_fixture(api["docs"], hosts),
-                 "key_env": env_name(api, n)} for n, api in enumerate(card.get("apis") or [])]
+        # The stand-in web serves every page at its own address, https as
+        # written (web_fixture.py), so addresses stay as the card has them.
+        apis = [{**api, "key_env": env_name(api, n)} for n, api in enumerate(card.get("apis") or [])]
         pages = []
         for page in card.get("pages") or []:
-            url = urllib.parse.urlsplit(to_fixture(page["url"], hosts))
-            page = {**page, "url": urllib.parse.urlunsplit(("http", url.netloc, url.path or "/", url.query, "")),
-                    "text": to_fixture(page["text"], hosts)}
+            url = urllib.parse.urlsplit(page["url"])
+            page = {**page, "url": urllib.parse.urlunsplit((url.scheme or "https", url.netloc, url.path or "/", url.query, ""))}
             # An endpoint answers only with its API's key (the fixture checks it).
             owner = next((a for a in apis if page.get("type") == "application/json"
                           and page["url"].startswith(a["base_url"]) and a["key_in"] != "none"), None)

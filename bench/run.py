@@ -61,10 +61,11 @@ DECOY = Path.home() / "edgeagent-bench-decoy"
 
 def sandbox(name: str, mounts: list[tuple[Path, str, str]], env: dict[str, str],
             command: list[str], *, memory: str = "6g", image: str = IMAGE,
-            hosts: tuple[str, ...] = ()) -> list[str]:
+            web: bool = False) -> list[str]:
     """The one docker command line for agent and grader: no network, read-only
-    root, no capabilities, unprivileged user, explicit mounts only. `hosts`
-    are names that resolve to the sandbox's own loopback (a stand-in web)."""
+    root, no capabilities, unprivileged user, explicit mounts only. With `web`,
+    the sandbox's resolver is its own loopback, where the stand-in web answers
+    every name (web_fixture.py), and its servers may take ports 53, 80 and 443."""
     args = ["docker", "run", "--rm", "--name", name, "--network", "none", "--read-only",
             "--tmpfs", "/tmp:rw,exec,size=2g,mode=1777",
             "--tmpfs", "/home/bench:rw,size=512m,mode=1777",
@@ -75,8 +76,8 @@ def sandbox(name: str, mounts: list[tuple[Path, str, str]], env: dict[str, str],
             "-e", "PYTHONPATH=/opt/edgeagent", "-w", "/work"]
     for source, target, mode in mounts:
         args += ["-v", f"{source}:{target}:{mode}"]
-    for host in hosts:
-        args += ["--add-host", f"{host}:127.0.0.1"]
+    if web:
+        args += ["--dns", "127.0.0.1", "--sysctl", "net.ipv4.ip_unprivileged_port_start=0"]
     for key, value in env.items():
         args += ["-e", f"{key}={value}"]
     return [*args, image, *command]
@@ -508,7 +509,7 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
             # A scenario's timeout is per turn; the conversation gets twice that.
             "timeout_s": timeout, "conversation_s": timeout * (CONVERSATION_TURNS if task.get("scenario") else 1)}
     name = f"eab-{config_name}-{job}".replace("_", "-")[:120]
-    mounts, env, hosts = web_fixture(task_dir, task)
+    mounts, env, web = web_fixture(task_dir, task)
     if simulator_sock is not None and task.get("scenario"):
         mounts = [*mounts, (simulator_sock, "/simsock", "ro")]
     command = sandbox(name, [(workspace, "/work", "rw"), (sock_dir, "/sock", "ro"),
@@ -516,9 +517,9 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
                              (memory, "/opt/edgeagent/.runtime/pi-state", "rw")],
                       {"BENCH_SPEC": json.dumps(spec, ensure_ascii=False), **env},
                       ["sh", "-c", "python /opt/bench/web_fixture.py /web > /tmp/web.log 2>&1 & "
-                       "sleep 1; exec python /opt/bench/agent_runner.py"] if hosts
+                       "sleep 1; exec python /opt/bench/agent_runner.py"] if web
                       else ["python", "/opt/bench/agent_runner.py"],
-                      image=task.get("image", IMAGE), hosts=hosts)
+                      image=task.get("image", IMAGE), web=web)
     started = time.monotonic()
     try:
         agent = subprocess.run(command, capture_output=True, text=True,
@@ -549,16 +550,32 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
             "passed": bool(grade.get("passed"))}
 
 
-def web_fixture(task_dir: Path, task: dict) -> tuple[list, dict[str, str], tuple[str, ...]]:
+def web_ca() -> Path:
+    """The bench's own certificate authority (made once with the host's
+    openssl): the stand-in web signs a certificate for each name with it, and
+    the sandbox's clients trust it, so pages keep their https addresses."""
+    folder = STATE / "webca"
+    if not (folder / "ca.pem").is_file():
+        folder.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                        "-nodes", "-keyout", str(folder / "ca.key"), "-out", str(folder / "ca.pem"), "-days", "3650",
+                        "-subj", "/CN=EdgeAgent bench web", "-addext", "basicConstraints=critical,CA:TRUE",
+                        "-addext", "keyUsage=critical,keyCertSign,cRLSign"], check=True, capture_output=True)
+        (folder / "ca.key").chmod(0o644)  # the sandbox's user reads it; it signs nothing outside the sandbox
+    return folder
+
+
+def web_fixture(task_dir: Path, task: dict) -> tuple[list, dict[str, str], bool]:
     """A research task's stand-in web (bench/web_fixture.py): its pages (only
-    web/, never the task's check), the product's own search and loopback
-    seams pointed at it, and the pages' host names mapped to loopback."""
+    web/, never the task's check), the CA it signs with and every client's
+    trust in it, and the product's own search and loopback seams pointed at it."""
     if not task.get("web"):
-        return [], {}, ()
-    pages = json.loads((task_dir / "web" / "pages.json").read_text(encoding="utf-8"))
-    hosts = tuple(sorted({urllib.parse.urlsplit(page["url"]).hostname for page in pages}))
-    return ([(task_dir / "web", "/web", "ro"), (BENCH / "web_fixture.py", "/opt/bench/web_fixture.py", "ro")],
-            {"EDGE_AGENT_SEARCH_URL": "http://127.0.0.1:8080/html/", "EDGE_AGENT_WEB_ALLOW_LOOPBACK": "1"}, hosts)
+        return [], {}, False
+    ca = "/opt/bench/webca/ca.pem"
+    return ([(task_dir / "web", "/web", "ro"), (BENCH / "web_fixture.py", "/opt/bench/web_fixture.py", "ro"),
+             (web_ca(), "/opt/bench/webca", "ro")],
+            {"EDGE_AGENT_SEARCH_URL": "http://127.0.0.1:8080/html/", "EDGE_AGENT_WEB_ALLOW_LOOPBACK": "1",
+             "NODE_EXTRA_CA_CERTS": ca, "SSL_CERT_FILE": ca, "REQUESTS_CA_BUNDLE": ca}, True)
 
 
 def containment(run_dir: Path) -> None:

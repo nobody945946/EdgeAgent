@@ -1,11 +1,18 @@
 """A stand-in web for research tasks, inside the agent's sandbox (no network).
 
-The task's pages (/web/pages.json: url, title, published, text) are served
-under their own host names, which the sandbox maps to 127.0.0.1 (run.py adds
-the hosts), on port 8081; a search engine on 8080 answers in DuckDuckGo's
-HTML result format (what web_tools.mjs parses), ranking the pages for the
-query. So the product's own web_research runs unchanged against a fixed web
-with planted traps (forum posts, content farms, old news, conflicting sources).
+The task's pages (/web/pages.json: url, title, published, text) are served at
+their own addresses, https as on the real web: every name resolves to the
+sandbox's loopback (a DNS answer on 127.0.0.1:53, which run.py makes the
+sandbox's resolver), and port 443 answers with a certificate for the name
+asked, signed by the bench's own CA (run.py web_ca), which the sandbox's
+Node, Python and PowerShell trust; port 80 serves the same pages. A page or
+host the card does not have is a 404, the way a real site answers, never a
+name that does not resolve: training data must not learn "the network is
+down" from the sandbox (2026-10-09: `:8081` addresses and EAI_AGAIN in the
+teacher's recordings). A search engine on 8080 answers in DuckDuckGo's HTML
+result format (what web_tools.mjs parses), ranking the pages for the query.
+So the product's own web_research runs unchanged against a fixed web with
+planted traps (forum posts, content farms, old news, conflicting sources).
 A page of type application/json is an API endpoint: served as JSON, matched
 on its path and the query parameters it names (paging and format parameters
 such as limit do not matter), refused (401) without its API's key
@@ -24,6 +31,9 @@ import html
 import json
 import math
 import re
+import socket
+import ssl
+import subprocess
 import sys
 import threading
 from collections import Counter
@@ -66,11 +76,16 @@ def params(url: str) -> dict[str, str]:
     return {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
 
 
+def same_address(a: str, b: str) -> bool:
+    """One address over http or https (a site serves both)."""
+    return a.split("://", 1)[-1] == b.split("://", 1)[-1]
+
+
 def find(pages: list[dict], url: str) -> dict | None:
     """The page at this address: exactly, or an API endpoint on the same path
     whose query parameters the request carries (in any order, with more, such
     as the key; paging and format values may differ)."""
-    exact = next((p for p in pages if p["url"] == url), None)
+    exact = next((p for p in pages if same_address(p["url"], url)), None)
     if exact:
         return exact
     asked, given = urlsplit(url), params(url)
@@ -135,7 +150,8 @@ def main() -> None:
                     f'{html.escape(p["title"])}</a><a class="result__snippet">{html.escape(p["text"][:120])}</a></div>'
                     for p in rank(query, readable))
                 return self.reply(200, f"<html><body>{results}</body></html>")
-            url = f"http://{self.headers.get('Host', '')}{self.path}"
+            host = re.sub(r":(80|443)$", "", self.headers.get("Host", ""))
+            url = f"https://{host}{self.path}"
             page, error = find(pages, url), None
             if page is None:
                 error = api_error(pages, url)
@@ -156,11 +172,72 @@ def main() -> None:
         def log_message(self, *args: object) -> None:
             pass
 
-    servers = [ThreadingHTTPServer(("127.0.0.1", port), Handler) for port in (8080, 8081)]
+    servers = [ThreadingHTTPServer(("127.0.0.1", port), Handler) for port in (8080, 80, 443)]
+    servers[2].socket = Certificates(CA).context().wrap_socket(servers[2].socket, server_side=True)
+    threading.Thread(target=answer_dns, daemon=True).start()
     for server in servers[1:]:
         threading.Thread(target=server.serve_forever, daemon=True).start()
     print("web fixture ready", flush=True)
     servers[0].serve_forever()
+
+
+CA = Path("/opt/bench/webca")  # run.py web_ca: ca.pem and ca.key, read-only
+
+
+class Certificates:
+    """A certificate for whatever name a client asks for, signed by the bench's
+    CA with the image's own openssl, made once per name."""
+
+    def __init__(self, ca: Path) -> None:
+        self.ca, self.made, self.lock = ca, {}, threading.Lock()
+        self.folder = Path("/tmp/webca")
+        self.folder.mkdir(exist_ok=True)
+
+    def for_name(self, name: str) -> ssl.SSLContext:
+        with self.lock:
+            if name not in self.made:
+                key, cert = self.folder / f"{name}.key", self.folder / f"{name}.pem"
+                subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                                "-nodes", "-keyout", str(key), "-out", str(cert), "-days", "30", "-subj", f"/CN={name}",
+                                "-addext", f"subjectAltName=DNS:{name}", "-addext", "basicConstraints=critical,CA:FALSE",
+                                "-addext", "extendedKeyUsage=serverAuth",
+                                "-CA", str(self.ca / "ca.pem"), "-CAkey", str(self.ca / "ca.key")],
+                               check=True, capture_output=True)
+                context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                context.load_cert_chain(cert, key)
+                self.made[name] = context
+            return self.made[name]
+
+    def context(self) -> ssl.SSLContext:
+        base = self.for_name("localhost")
+
+        def choose(connection: ssl.SSLObject, name: str | None, _: ssl.SSLContext) -> None:
+            if name:
+                connection.context = self.for_name(name.lower())
+
+        base.sni_callback = choose
+        return base
+
+
+def answer_dns() -> None:
+    """Every name is this sandbox (A 127.0.0.1); no IPv6 address, so clients
+    use that one."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 53))
+    while True:
+        query, client = sock.recvfrom(512)
+        if len(query) < 12:
+            continue
+        end = 12
+        while end < len(query) and query[end]:
+            end += query[end] + 1
+        qtype = int.from_bytes(query[end + 1:end + 3], "big")
+        question = query[12:end + 5]
+        answers = 1 if qtype == 1 else 0
+        reply = query[:2] + b"\x81\x80" + b"\x00\x01" + answers.to_bytes(2, "big") + b"\x00\x00\x00\x00" + question
+        if answers:
+            reply += b"\xc0\x0c\x00\x01\x00\x01" + (60).to_bytes(4, "big") + b"\x00\x04" + bytes([127, 0, 0, 1])
+        sock.sendto(reply, client)
 
 
 if __name__ == "__main__":
