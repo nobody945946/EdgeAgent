@@ -200,17 +200,23 @@ def mixed_versions(total: list[dict]) -> dict[str, dict[str, int]]:
             if len({version.split()[1] for version in runs}) > 1}
 
 
-def with_thinking_modes(row: dict, both: bool) -> list[dict]:
-    """The row marked with how train_lora.py renders it; with `both`, a row
-    that has reasoning also comes once without any. A thought cut short by
-    the budget is never a target: that row comes only without reasoning."""
+THINKING = ("as-recorded", "both", "none")
+
+
+def with_thinking_modes(row: dict, mode: str) -> list[dict]:
+    """The row marked with how train_lora.py renders it: as recorded; `both`,
+    a row that has reasoning also once without any; `none`, never with
+    reasoning (the student keeps its own thinking: 2026-10-10, adapters trained
+    on the teacher's thoughts, cut to a 1024-token budget, thought half as long
+    as the base and lost with thinking on). A thought cut short by the budget is
+    never a target: that row comes only without reasoning."""
     thinking = any(m.get("reasoning_content") for m in row["messages"])
     plain = {**row, "messages": [{k: v for k, v in m.items() if k != "reasoning_content"} for m in row["messages"]],
              "thinking": False}
-    if any(BUDGET_CUT in (m.get("reasoning_content") or "") for m in row["messages"]):
+    if mode == "none" or any(BUDGET_CUT in (m.get("reasoning_content") or "") for m in row["messages"]):
         return [plain]
     marked = {**row, "thinking": thinking}
-    if not (thinking and both):
+    if not (thinking and mode == "both"):
         return [marked]
     return [marked, plain]
 
@@ -219,14 +225,15 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("runs", nargs="+", type=Path)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--thinking", choices=("as-recorded", "both"), default="as-recorded",
-                        help="both: every row with reasoning also without it (thinking on and off)")
+    parser.add_argument("--thinking", choices=THINKING, default="as-recorded",
+                        help="both: every row with reasoning also without it (thinking on and off); "
+                             "none: no reasoning in any row")
     args = parser.parse_args()
     total: list[dict] = []
     for run_dir in args.runs:
         kept, why = rows(run_dir)
         print(f"{run_dir.name}: {len(kept)} rows; skipped {why}")
-        total += [marked for row in kept for marked in with_thinking_modes(row, args.thinking == "both")]
+        total += [marked for row in kept for marked in with_thinking_modes(row, args.thinking)]
     stale = [row["source"]["job"] for row in total if scope_of(row) is None]
     if stale:
         print(f"REFUSED: {len(stale)} rows were made under another system prompt: {stale[:5]}")
