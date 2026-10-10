@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import { compactionSettings, searchHistory, historyReference } from './memory.mjs';
 import { webFetch, webResearch, checkCitations, normalURL, urlsIn, usePython } from './web_tools.mjs';
 import { explicitApproval } from './shell_guard.mjs';
+import { LoopWatch } from './loop_guard.mjs';
 import { today, modelFacts } from './prompt_sections.mjs';
 
 const packageURL = new URL('../.runtime/pi/node_modules/@earendil-works/pi-coding-agent/dist/', import.meta.url);
@@ -282,6 +283,14 @@ function policy(pi) {
       } else messages.push(message);
     }
     payload.messages = messages;
+    // The Agent's output has no cap: a loop is stopped as it starts (the
+    // message_update watch below), and anything else may run to the end of the
+    // context, as a long file or report needs. max_output_tokens still sizes
+    // what compaction keeps free (memory.mjs).
+    if (init.agent) {
+      delete payload.max_tokens;
+      delete payload.max_completion_tokens;
+    }
     // Pi can lower the cap after reserving context safety space. Report the
     // actual wire cap, rather than attributing every truncation to the setting.
     ctx.ui.notify('edge-budget:' + JSON.stringify({
@@ -296,6 +305,15 @@ function policy(pi) {
     ctx.abort();
     return { block: true, reason };
   }
+  const watch = new LoopWatch();
+  pi.on('message_start', () => watch.reset());
+  pi.on('message_update', (event, ctx) => {
+    const delta = event.assistantMessageEvent?.delta;
+    if (init.agent && typeof delta === 'string' && watch.add(delta)) {
+      watch.reset();
+      stop(ctx, 'runaway', '輸出一直重複同一段，已停止；修改與上下文仍保留。');
+    }
+  });
   pi.on('agent_end', (event, ctx) => {
     if (unverified.size) ctx.ui.notify('edge-unverified:' + JSON.stringify([...unverified]), 'info');
     if (!researched.length) return;

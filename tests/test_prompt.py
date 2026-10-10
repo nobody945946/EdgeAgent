@@ -56,3 +56,16 @@ def test_the_runtime_section_states_the_machine_permissions_and_apis_never_a_key
     if node is None:
         pytest.skip("requires Node")
     subprocess.run([node, str(CORE_ROOT / "tests/runtime_facts_check.mjs")], check=True)
+
+
+def test_the_loop_guard_stops_a_stuck_stream_and_not_long_output():
+    """edge_agent/loop_guard.mjs, the Agent's only limit on output length."""
+    import shutil
+    import subprocess
+
+    from edge_agent.runtime import CORE_ROOT
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("requires Node")
+    subprocess.run([node, str(CORE_ROOT / "tests/loop_guard_check.mjs")], check=True)
