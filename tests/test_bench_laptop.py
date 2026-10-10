@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -73,14 +74,30 @@ def test_the_runner_dresses_the_shell_as_the_laptop_and_hides_the_spec(tmp_path:
 
 
 IMAGE = "edgeagent-bench:1"
-
-
-@pytest.mark.skipif(shutil.which("docker") is None or subprocess.run(
+needs_image = pytest.mark.skipif(shutil.which("docker") is None or subprocess.run(
     ["docker", "image", "inspect", IMAGE], capture_output=True, check=False).returncode != 0,
     reason="needs the bench image (bench/run.py --build)")
+
+
+def in_sandbox(tmp_path: Path, machine: dict, *command: str) -> list[str]:
+    """Run a command in the agent's sandbox as bench/run.py mounts it, dressed
+    as `machine`; its output lines."""
+    import run
+
+    (tmp_path / "machine.json").write_text(json.dumps(machine, ensure_ascii=False), encoding="utf-8")
+    mounts = [arg for source, target, mode in run.code_mounts() for arg in ("-v", f"{source}:{target}:{mode}")]
+    result = subprocess.run(
+        ["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,exec",
+         "--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp", "-e", "PYTHONPATH=/opt/edgeagent",
+         "-e", "PSModulePath=/opt/bench/windows", "-e", "LAPTOP_FACTS=/facts/machine.json",
+         *mounts, "-v", f"{tmp_path}:/facts:ro", IMAGE, *command],
+        capture_output=True, text=True, encoding="utf-8", check=True, timeout=180)
+    return result.stdout.splitlines()
+
+
+@needs_image
 def test_the_sandbox_powershell_answers_windows_commands_with_the_laptop(tmp_path: Path) -> None:
     machine = laptop.machine("train-F-019")
-    (tmp_path / "machine.json").write_text(json.dumps(machine, ensure_ascii=False), encoding="utf-8")
     commands = """
 (Get-CimInstance Win32_VideoController).Name -join '|'
 (Get-CimInstance -ClassName Win32_Processor).NumberOfLogicalProcessors
@@ -89,18 +106,58 @@ def test_the_sandbox_powershell_answers_windows_commands_with_the_laptop(tmp_pat
 (Get-PhysicalDisk).BusType
 try { Get-CimInstance Win32_Nope -ErrorAction Stop } catch { $_.Exception.Message.Trim() }
 [bool](Get-Command Get-WmiObject -ErrorAction SilentlyContinue)
+'Get-Process', 'Get-PSDrive', 'Get-ComputerInfo' | ForEach-Object { "$((Get-Command $_).CommandType) $((Get-Command $_).ModuleName)" }
+(Get-Process -Name llama-server).Path
+(Get-Process -Id $PID).Path
+(Get-Process llama-server).WorkingSet64 -eq (Get-CimInstance Win32_Process -Filter "Name = 'llama-server.exe'").WorkingSetSize
+@(Get-Process -Name *edge*).Count
+try { Get-Process -Name nope -ErrorAction Stop } catch { $_.Exception.Message }
+(Get-PSDrive C).Free
+(Get-PSDrive -PSProvider FileSystem).Name -join '|'
+try { Get-PSDrive D -ErrorAction Stop } catch { $_.Exception.Message }
+(Get-ComputerInfo).CsName
+(Get-ChildItem /opt/bench/windows -Directory).Name -join '|'
+$started = Start-Process sleep -ArgumentList 30 -PassThru; (Get-Process -Id $started.Id).ProcessName; Stop-Process -Id $started.Id
 """
     (tmp_path / "try.ps1").write_text(commands, encoding="utf-8")
-    result = subprocess.run(
-        ["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,exec",
-         "--user", f"{os.getuid()}:{os.getgid()}",
-         "-e", "HOME=/tmp", "-e", "PSModulePath=/opt/bench/windows", "-e", "LAPTOP_FACTS=/facts/machine.json",
-         "-v", f"{BENCH / 'windows'}:/opt/bench/windows:ro", "-v", f"{tmp_path}:/facts:ro",
-         IMAGE, "pwsh", "-NoProfile", "-NonInteractive", "-File", "/facts/try.ps1"],
-        capture_output=True, text=True, encoding="utf-8", check=True, timeout=120)
-    assert result.stdout.splitlines() == [
+    lines = in_sandbox(tmp_path, machine, "pwsh", "-NoProfile", "-NonInteractive", "-File", "/facts/try.ps1")
+    assert lines == [
         f"{machine['gpu']['integrated']}|{laptop.GPU}", str(machine["cpu"]["threads"]), str(machine["disk"]["c_free"]),
-        "1", "NVMe", "無效的類別", "False"]
+        "1", "NVMe", "無效的類別", "False",
+        *["Cmdlet Microsoft.PowerShell.Management"] * 3,
+        f"C:\\Users\\{machine['user']}\\EdgeAgent\\.runtime\\llama-b11193-cuda\\llama-server.exe",
+        "C:\\Program Files\\PowerShell\\7\\pwsh.exe", "True", "3",
+        'Cannot find a process with the name "nope". Verify the process name and call the cmdlet again.',
+        str(machine["disk"]["c_free"]), "C|Temp", "Cannot find drive. A drive with the name 'D' does not exist.",
+        machine["computer"], "bin|CimCmdlets|Storage", "sleep"]
+
+
+@needs_image
+def test_the_sandbox_management_module_is_powershells_own_plus_get_computerinfo(tmp_path: Path) -> None:
+    def exports(text: str) -> set[str]:
+        return set(re.findall(r"[\"']([A-Za-z]+-[A-Za-z]+)[\"']", text.split("CmdletsToExport")[1]))
+
+    image = subprocess.run(["docker", "run", "--rm", IMAGE, "cat",
+                            "/opt/pwsh/Modules/Microsoft.PowerShell.Management/Microsoft.PowerShell.Management.psd1"],
+                           capture_output=True, text=True, check=True).stdout
+    ours = (BENCH / "pshome/Microsoft.PowerShell.Management/Microsoft.PowerShell.Management.psd1").read_text(
+        encoding="utf-8")
+    assert exports(ours) == exports(image) | {"Get-ComputerInfo"}
+
+
+@needs_image
+def test_a_read_only_task_reads_the_sandbox_laptop_as_it_reads_the_laptop(tmp_path: Path) -> None:
+    commands = {
+        "Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 5 Name, Id": True,
+        "Get-PSDrive C | Select-Object Used, Free": True,
+        "Get-ComputerInfo -Property OsName": True,
+        "Get-Process | Select-Object Name, CommandLine": False,
+    }
+    (tmp_path / "proof.py").write_text(
+        "import json, sys\nfrom pathlib import Path\nfrom edge_agent.permissions import routine_shell\n"
+        "print(json.dumps([routine_shell(c, Path('/tmp')) for c in json.loads(sys.argv[1])]))\n", encoding="utf-8")
+    lines = in_sandbox(tmp_path, laptop.machine("train-F-019"), "python", "/facts/proof.py", json.dumps(list(commands)))
+    assert json.loads(lines[-1]) == list(commands.values())
 
 
 def test_memory_answers_are_graded_against_the_laptop_not_the_container(tmp_path: Path) -> None:

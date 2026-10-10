@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -150,8 +151,8 @@ def test_a_task_scope_narrows_but_never_widens():
         ("Get-CimInstance -Query 'SELECT * FROM Win32_ComputerSystem'", False),
         ("Get-CimInstance Win32_ComputerSystem -ComputerName server01", False),
         ("Get-CimInstance Win32_ComputerSystem -Namespace root/subscription", False),
-        # Get-ComputerInfo here comes from the sandbox's stand-in, not Windows' own module.
-        ("Get-ComputerInfo", False),
+        # Windows' own; PowerShell has none elsewhere (the bench sandbox's: tests/test_bench_laptop.py).
+        ("Get-ComputerInfo", sys.platform == "win32"),
     ],
 )
 def test_a_read_only_task_reads_the_machine_from_windows_own_modules(tmp_path, monkeypatch, command, expected):

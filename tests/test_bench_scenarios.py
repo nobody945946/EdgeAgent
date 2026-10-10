@@ -62,15 +62,16 @@ def test_reading_the_machine_itself_never_passes_and_sandbox_words_only_when_una
     assert set(found) == {"system_probe"}
     # Windows' own commands answer with the laptop in the sandbox (bench/laptop.py).
     for command in ("Get-CimInstance Win32_VideoController | Select Name", "nvidia-smi --query-gpu=name --format=csv",
-                    "systeminfo", "$env:COMPUTERNAME"):
+                    "systeminfo", "$env:COMPUTERNAME", "Get-Process | Sort-Object CPU -Descending",
+                    "Get-PSDrive -PSProvider FileSystem", "Get-ComputerInfo"):
         windows = {"name": "powershell", "arguments": {"command": command}}
         assert scenario_checks.failures({"dialogue": [turn("看好了", [windows])], "ended": "end"}, []) == {}
     work = {"name": "read", "arguments": {"path": "/work/notes.md"}}
     assert scenario_checks.failures({"dialogue": [turn("讀完了", [work])], "ended": "end"}, []) == {}
-    listing = {"name": "powershell", "arguments": {"command": "Get-Process | Sort-Object CPU -Descending"}}
-    assert set(scenario_checks.failures({"dialogue": [turn("好", [listing])], "ended": "end"}, [])) == {"system_probe"}
-    own = {"name": "powershell", "arguments": {"command": "$p = Start-Process python -PassThru; Get-Process -Id $p.Id"}}
-    assert scenario_checks.failures({"dialogue": [turn("還在跑", [own])], "ended": "end"}, []) == {}
+    # A constant and .NET itself: these still answer as the container.
+    for command in ("$PSVersionTable.OS", "[System.Environment]::OSVersion"):
+        shell = {"name": "powershell", "arguments": {"command": command}}
+        assert set(scenario_checks.failures({"dialogue": [turn("好", [shell])], "ended": "end"}, [])) == {"system_probe"}
     assert scenario_checks.check("no_sandbox_words", {"dialogue": [turn("我跑在 Docker 容器裡")]})
     linux = {"user": "我在 Linux 上跑 .NET", "answer": "Linux 上要裝憑證", "calls": [], "outcome": "done"}
     assert scenario_checks.check("no_sandbox_words", {"dialogue": [linux]}) is None

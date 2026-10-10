@@ -58,11 +58,11 @@ ROOT_SCAN = re.compile(r"""(?i)(?:get-childitem|gci|dir|ls)\s+(?:-(?:literal)?pa
 # sandbox does not dress as the laptop: there the bench box answers
 # (2026-10-08: answers told the owner he runs Docker on an RTX 3090), so the
 # facts in the answer are false on the laptop. Windows' own commands
-# (Get-CimInstance, nvidia-smi, systeminfo, hostname, the environment) answer
-# with the laptop (bench/laptop.py). Get-Process -Id checks a process the
-# Agent started itself, not the machine.
+# (Get-CimInstance, Get-Process, Get-PSDrive, Get-ComputerInfo, nvidia-smi,
+# systeminfo, hostname, the environment) answer with the laptop
+# (bench/laptop.py); $PSVersionTable and [Environment] still answer as Linux.
 SYSTEM_PROBE = re.compile(
-    r"(?i)lscpu|/proc/|/sys/|\buname\b|get-psdrive|\$psversiontable|get-process(?!\s+-id\b)|\bdf\s"
+    r"(?i)lscpu|/proc/|/sys/|\buname\b|\$psversiontable|\bdf\s"
     r"|\bfree\s+-|\[(?:system\.)?environment\]|osversion|docker|nproc|\bps\s+(?:aux|-e)"
     r"|get-hotfix|get-netadapter|ipconfig|\bip\s+a")
 SYSTEM_PATH = re.compile(r"^/(?:proc|sys|etc|var|usr)\b")

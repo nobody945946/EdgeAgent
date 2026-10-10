@@ -82,6 +82,34 @@ def sandbox(name: str, mounts: list[tuple[Path, str, str]], env: dict[str, str],
     return [*args, image, *command]
 
 
+# Get-Process, Get-PSDrive and Get-ComputerInfo answering with the laptop as
+# cmdlets of PowerShell's own Microsoft.PowerShell.Management (bench/pshome).
+MANAGEMENT = BENCH / "pshome/Microsoft.PowerShell.Management"
+_CORE_LOCK = threading.Lock()
+
+
+def laptop_core(image: str = IMAGE) -> Path:
+    """The folder holding LaptopCore.dll, compiled from LaptopCore.cs by the
+    image's own PowerShell once per source and image."""
+    source = MANAGEMENT / "LaptopCore.cs"
+    image_id = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", image],
+                              capture_output=True, text=True, check=True).stdout.strip()
+    out = STATE / "laptop-core" / hashlib.sha256(source.read_bytes() + image_id.encode()).hexdigest()[:16]
+    with _CORE_LOCK:
+        if not (out / "LaptopCore.dll").is_file():
+            work = out.with_name(out.name + ".tmp")
+            shutil.rmtree(work, ignore_errors=True)
+            work.mkdir(parents=True)
+            subprocess.run(
+                ["docker", "run", "--rm", "--network", "none", "--user", f"{os.getuid()}:{os.getgid()}",
+                 "-e", "HOME=/tmp", "-v", f"{source}:/src/LaptopCore.cs:ro", "-v", f"{work}:/out", image,
+                 "pwsh", "-NoProfile", "-NonInteractive", "-Command",
+                 "Add-Type -Path /src/LaptopCore.cs -OutputAssembly /out/LaptopCore.dll -OutputType Library"],
+                capture_output=True, check=True, timeout=300)
+            work.rename(out)
+    return out
+
+
 def code_mounts(bridge: Path | None = None,
                 product: Path = ROOT / "edge_agent") -> list[tuple[Path, str, str]]:
     """What the agent's sandbox may see: the product code and the two bench
@@ -93,7 +121,10 @@ def code_mounts(bridge: Path | None = None,
               # Stand-in MCP servers (stock data, a drone) for tasks that enable them.
               (BENCH / "mcp_eval", "/opt/bench/mcp", "ro"),
               # The laptop's Windows commands (bench/laptop.py).
-              (BENCH / "windows", "/opt/bench/windows", "ro")]
+              (BENCH / "windows", "/opt/bench/windows", "ro"),
+              (MANAGEMENT / "Microsoft.PowerShell.Management.psd1",
+               "/opt/pwsh/Modules/Microsoft.PowerShell.Management/Microsoft.PowerShell.Management.psd1", "ro"),
+              (laptop_core(), "/opt/bench/core", "ro")]
     if bridge is not None:
         mounts.append((bridge, "/opt/edgeagent/edge_agent/agent_bridge.mjs", "ro"))
     return mounts

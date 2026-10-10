@@ -5,10 +5,12 @@ owner's Windows laptop. When the Agent reads the machine (Get-CimInstance,
 nvidia-smi, systeminfo...), the container's answers are false there
 (2026-10-08: answers about an RTX 3090 and Docker, so such conversations
 never became rows, and a chore like "is C: an NVMe drive?" could never be
-shown). The commands Windows has and the container's PowerShell lacks answer
-with this laptop instead (bench/windows: a module PowerShell loads on first
-use, and nvidia-smi, systeminfo and hostname on PATH, reading the facts
-agent_runner.py writes to FACTS).
+shown). The commands Windows has and the container's PowerShell lacks or
+answers as Linux answer with this laptop instead (bench/windows: modules
+PowerShell loads on first use, and nvidia-smi, systeminfo and hostname on
+PATH; bench/pshome: Get-Process, Get-PSDrive and Get-ComputerInfo as
+PowerShell's own cmdlets; all reading the facts agent_runner.py writes to
+FACTS).
 
 What the laptop is known to have is fixed: the GPU and 8 GB of RAM, which the
 Agent's runtime section states (HARDWARE). What the owner never said (CPU,
