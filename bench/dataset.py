@@ -201,6 +201,7 @@ def mixed_versions(total: list[dict]) -> dict[str, dict[str, int]]:
 
 
 THINKING = ("as-recorded", "both", "none")
+CHAT = "train-chat"  # make_tool_tasks' plain conversation
 
 
 def with_thinking_modes(row: dict, mode: str) -> list[dict]:
@@ -209,10 +210,18 @@ def with_thinking_modes(row: dict, mode: str) -> list[dict]:
     reasoning (the student keeps its own thinking: 2026-10-10, adapters trained
     on the teacher's thoughts, cut to a 1024-token budget, thought half as long
     as the base and lost with thinking on). A thought cut short by the budget is
-    never a target: that row comes only without reasoning."""
+    never a target: that row comes only without reasoning.
+
+    Plain conversation is answered at once in either mode, as DeepSeek's R1
+    data answered simple queries without a chain of thought (owner, 2026-10-10:
+    long thinking is the Agent's work, chatting is another matter): a chat
+    task's row comes without reasoning, once with the think switch on (Gemma's
+    template then has the reply follow the turn directly) and once off."""
     thinking = any(m.get("reasoning_content") for m in row["messages"])
     plain = {**row, "messages": [{k: v for k, v in m.items() if k != "reasoning_content"} for m in row["messages"]],
              "thinking": False}
+    if row.get("source", {}).get("kind") == CHAT:
+        return [{**plain, "thinking": True}, plain]
     if mode == "none" or any(BUDGET_CUT in (m.get("reasoning_content") or "") for m in row["messages"]):
         return [plain]
     marked = {**row, "thinking": thinking}

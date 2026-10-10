@@ -55,6 +55,16 @@ def test_both_thinking_modes_from_one_row() -> None:
     assert only == off
 
 
+def test_plain_conversation_is_answered_at_once_in_either_mode() -> None:
+    row = {"messages": [{"role": "user", "content": "你是誰"},
+                        {"role": "assistant", "content": "我是機魂。", "reasoning_content": "對方問我是誰"}],
+           "tools": [], "source": {"kind": dataset.CHAT}}
+    for mode in dataset.THINKING:
+        on, off = dataset.with_thinking_modes(row, mode)
+        assert on["thinking"] and not off["thinking"]
+        assert not any("reasoning_content" in m for m in on["messages"] + off["messages"])
+
+
 def test_a_thought_the_budget_cut_short_is_never_a_target() -> None:
     row = {"messages": [{"role": "user", "content": "問"},
                         {"role": "assistant", "content": "", "reasoning_content": "先讀檔"},
