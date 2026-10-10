@@ -68,10 +68,15 @@ def test_reading_the_machine_itself_never_passes_and_sandbox_words_only_when_una
         assert scenario_checks.failures({"dialogue": [turn("看好了", [windows])], "ended": "end"}, []) == {}
     work = {"name": "read", "arguments": {"path": "/work/notes.md"}}
     assert scenario_checks.failures({"dialogue": [turn("讀完了", [work])], "ended": "end"}, []) == {}
-    # A constant and .NET itself: these still answer as the container.
-    for command in ("$PSVersionTable.OS", "[System.Environment]::OSVersion"):
+    # $PSVersionTable and [Environment] answer as the container: a dialogue fails
+    # only when what the Agent read names that system.
+    for command, printed, fails in (("$PSVersionTable.OS", "Debian GNU/Linux 13 (trixie)", True),
+                                    ("[System.Environment]::OSVersion", "Unix 6.8.0.138", True),
+                                    ("$PSVersionTable.PSVersion.ToString()", "7.6.6", False)):
         shell = {"name": "powershell", "arguments": {"command": command}}
-        assert set(scenario_checks.failures({"dialogue": [turn("好", [shell])], "ended": "end"}, [])) == {"system_probe"}
+        read = [{"role": "toolResult", "content": [{"type": "text", "text": printed}]}]
+        found = scenario_checks.failures({"dialogue": [turn("好", [shell])], "ended": "end", "trajectory": read}, [])
+        assert ("system_probe" in found) is fails, command
     assert scenario_checks.check("no_sandbox_words", {"dialogue": [turn("我跑在 Docker 容器裡")]})
     linux = {"user": "我在 Linux 上跑 .NET", "answer": "Linux 上要裝憑證", "calls": [], "outcome": "done"}
     assert scenario_checks.check("no_sandbox_words", {"dialogue": [linux]}) is None

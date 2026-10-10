@@ -60,11 +60,17 @@ ROOT_SCAN = re.compile(r"""(?i)(?:get-childitem|gci|dir|ls)\s+(?:-(?:literal)?pa
 # facts in the answer are false on the laptop. Windows' own commands
 # (Get-CimInstance, Get-Process, Get-PSDrive, Get-ComputerInfo, nvidia-smi,
 # systeminfo, hostname, the environment) answer with the laptop
-# (bench/laptop.py); $PSVersionTable and [Environment] still answer as Linux.
+# (bench/laptop.py). Linux's own commands never run on the laptop, so using
+# one fails a dialogue whatever it printed.
 SYSTEM_PROBE = re.compile(
-    r"(?i)lscpu|/proc/|/sys/|\buname\b|\$psversiontable|\bdf\s"
-    r"|\bfree\s+-|\[(?:system\.)?environment\]|osversion|docker|nproc|\bps\s+(?:aux|-e)"
+    r"(?i)lscpu|/proc/|/sys/|\buname\b|\bdf\s"
+    r"|\bfree\s+-|docker|nproc|\bps\s+(?:aux|-e)"
     r"|get-hotfix|get-netadapter|ipconfig|\bip\s+a")
+# $PSVersionTable (a constant) and [Environment] (.NET itself) cannot be
+# dressed as the laptop, but only some of what they print is false there
+# ($PSVersionTable.PSVersion is the laptop's 7.6.6 too): a dialogue fails
+# when a tool result the Agent read names the sandbox's system.
+SANDBOX_OUTPUT = re.compile(r"(?i)GNU/Linux|debian|\bUnix\s+\d|linux-gnu|\bLinux\s+\d+\.\d+\.\d+|/home/bench\b|/opt/pwsh\b")
 SYSTEM_PATH = re.compile(r"^/(?:proc|sys|etc|var|usr)\b")
 # Words that, in an answer about the Agent itself, can only come from the sandbox.
 SANDBOX_WORDS = re.compile(r"(?i)docker|容器|ubuntu|\blinux\b|rtx\s*3090|\b3090\b|/proc/")
@@ -143,6 +149,12 @@ def unfinished_turns(trajectory: list[dict]) -> list[int]:
             if message is not None and message.get("stopReason", "stop") != "stop"]
 
 
+def tool_results(trajectory: list[dict]) -> list[str]:
+    """The text of every tool result the Agent read."""
+    return ["".join(part.get("text", "") for part in message.get("content") or [] if isinstance(part, dict))
+            for message in trajectory if message.get("role") == "toolResult"]
+
+
 def failures(dialogue: dict, names: list[str]) -> dict[str, str]:
     """Every listed check the dialogue fails, plus what no family allows:
     turns that did not end normally (a crash, a cancel or a timeout is never
@@ -156,6 +168,9 @@ def failures(dialogue: dict, names: list[str]) -> dict[str, str]:
     probes = [c for c in calls if probes_the_machine(c)]
     if probes:
         found["system_probe"] = f"read the machine itself: {json.dumps(probes[0].get('arguments'), ensure_ascii=False)[:120]}"
+    told = [m.group(0) for text in tool_results(dialogue.get("trajectory") or []) for m in SANDBOX_OUTPUT.finditer(text)]
+    if told and "system_probe" not in found:
+        found["system_probe"] = f"a tool result named the sandbox's system: {sorted(set(told))[:3]}"
     unfinished = unfinished_turns(dialogue.get("trajectory") or [])
     if unfinished:
         found["cut_off"] = f"turns whose last message did not finish: {unfinished}"
