@@ -81,6 +81,23 @@ def test_real_sdk_samples_as_the_adapter_says_for_the_mode(tmp_path, repeating_m
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_lets_the_agent_write_without_a_cap_but_stops_a_loop(tmp_path, repeating_model):  # noqa: F811
+    """No output cap goes to the server for the Agent; a stream stuck on one
+    unit ends the turn with a stop the user reads."""
+    port, state = repeating_model
+    state["answer"] = True
+    state["text"] = "$exts=@(" + "'ts'," * 2000
+    chat = NativeChat(model_port=port)
+    try:
+        events = list(chat.stream_reply("t", "整理下載資料夾", agent=True, working_dir=tmp_path,
+                                        permissions={"edit": "ask", "shell": "ask", "web": "deny"}))
+    finally:
+        chat.close()
+    assert state["requests"] and not any("max_tokens" in r or "max_completion_tokens" in r for r in state["requests"])
+    assert any(name == "status" and "一直重複同一段" in data.get("message", "") for name, data in events), events[-3:]
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
 def test_real_sdk_tells_the_model_todays_date(tmp_path, repeating_model):  # noqa: F811
     """The host states the date and time zone, so the model never assumes one
     from its training data."""
