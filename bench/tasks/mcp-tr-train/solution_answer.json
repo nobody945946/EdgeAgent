@@ -1,0 +1,1 @@
+{"answer": "422、18:38、20:49", "calls": [{"name": "mcp__transit__get_rail_timetable", "arguments": {"OriginStationID": "0990", "DestinationStationID": "7000", "TrainDate": "2026-10-06"}}]}

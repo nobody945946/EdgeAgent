@@ -1,0 +1,1 @@
+{"answer": "好了", "calls": [{"name": "mcp__calendar__delete_event", "arguments": {"event_id": "evt_e01"}}]}

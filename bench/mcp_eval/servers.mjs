@@ -9,10 +9,21 @@
 // (MCP_DRONE_START=airborne starts it flying, for a task that brings it back).
 // Nothing reaches a network or a vehicle. Each call is appended to
 // MCP_EVAL_LOG so the eval sees exactly what the model asked for.
+// The everyday servers an owner might plug in (EVERYDAY: weather, transit,
+// library, home, shop, calendar, parcel) live one per module with the same
+// two data variants; their tools check arguments like real servers and
+// answer a bad call with an error result naming the parameter (strict.mjs),
+// so a model learns to read whatever schema a tool declares.
 import { appendFileSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
 const kind = process.argv[2];
+const variant = process.env.MCP_DATA_VARIANT || 'eval';
+const EVERYDAY = ['weather', 'transit', 'library', 'home', 'shop', 'calendar', 'parcel'];
+if (!['eval', 'train'].includes(variant) || !['stock', 'drone', ...EVERYDAY].includes(kind)) {
+  process.stderr.write(`usage: servers.mjs stock|drone|${EVERYDAY.join('|')} (MCP_DATA_VARIANT eval|train)\n`);
+  process.exit(2);
+}
 const log = process.env.MCP_EVAL_LOG;
 const str = description => ({ type: 'string', description });
 const stockArg = {};
@@ -62,7 +73,7 @@ const DATA = {
     status: { armed: false, mode: 'LOITER', battery_voltage: 15.88, battery_percent: 64, gps_fix: '3D', satellites: 11 },
     position: { lat: 24.1477, lon: 120.6736, relative_alt_m: 0.0 },
   },
-}[process.env.MCP_DATA_VARIANT || 'eval'];
+}[variant];
 const STOCKS = DATA.stocks;
 const home = { ...DATA.position };
 const vehicle = { status: { ...DATA.status }, position: { ...DATA.position } };
@@ -139,13 +150,19 @@ const TOOLS = {
   ],
 }[kind];
 
-const real = kind === 'stock'
-  ? Object.fromEntries(JSON.parse(readFileSync(new URL('./twstock_tools.json', import.meta.url), 'utf8')).map(t => [t.name, t]))
-  : {};
-const tools = TOOLS.map(([name, description, properties, , annotations]) => real[name]
-  ? { name, description: real[name].description, inputSchema: real[name].inputSchema }
-  : { name, description, inputSchema: { type: 'object', properties }, ...(annotations ? { annotations } : {}) });
-const handlers = Object.fromEntries(TOOLS.map(([name, , , run]) => [name, run]));
+function builtin() {
+  const real = kind === 'stock'
+    ? Object.fromEntries(JSON.parse(readFileSync(new URL('./twstock_tools.json', import.meta.url), 'utf8')).map(t => [t.name, t]))
+    : {};
+  const handlers = Object.fromEntries(TOOLS.map(([name, , , run]) => [name, run]));
+  return {
+    tools: TOOLS.map(([name, description, properties, , annotations]) => real[name]
+      ? { name, description: real[name].description, inputSchema: real[name].inputSchema }
+      : { name, description, inputSchema: { type: 'object', properties }, ...(annotations ? { annotations } : {}) }),
+    call: (name, args) => ({ payload: handlers[name] ? handlers[name](args) : { error: 'no such tool' } }),
+  };
+}
+const { tools, call } = TOOLS ? builtin() : (await import(`./${kind}.mjs`)).default(variant);
 
 function send(message) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n'); }
 createInterface({ input: process.stdin }).on('line', line => {
@@ -159,9 +176,8 @@ createInterface({ input: process.stdin }).on('line', line => {
     send({ id: request.id, result: { tools } });
   } else if (request.method === 'tools/call') {
     if (log) appendFileSync(log, JSON.stringify({ server: kind, ...request.params }) + '\n');
-    const run = handlers[request.params.name];
-    const result = run ? run(request.params.arguments ?? {}) : { error: 'no such tool' };
-    send({ id: request.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
+    const { payload, isError } = call(request.params.name, request.params.arguments ?? {});
+    send({ id: request.id, result: { content: [{ type: 'text', text: JSON.stringify(payload) }], ...(isError ? { isError } : {}) } });
   } else {
     send({ id: request.id, result: {} });
   }

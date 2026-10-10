@@ -1,0 +1,63 @@
+{
+ "kind": "mcp",
+ "prompt": "2026 年 10 月 6 日下午我有什麼行程？幾點開始？",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "permissions": {
+  "edit": "deny",
+  "shell": "deny",
+  "web": "deny"
+ },
+ "mcp_servers": {
+  "library": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "library"
+   ],
+   "permission": "allow",
+   "read_only_tools": [
+    "search_catalog",
+    "get_holdings",
+    "list_loans"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "市立圖書館：館藏查詢、我的借閱、續借、預約"
+  },
+  "calendar": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "calendar"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "行事曆：查行程、找空檔、新增和刪除行程"
+  },
+  "transit": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "transit"
+   ],
+   "permission": "allow",
+   "read_only_tools": [
+    "find_rail_station",
+    "get_rail_timetable",
+    "get_train_delay",
+    "get_bus_arrival"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "交通：臺鐵時刻表與誤點、公車到站時間"
+  }
+ }
+}

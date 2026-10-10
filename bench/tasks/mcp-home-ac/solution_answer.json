@@ -1,0 +1,1 @@
+{"answer": "好了", "calls": [{"name": "mcp__home__set_climate", "arguments": {"entity_id": "climate.study_ac", "hvac_mode": "cool", "temperature": 26}}]}

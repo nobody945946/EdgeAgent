@@ -1,0 +1,89 @@
+{
+ "kind": "mcp",
+ "prompt": "花蓮瑞穗咖啡豆在台中倉和高雄倉各還有幾包？",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "permissions": {
+  "edit": "deny",
+  "shell": "deny",
+  "web": "deny"
+ },
+ "mcp_servers": {
+  "stock": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "stock"
+   ],
+   "permission": "allow",
+   "tools": [
+    "get_stock_daily_trading",
+    "get_stock_history",
+    "get_twse_institutional_investors_summary",
+    "get_twse_institutional_investors_by_stock",
+    "get_company_monthly_revenue",
+    "get_company_dividend",
+    "get_company_income_statement",
+    "get_company_balance_sheet",
+    "get_company_cash_flow_statement",
+    "get_taiex_index_history",
+    "get_exchange_rates"
+   ],
+   "read_only_tools": [
+    "get_stock_daily_trading",
+    "get_stock_history",
+    "get_twse_institutional_investors_summary",
+    "get_twse_institutional_investors_by_stock",
+    "get_company_monthly_revenue",
+    "get_company_dividend",
+    "get_company_income_statement",
+    "get_company_balance_sheet",
+    "get_company_cash_flow_statement",
+    "get_taiex_index_history",
+    "get_exchange_rates"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "台股資料：股價、三大法人買賣超、月營收、股利、財報、加權指數、匯率"
+  },
+  "shop": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "shop"
+   ],
+   "permission": "ask",
+   "read_only_tools": [
+    "search_products",
+    "get_stock",
+    "list_orders",
+    "get_order"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "網路商店後台：商品、庫存、訂單、出貨"
+  },
+  "library": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "library"
+   ],
+   "permission": "allow",
+   "read_only_tools": [
+    "search_catalog",
+    "get_holdings",
+    "list_loans"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "市立圖書館：館藏查詢、我的借閱、續借、預約"
+  }
+ }
+}

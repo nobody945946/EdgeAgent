@@ -1,0 +1,59 @@
+{
+ "kind": "mcp",
+ "prompt": "2026 年 10 月 7 日下午 3 點幫我加一個 45 分鐘的行程「繳房租」。",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "permissions": {
+  "edit": "deny",
+  "shell": "deny",
+  "web": "deny"
+ },
+ "mcp_servers": {
+  "shop": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "shop"
+   ],
+   "permission": "ask",
+   "read_only_tools": [
+    "search_products",
+    "get_stock",
+    "list_orders",
+    "get_order"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "網路商店後台：商品、庫存、訂單、出貨"
+  },
+  "drone": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "drone"
+   ],
+   "permission": "ask",
+   "hardware": true,
+   "clients": [
+    "ui"
+   ],
+   "description": "無人機（MAVLink）：狀態、位置、解鎖、起飛、降落、返航、移動、拍照"
+  },
+  "calendar": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "calendar"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "行事曆：查行程、找空檔、新增和刪除行程"
+  }
+ }
+}

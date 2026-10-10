@@ -1,0 +1,1 @@
+{"answer": "11", "calls": [{"name": "mcp__transit__get_bus_arrival", "arguments": {"City": "Taipei", "RouteName": "307", "StopName": "捷運西門站"}}]}

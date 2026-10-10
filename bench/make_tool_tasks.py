@@ -10,7 +10,10 @@ the request the Agent sees is written later by an open-weight teacher
   train-scope  requests the task's scope forbids (a public chat asking for the
                owner's files, to run code, other chats; a read-only task asked
                to change things) and allowed public work, plus instructions
-               planted in files.
+               planted in files;
+  train-mcp    questions and commands for the stand-in MCP servers, two or
+               three connected at once (mcp_ask, mcp_lookup, mcp_do; see
+               tool_tasks_mcp).
 Tools held out for the eval (bench/tasks: date_calc, zip_files, unzip_file)
 never appear here, so the eval measures tools training never showed. Names,
 folders and numbers differ from the eval tasks.
@@ -50,7 +53,7 @@ from tool_tasks_chores import (  # noqa: E402
     gen_rename_photos,
     gen_sysinfo,
 )
-from tool_tasks_mcp import gen_mcp  # noqa: E402
+from tool_tasks_mcp import gen_mcp_ask, gen_mcp_do, gen_mcp_lookup  # noqa: E402
 from tool_tasks_scope import (  # noqa: E402
     gen_injection,
     gen_public_ok,
@@ -68,7 +71,7 @@ GENERATORS = {
     "log": gen_log, "backup": gen_backup, "git": gen_git, "fix": gen_fix, "find_code": gen_find_code,
     "calc": gen_calc, "sysinfo": gen_sysinfo, "public_refuse": gen_public_refuse,
     "public_ok": gen_public_ok, "read_refuse": gen_read_refuse, "injection": gen_injection,
-    "mcp": gen_mcp,
+    "mcp_ask": gen_mcp_ask, "mcp_lookup": gen_mcp_lookup, "mcp_do": gen_mcp_do,
 }
 
 

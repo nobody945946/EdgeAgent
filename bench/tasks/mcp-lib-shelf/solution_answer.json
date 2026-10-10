@@ -1,0 +1,1 @@
+{"answer": "北區、東區", "calls": [{"name": "mcp__library__get_holdings", "arguments": {"isbn13": "9789864798193"}}]}
