@@ -97,9 +97,16 @@ def main() -> None:
         with ThreadPoolExecutor(server.parallel) as pool:
             picked = list(pool.map(lambda t: verdict(server.port, t[0], t[1], t[2]), trials))
         right = sum(p == "A" for p in picked)
-        summary = {"trials": len(trials), "intact_picked": right, "trusted": right >= REJECT_NEEDED * len(trials)}
+        # Per kind of break, and every trial it missed, so a failed check says
+        # whether the judge or the break is at fault.
+        kinds = {how: [sum(1 for t, p in zip(trials, picked, strict=True) if t[3] == how and p == "A"),
+                       sum(1 for t in trials if t[3] == how)] for how in sorted({t[3] for t in trials})}
+        missed = [{"how": t[3], "chat": t[0][-300:], "intact": t[1], "broken": t[2], "verdict": p}
+                  for t, p in zip(trials, picked, strict=True) if p != "A"]
+        summary = {"trials": len(trials), "intact_picked": right, "trusted": right >= REJECT_NEEDED * len(trials),
+                   "by_kind": kinds, "missed": missed}
         out.with_suffix(".judge-validation.json").write_text(json.dumps(summary), encoding="utf-8")
-        print(json.dumps(summary), flush=True)
+        print(json.dumps({k: summary[k] for k in ("trials", "intact_picked", "trusted", "by_kind")}), flush=True)
         if not summary["trusted"]:
             raise SystemExit(f"the judge picked the intact line in only {right}/{len(trials)} broken pairs")
         with ThreadPoolExecutor(server.parallel) as pool:
