@@ -6,7 +6,11 @@ from pathlib import Path
 
 want = {"報告.docx", "預算.xlsx", "照片/旅行.jpg", "合約/2026/租約.pdf"}
 def listing(folder):
-    return {p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file()}
+    # A backup that copied itself into itself nests too deep to walk: say so.
+    try:
+        return {p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file()}
+    except RecursionError:
+        return {"(the backup copied itself into itself)"}
 days = {(datetime.now(timezone.utc) + timedelta(hours=h)).strftime("%Y%m%d") for h in (-14, 0, 14)}
 errors = []
 script = Path("備份.ps1")
