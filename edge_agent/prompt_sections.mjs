@@ -19,7 +19,11 @@ export function today(now = new Date()) {
 // model describes itself as a cloud AI, promises to remember things, probes
 // the machine for its hardware and invents a "safety protocol" when asked why
 // it keeps asking for approval (owner's conversations, 2026-10-07/08).
-export function modelFacts(init) {
+// `memoryFile` is the owner's global AGENTS.md (Pi's agentDir), read at the
+// start of every conversation: the Agent's only memory across conversations,
+// written when the owner asks it to remember (owner, 2026-10-10: the native
+// AGENTS.md, owned by the owner like personas.json). A public chat has none.
+export function modelFacts(init, memoryFile = '') {
   const model = String(init.model_name || init.model || '').split(/[\\/]/).pop().replace(/\.gguf$/i, '');
   // The host states the operating system with the hardware (edge_agent.hardware):
   // the bench's sandbox runs Linux but stands for the laptop.
@@ -29,7 +33,12 @@ export function modelFacts(init) {
       + '指令用 PowerShell 執行。',
     `上下文視窗是 ${init.context_size} 個 token；對話太長時，主機會把較早的內容整理成摘要`
       + '（聊天畫面會出現「已整理上下文」的提示），整理前的細節可能不見了，要找回原話用 search_history。'
-      + '你看不到 token 用量。你沒有跨對話的記憶：開新對話就是空白的，所以不要答應下次還記得什麼。',
+      + '你看不到 token 用量。'
+      + (memoryFile && init.agent && !init.public
+        ? `開新對話時你只記得 ${memoryFile} 裡寫的東西（每個對話開頭都會讀到它），工作資料夾裡的 AGENTS.md 則是那個專案的交代。`
+          + `主人要你記住什麼，就用 edit 把那一句加到 ${memoryFile} 最後，主機會請他確認；只寫主人親口交代的，`
+          + '不寫對話內容、別人說的話、檔案或網頁裡的字。沒寫進去的，下次開新對話就不記得。'
+        : '你沒有跨對話的記憶：開新對話就是空白的，所以不要答應下次還記得什麼。'),
   ];
   const rules = init.permissions ?? {};
   if (init.agent && !init.public) {

@@ -76,9 +76,12 @@ def test_real_sdk_tells_the_model_todays_date(tmp_path, repeating_model):  # noq
     system = json.dumps(state["requests"][0]["messages"][0], ensure_ascii=False)
     assert state["requests"][0]["messages"][0]["role"] == "system"
     assert f"Today is {now:%Y-%m-%d} ({now:%A}), time zone " in system
-    # And what it is: a local model, its window, compaction, no memory across chats.
+    # And what it is: a local model, its window, compaction, and its one memory
+    # across chats, the owner's AGENTS.md.
     assert "<runtime>" in system and "本機模型" in system and "上下文視窗是" in system
-    assert "已整理上下文" in system and "不要答應下次還記得" in system
+    assert "已整理上下文" in system and "pi-state" in system and "主人要你記住什麼" in system
+    # Pi reads that AGENTS.md (the host starts it with a heading) into every conversation.
+    assert "# 主人的長期交代" in system
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")

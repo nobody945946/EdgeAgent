@@ -1,6 +1,6 @@
 // Pi owns agent execution, tools, compaction and recovery. This host only
 // supplies the local model, RAM storage and the application's approval policy.
-import { realpathSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { realpathSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { devNull, tmpdir } from 'node:os';
 import { dirname, resolve, relative, isAbsolute, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -46,6 +46,14 @@ const init = await new Promise((accept, reject) => {
 
 const root = realpathSync(init.cwd);
 const agentDir = fileURLToPath(new URL('../.runtime/pi-state', import.meta.url));
+// The owner's global AGENTS.md: Pi reads it into every conversation; the Agent
+// adds what the owner asks it to remember (prompt_sections.modelFacts). It
+// starts with a heading so the Agent's edit has a line to add after.
+const memoryFile = join(agentDir, 'AGENTS.md');
+if (init.agent && !init.public && !existsSync(memoryFile)) {
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(memoryFile, '# 主人的長期交代\n', 'utf8');
+}
 // Pi's exported ModelRuntime supports a CredentialStore. No provider secrets
 // or sessions are written by this host.
 const { AuthStorage } = await import(new URL('core/auth-storage.js', packageURL));
@@ -238,7 +246,7 @@ function policy(pi) {
     // The model cannot know the date and otherwise assumes one from its
     // training data. The date alone (no clock time) keeps the prompt prefix,
     // and llama.cpp's cache, unchanged until the day turns.
-    event.systemPromptOptions.sections = { ...event.systemPromptOptions.sections, today: today(), runtime: modelFacts(init) };
+    event.systemPromptOptions.sections = { ...event.systemPromptOptions.sections, today: today(), runtime: modelFacts(init, memoryFile) };
   });
   pi.on('before_provider_request', (event, ctx) => {
     const payload = { ...event.payload, cache_prompt: true, ...(init.agent ? { temperature: 0.2 } : {}) };

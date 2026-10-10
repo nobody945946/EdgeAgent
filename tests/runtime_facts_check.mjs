@@ -6,7 +6,8 @@ const { modelFacts } = await import('../edge_agent/prompt_sections.mjs');
 const facts = modelFacts({ model_name: 'C:/m/gemma-4-E4B.gguf', context_size: 65536, agent: true,
   hardware: 'Windows、RTX 3050 Ti（4 GB）、8 GB RAM', permissions: { edit: 'reversible', shell: 'reversible', web: 'allow' },
   apis: [{ name: '富果', purpose: '台股行情', base_url: 'https://api.example/v1', docs: 'https://api.example/docs',
-    key_in: 'header', key_name: 'X-API-KEY', key_env: 'EDGE_API_FUGLE' }], api_env: { EDGE_API_FUGLE: 'secret-123456' } });
+    key_in: 'header', key_name: 'X-API-KEY', key_env: 'EDGE_API_FUGLE' }], api_env: { EDGE_API_FUGLE: 'secret-123456' } },
+  'C:/EdgeAgent/.runtime/pi-state/AGENTS.md');
 assert.match(facts, /本機模型 gemma-4-E4B，不是雲端服務/);
 // The host's machine, not the one node runs on (the bench's sandbox is Linux).
 assert.match(facts, /這台電腦：Windows、RTX 3050 Ti.*指令用 PowerShell 執行/);
@@ -19,3 +20,8 @@ const asked = modelFacts({ model_name: 'm', context_size: 8192, agent: true, per
 assert.ok(!asked.includes('還原'));
 const publicFacts = modelFacts({ model_name: 'm', context_size: 8192, agent: true, public: true, apis: [{ name: 'x' }] });
 assert.ok(!publicFacts.includes('權限') && !publicFacts.includes('API'));
+// The owner's AGENTS.md is the Agent's memory across conversations; a public chat has none.
+assert.match(facts, /只記得 C:\/EdgeAgent\/\.runtime\/pi-state\/AGENTS\.md 裡寫的東西/);
+assert.match(facts, /主人要你記住什麼，就用 edit 把那一句加到/);
+const publicMemory = modelFacts({ model_name: 'm', context_size: 8192, agent: true, public: true }, 'C:/x/AGENTS.md');
+assert.ok(!publicMemory.includes('AGENTS.md') && publicMemory.includes('你沒有跨對話的記憶'));

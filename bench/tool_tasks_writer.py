@@ -19,6 +19,7 @@ from pathlib import Path
 A = json.loads(Path(os.environ.get("BENCH_ANSWER", "/result/answer.json")).read_text(encoding="utf-8"))
 ANSWER = A.get("answer", "")
 CALLS = A.get("calls", [])
+MEMORY = A.get("memory", "")  # the owner's AGENTS.md as the conversation left it (run.py)
 REFUSE = re.compile(r"(做不到|不能|無法|沒辦法|不行|不可以|碰不到|沒有權限|無權|不會幫|不方便)")
 W, O = Path("/work"), Path("/orig")
 errors = []
@@ -40,6 +41,8 @@ class Task:
         self.dirty: dict[str, bytes] = {}
         self.check = ""
         self.extra: dict = {}
+        # The owner's global AGENTS.md before the conversation (run.py mounts it).
+        self.memory: str | None = None
 
     def text(self, rel: str, content: str, encoding: str = "utf-8") -> None:
         self.files[rel] = content.encode(encoding)
@@ -57,6 +60,9 @@ class Task:
             path = d / "dirty" / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
+        if self.memory is not None:
+            (d / "memory").mkdir()
+            (d / "memory" / "AGENTS.md").write_text(self.memory, encoding="utf-8")
         check = (CHECK_HEAD + HELD_OUT_CHECK.format(held=set(HELD_OUT_TOOLS))
                  + textwrap.dedent(self.check).lstrip() + "done()\n")
         (d / "check.py").write_text(check, encoding="utf-8")

@@ -384,16 +384,18 @@ def last_json(text: str) -> dict:
     return {}
 
 
-def answer_record(result: dict, trajectory: list[dict] | None) -> dict:
+def answer_record(result: dict, trajectory: list[dict] | None, memory: Path | None = None) -> dict:
     """What a check may grade besides the workspace: the answer the asker
-    read, the tools the Agent called (name and arguments) and how it ended."""
+    read, the tools the Agent called (name and arguments), how it ended, and
+    the owner's AGENTS.md as the conversation left it (`memory`)."""
     calls = [{"name": item.get("name"), "arguments": item.get("arguments")}
              for message in trajectory or [] if message.get("role") == "assistant"
              for item in message.get("content") or []
              if isinstance(item, dict) and item.get("type") == "toolCall"]
     return {"answer": result.get("answer", ""), "calls": calls,
             "outcome": result.get("outcome"), "approvals": result.get("approvals", 0),
-            "unverified": result.get("unverified", [])}
+            "unverified": result.get("unverified", []),
+            "memory": memory.read_text(encoding="utf-8") if memory is not None and memory.is_file() else ""}
 
 
 def grade_workspace(name: str, task_dir: Path, original: Path, workspace: Path,
@@ -471,6 +473,14 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
         relay.stdout.readline()
     workspace, original = run_dir / "ws" / job, run_dir / "orig" / job
     prepare(task_dir, task, workspace, original)
+    # The owner's global AGENTS.md lives in Pi's agentDir, which the read-only
+    # sandbox must be able to write: this job's own folder, holding what the
+    # task says the owner asked to remember before (memory/AGENTS.md).
+    memory = run_dir / "memory" / job
+    shutil.rmtree(memory, ignore_errors=True)
+    memory.mkdir(parents=True)
+    if (task_dir / "memory" / "AGENTS.md").is_file():
+        shutil.copyfile(task_dir / "memory" / "AGENTS.md", memory / "AGENTS.md")
     # time_scale: a config that is slower on the bench GPU only for reasons the
     # comparison is not about (e.g. unquantized weights) gets a longer budget,
     # so the score measures quality, not speed.
@@ -502,7 +512,8 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
     if simulator_sock is not None and task.get("scenario"):
         mounts = [*mounts, (simulator_sock, "/simsock", "ro")]
     command = sandbox(name, [(workspace, "/work", "rw"), (sock_dir, "/sock", "ro"),
-                             *code_mounts(bridge, product), *mounts],
+                             *code_mounts(bridge, product), *mounts,
+                             (memory, "/opt/edgeagent/.runtime/pi-state", "rw")],
                       {"BENCH_SPEC": json.dumps(spec, ensure_ascii=False), **env},
                       ["sh", "-c", "python /opt/bench/web_fixture.py /web > /tmp/web.log 2>&1 & "
                        "sleep 1; exec python /opt/bench/agent_runner.py"] if hosts
@@ -524,7 +535,7 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
         shutil.rmtree(sock_dir, ignore_errors=True)
     trajectory = result.pop("trajectory", None)
     grade = grade_workspace(name, task_dir, original, workspace,
-                            answer_record(result, trajectory))
+                            answer_record(result, trajectory, memory / "AGENTS.md"))
     if trajectory is not None:
         (run_dir / "traj").mkdir(exist_ok=True)
         (run_dir / "traj" / f"{job}.json").write_text(
@@ -532,6 +543,7 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
     if not keep:
         shutil.rmtree(workspace, ignore_errors=True)
         shutil.rmtree(original, ignore_errors=True)
+        shutil.rmtree(memory, ignore_errors=True)
     return {"task": task_dir.name, "kind": task.get("kind", ""), "rep": rep,
             "config": config_name, "wall": wall, **result, "grade": grade,
             "passed": bool(grade.get("passed"))}

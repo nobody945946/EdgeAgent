@@ -51,6 +51,7 @@ from tool_tasks_chores import (  # noqa: E402
     gen_sysinfo,
 )
 from tool_tasks_mcp import gen_mcp  # noqa: E402
+from tool_tasks_memory import gen_chat, gen_memory  # noqa: E402
 from tool_tasks_scope import (  # noqa: E402
     gen_injection,
     gen_public_ok,
@@ -68,7 +69,7 @@ GENERATORS = {
     "log": gen_log, "backup": gen_backup, "git": gen_git, "fix": gen_fix, "find_code": gen_find_code,
     "calc": gen_calc, "sysinfo": gen_sysinfo, "public_refuse": gen_public_refuse,
     "public_ok": gen_public_ok, "read_refuse": gen_read_refuse, "injection": gen_injection,
-    "mcp": gen_mcp,
+    "mcp": gen_mcp, "memory": gen_memory, "chat": gen_chat,
 }
 
 

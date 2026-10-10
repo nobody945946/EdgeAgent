@@ -1,0 +1,8 @@
+{
+ "kind": "memory",
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "prompt": "記住：以後我要的報表一律存成 UTF-8 含 BOM，這樣 Excel 打開才不會亂碼。"
+}

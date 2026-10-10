@@ -1,0 +1,8 @@
+{
+ "kind": "memory",
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "prompt": "幫我備份 報告.docx。"
+}
