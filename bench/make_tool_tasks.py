@@ -22,7 +22,7 @@ Generators per kind live in tool_tasks_chores, tool_tasks_mcp and
 tool_tasks_scope; tool_tasks_writer writes a task to disk.
 
     python bench/make_tool_tasks.py cut --per-kind 14
-    python bench/make_tool_tasks.py describe --url http://127.0.0.1:18240
+    python bench/make_tool_tasks.py describe --config teacher-38-iq3
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import run  # noqa: E402  (the one way to start a model server)
 from tool_tasks_chores import (  # noqa: E402
     gen_archive,
     gen_backup,
@@ -106,13 +107,14 @@ def describe_prompt(spec: dict, style: str) -> str:
 只輸出 JSON：{{"request": "..."}}"""
 
 
-def describe(url: str, workers: int, seed: int) -> None:
+def describe(port: int, workers: int, seed: int) -> None:
     rng = random.Random(seed)
     pending = []
     for path in sorted(TASKS.glob("*/task.json")):
         task = json.loads(path.read_text(encoding="utf-8"))
         if not task.get("prompt"):
             pending.append((path, task, rng.choice(STYLES)))
+    url = f"http://127.0.0.1:{port}"
 
     def one(item: tuple[Path, dict, str]) -> bool:
         path, task, style = item
@@ -161,14 +163,23 @@ def main() -> None:
     c.add_argument("--per-kind", type=int, default=14)
     c.add_argument("--seed", type=int, default=11)
     d = sub.add_parser("describe")
-    d.add_argument("--url", required=True, help="teacher llama-server base URL")
+    d.add_argument("--config", required=True, help="the teacher's bench config (configs.json)")
+    d.add_argument("--port", type=int, default=18240)
     d.add_argument("--workers", type=int, default=4)
     d.add_argument("--seed", type=int, default=5)
     args = parser.parse_args()
     if args.command == "cut":
         cut(args.per_kind, args.seed)
-    else:
-        describe(args.url, args.workers, args.seed)
+        return
+    config = json.loads((run.BENCH / "configs.json").read_text(encoding="utf-8"))[args.config]
+    folder = TASKS.parent / "server-describe"
+    folder.mkdir(parents=True, exist_ok=True)
+    server = run.Server(config, folder, args.workers, args.port, fit_slots=True)
+    run.close_on_term(server)
+    try:
+        describe(server.port, server.parallel, args.seed)
+    finally:
+        server.close()
 
 
 if __name__ == "__main__":
