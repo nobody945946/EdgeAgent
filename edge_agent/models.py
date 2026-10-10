@@ -31,6 +31,15 @@ def model_metadata(path: Path) -> dict[str, object]:
     return dict(_read_model_metadata(path, stat.st_size, stat.st_mtime_ns))
 
 
+# An Agent adapter's own sampling, per mode (edgeagent.sampling.off.temp,
+# edgeagent.sampling.thinking.temp), stamped on the adapter file once measured
+# (SilentTalk scripts/dev/stamp_adapter_sampling.py): two adapters trained on
+# the same rows did best at opposite temperatures (2026-10-10), so no single
+# setting fits every adapter.
+SAMPLING = "edgeagent.sampling."
+MODES = ("off", "thinking")
+
+
 @lru_cache(maxsize=128)
 def _read_model_metadata(path: Path, size: int, mtime_ns: int) -> dict[str, object]:
     """Read GGUF metadata without loading weights or tokenizer arrays into RAM."""
@@ -105,7 +114,7 @@ def _read_model_metadata(path: Path, size: int, mtime_ns: int) -> dict[str, obje
                 "tokenizer.chat_template",
                 "clip.has_vision_encoder",
                 "clip.has_audio_encoder",
-            } or key.endswith(".context_length")
+            } or key.endswith(".context_length") or key.startswith(SAMPLING)
             item = value(number("I"), keep)
             if keep:
                 metadata[key] = item
@@ -123,6 +132,8 @@ def _read_model_metadata(path: Path, size: int, mtime_ns: int) -> dict[str, obje
         "adapter": metadata.get("general.type") == "adapter"
         or "adapter.type" in metadata,
         "split": int(metadata.get("split.count", 1) or 1) > 1,
+        "sampling": {mode: round(float(metadata[f"{SAMPLING}{mode}.temp"]), 4)
+                     for mode in MODES if f"{SAMPLING}{mode}.temp" in metadata},
         # This describes template support, not a claim about agent ability.
         "tool_template": "tools" in template or "tool_calls" in template,
         "error": "",

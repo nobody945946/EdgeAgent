@@ -4,7 +4,7 @@ and how one context pool is shared by the Agent and a leased character."""
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from edge_agent.config import bounded_int, required_string
@@ -24,6 +24,8 @@ class LoadPlan:
     context_size: int
     allocation: ContextAllocation
     args: list[str]
+    # The Agent adapter's own temperature per mode, from its file (models.SAMPLING).
+    agent_sampling: dict[str, float] = field(default_factory=dict)
 
 
 def plan_load(
@@ -100,5 +102,6 @@ def plan_load(
         projector_path=projector_path,
         slots=allocation.slots,
     )
+    agent_sampling = model_metadata(agent_lora).get("sampling", {}) if agent_lora else {}
     return LoadPlan(model_path, agent_lora, character_lora, loras, context_size,
-                    allocation, args)
+                    allocation, args, agent_sampling)

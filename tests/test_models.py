@@ -15,7 +15,7 @@ from edge_agent.core import EdgeAgent
 from edge_agent.runtime import DEFAULT_MODEL
 
 
-def gguf(*, context=8192, adapter=False, split=1, architecture="qwen2"):
+def gguf(*, context=8192, adapter=False, split=1, architecture="qwen2", extra=None):
     entries = {
         "general.architecture": architecture,
         "general.name": "Fixture",
@@ -25,6 +25,7 @@ def gguf(*, context=8192, adapter=False, split=1, architecture="qwen2"):
     }
     if adapter:
         entries["general.type"] = "adapter"
+    entries.update(extra or {})
 
     def string(value):
         data = value.encode()
@@ -35,6 +36,8 @@ def gguf(*, context=8192, adapter=False, split=1, architecture="qwen2"):
         result += string(key)
         if isinstance(value, str):
             result += struct.pack("<I", 8) + string(value)
+        elif isinstance(value, float):
+            result += struct.pack("<If", 6, value)
         else:
             result += struct.pack("<II", 4, value)
     return result
@@ -293,3 +296,13 @@ def test_parallel_model_jobs_are_rejected(core):
             manager.start_model_job("switch", {"model": "replacement.gguf"})
     finally:
         manager.jobs.lock.release()
+
+
+def test_an_adapter_carries_its_own_sampling_per_mode(tmp_path):
+    stamped = tmp_path / "agent.gguf"
+    stamped.write_bytes(gguf(adapter=True, extra={"edgeagent.sampling.off.temp": 0.2,
+                                                  "edgeagent.sampling.thinking.temp": 1.0}))
+    plain = tmp_path / "plain.gguf"
+    plain.write_bytes(gguf(adapter=True))
+    assert models.model_metadata(stamped)["sampling"] == {"off": 0.2, "thinking": 1.0}
+    assert models.model_metadata(plain)["sampling"] == {}

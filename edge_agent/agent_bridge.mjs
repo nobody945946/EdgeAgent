@@ -241,14 +241,19 @@ function policy(pi) {
     event.systemPromptOptions.sections = { ...event.systemPromptOptions.sections, today: today(), runtime: modelFacts(init) };
   });
   pi.on('before_provider_request', (event, ctx) => {
-    const payload = { ...event.payload, cache_prompt: true, ...(init.agent ? { temperature: 0.2 } : {}) };
+    // The Agent samples as measured: the adapter's own temperature for this
+    // mode when its file carries one (edge_agent.models.SAMPLING), else 0.2,
+    // where the base model did best both ways (2026-10-10, 126 runs each: off
+    // 64 against 57 at the model file's 1.0, thinking 86-89 against 77).
+    const thinking = event.payload.reasoning_effort !== 'none';
+    const temperature = init.sampling?.[thinking ? 'thinking' : 'off'] ?? 0.2;
+    const payload = { ...event.payload, cache_prompt: true, ...(init.agent ? { temperature } : {}) };
     if (Number.isInteger(init.slot_id)) payload.id_slot = init.slot_id;
     // Name only the Agent's adapter: the server applies none it is not told to.
     if (Number.isInteger(init.lora_id)) payload.lora = [{ id: init.lora_id, scale: 1.0 }];
     // Gemma's chat template consumes enable_thinking directly. Keep it aligned
     // with Pi's effort so an off turn never opens a hidden reasoning channel.
-    payload.chat_template_kwargs = { ...payload.chat_template_kwargs,
-      enable_thinking: payload.reasoning_effort !== 'none' };
+    payload.chat_template_kwargs = { ...payload.chat_template_kwargs, enable_thinking: thinking };
     payload.messages = payload.messages.map(message => ({ ...message,
       content: Array.isArray(message.content) ? message.content.map(item => {
         const match = item.type === 'image_url' && item.image_url.url.match(/^data:audio\/(wav|mpeg|flac);base64,(.+)$/s);

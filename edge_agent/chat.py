@@ -59,6 +59,7 @@ class NativeChat:
         self.api_session: tuple[list[dict[str, str]], dict[str, str]] = ([], {})
         # The index of the Agent's adapter on the server (None: no adapter).
         self.lora_id: int | None = None
+        self.sampling: dict[str, float] = {}  # the Agent adapter's temperature per mode (models.SAMPLING)
         self.hardware = ""
         self.capabilities = {"vision": False, "audio": False}
         self._sessions: dict[str, ChatSession] = {}
@@ -203,6 +204,7 @@ class NativeChat:
                 "slot_id": self.slot_id,
                 "mcp_overview": self.mcp_overview,
                 "lora_id": self.lora_id,
+                "sampling": self.sampling,
                 "capabilities": self.capabilities,
                 "context_size": self.context_size,
                 "max_output_tokens": self.max_output_tokens,

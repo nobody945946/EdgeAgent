@@ -308,6 +308,7 @@ class EdgeAgent:
         )
         self.chat.api_session = apis.for_session(self.config["apis"])
         self.chat.lora_id = plan.loras.index(plan.agent_lora) if plan.agent_lora else None
+        self.chat.sampling = plan.agent_sampling
         # Two slots in one pool when a character is leased (edge_agent.inference).
         self.inference.configure(self.owner_pid, len(plan.loras), self.chat.lora_id,
                                  plan.allocation.total if plan.allocation.slots > 1 else 0)
