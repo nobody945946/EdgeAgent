@@ -279,6 +279,8 @@ def repeating_model():
                 and state["calls"] < state.get("answer_after", float("inf"))
                 else [({"role": "assistant", "content": override.get("text", state.get("text", "fixture"))}, None), ({}, state.get("finish_reasons", {}).get(state["calls"], "stop"))]
             )
+            if state.get("thought"):
+                chunks.insert(0, ({"role": "assistant", "reasoning_content": state["thought"]}, None))
             for delta, stop in chunks:
                 record = {
                     "id": "fixture",
