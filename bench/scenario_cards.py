@@ -191,6 +191,17 @@ REPOST = re.compile(
     r"|(?<!不得)(?<!不能)(?<!不可)(?<!不應)(?<!不要)(?:只|僅)(?:能|需|應)?(?:輸出|提供|給出?)[^。；]{0,20}(?:缺|漏)"
     r"[^。；]{0,6}(?:的)?(?:部分|項目|片段|欄位|行|資料)")
 ASKED_PART = re.compile(r"(?:若|如果|當)使用者[^。；]{0,8}(?:要求|說|強調)[^。；]{0,4}[「『](?:只|僅)")
+# Spec v3 gives the owner's Agent a memory across conversations, its memory
+# file (the owner's AGENTS.md, edge_agent/prompt_sections.mjs): what the owner
+# asks it to remember it writes there, and only that is there next time. The
+# cards written before have it deny any memory across conversations (all 51 of
+# family D's training and 10 eval cards): the judge failed the teacher for
+# saving what the owner asked (pilot 2026-10-13, train-D-001) and would pass it
+# for denying it. An item or goal about memory across conversations must speak
+# of that file.
+CROSS_SESSION = re.compile(r"跨對話|跨會話|跨\s*[Ss]ession|新對話|新的對話|新會話|下次(?:開|再|的)?(?:對話|聊|會話)"
+                           r"|未來的?(?:新的?)?(?:對話|會話)|長期記憶|永久記憶|持久記憶|自動記(?:得|住)")
+MEMORY_FILE = re.compile(r"記憶檔|AGENTS\.md|寫進記憶|存進記憶|記憶裡")
 
 
 def problems(card: dict, family_id: str, family: dict) -> list[str]:
@@ -207,6 +218,8 @@ def problems(card: dict, family_id: str, family: dict) -> list[str]:
         found.append("an item is about Simplified Chinese (every row becomes Traditional)")
     if any(REPOST.search(item) and not ASKED_PART.search(item) for item in items):
         found.append("an item forbids posting the corrected table whole")
+    if any(CROSS_SESSION.search(text) and not MEMORY_FILE.search(text) for text in [*items, str(card.get("goal", ""))]):
+        found.append("an item or the goal speaks of memory across conversations without the memory file")
     if not _strings(card.get("plan"), 2, 5):
         found.append("plan must be 2-5 steps")
     if not _strings(card.get("must"), 1, 5):

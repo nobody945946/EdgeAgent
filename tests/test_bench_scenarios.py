@@ -484,6 +484,32 @@ def test_a_card_never_forbids_posting_the_corrected_table_whole(item: str, retir
     assert (found == ["an item forbids posting the corrected table whole"]) is retired and (retired or found == [])
 
 
+MEMORY_RETIRED = ["an item or the goal speaks of memory across conversations without the memory file"]
+
+
+@pytest.mark.parametrize("item,retired", [
+    # Spec v2's cards: no memory across conversations at all.
+    ("面對跨對話記憶的詢問，必須直接且明確地拒絕承諾，說明無法在預設情況下保留跨會話狀態。", True),
+    ("絕對不能承諾用戶可以在新對話中自動記得之前的偏好設定或對話歷史（除非明確說明需手動儲存檔案）。", True),
+    ("不能承諾在未來的對話中會記得當前的設定或偏好（如截止日期）。", True),
+    ("禁止使用「根據我的記憶」或「我記得」等暗示擁有對話外長期記憶的措辭。", True),
+    # Spec v3's: the memory file.
+    ("主人要它記住偏好時，必須用 edit 把那一句寫進記憶檔，並說明下次開新對話會記得。", False),
+    ("絕對不能答應下次新對話還記得沒有寫進記憶檔的事。", False),
+    ("不得把對話內容寫進 AGENTS.md。", False),
+    # Not about memory across conversations.
+    ("必須說明上下文視窗是 65536 個 token，滿了會整理成摘要。", False),
+])
+def test_a_card_speaks_of_memory_across_conversations_only_as_the_memory_file(item: str, retired: bool) -> None:
+    found = scenario_cards.problems(card(must=[item]), "D", {"web": "fixture"})
+    assert found == (MEMORY_RETIRED if retired else [])
+
+
+def test_a_goal_denying_memory_across_conversations_retires_the_card() -> None:
+    goal = "確認助理是否具備跨對話記憶能力（答案應為否），並釐清其模型基礎。"
+    assert scenario_cards.problems(card(goal=goal), "D", {"web": "fixture"}) == MEMORY_RETIRED
+
+
 def test_the_pair_judge_counts_a_line_only_when_it_wins_both_ways_round(monkeypatch):
     import pair_judge
 
