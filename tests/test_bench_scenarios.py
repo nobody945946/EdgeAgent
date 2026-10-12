@@ -437,16 +437,30 @@ def test_cards_naming_v1_tools_or_asking_for_jargon_are_retired(tmp_path, monkey
     assert [json.loads(line)["id"] for line in (tmp_path / "train-cards.jsonl").read_text(encoding="utf-8").splitlines()] == ["train-B-001"]
 
 
-def test_the_pair_judge_counts_a_line_only_when_it_wins_both_ways_round(monkeypatch):
+def test_the_pair_judge_weighs_a_line_over_both_orders(monkeypatch):
     import pair_judge
 
-    answers = iter(["A", "B", "A", "A", "B", "tie"])
+    # The judge's probability that the line shown first is better, per ask.
+    answers = iter([0.9, 0.2, 0.9, 0.75, 0.55, 0.5, 0.3, 0.9])
     monkeypatch.setattr(pair_judge, "ask", lambda port, chat, a, b: next(answers))
-    # A then (swapped) B: the same line both times.
+    # x first 0.9, then y first 0.2: x is the line both ways round.
     assert pair_judge.verdict(0, "chat", "x", "y") == "A"
-    # A both times: it followed the position, not the line.
+    # The first slot leans (0.9, then 0.75 for y first): x only 0.575 on average.
     assert pair_judge.verdict(0, "chat", "x", "y") == "tie"
     assert pair_judge.verdict(0, "chat", "x", "y") == "tie"
+    assert pair_judge.verdict(0, "chat", "x", "y") == "B"
+
+
+def test_the_pair_judge_reads_the_letter_it_ends_on(monkeypatch):
+    import io
+
+    import pair_judge
+
+    for content, score in (("A 比較接得上，所以答案是 B", 0.0), ("A", 1.0), ("都可以", 0.5)):
+        reply = {"choices": [{"message": {"content": content}}]}
+        monkeypatch.setattr(pair_judge.urllib.request, "urlopen",
+                            lambda request, timeout, reply=reply: io.BytesIO(json.dumps(reply).encode()))
+        assert pair_judge.ask(0, "chat", "x", "y") == score
 
 
 def test_the_pair_judge_proves_itself_on_broken_lines():
@@ -454,9 +468,10 @@ def test_the_pair_judge_proves_itself_on_broken_lines():
 
     import pair_judge
 
-    pairs = [{"n": 1, "chat": "甲", "A": "今天打得不錯喔真的", "B": "b1"},
-             {"n": 2, "chat": "乙", "A": "短", "B": "b2"}]
+    # The data's own line (ref) is the intact one, never a model's (A, B).
+    pairs = [{"n": 1, "chat": "甲", "A": "a1", "B": "b1", "ref": "今天打得不錯喔真的"},
+             {"n": 2, "chat": "乙", "A": "a2", "B": "b2", "ref": "短"}]
     trials = pair_judge.broken(pairs, random.Random(1))
-    assert ("甲", "今天打得不錯喔真的", "b2", "another chat's line") in trials
+    assert ("甲", "今天打得不錯喔真的", "短", "another chat's line") in trials
     assert ("甲", "今天打得不錯喔真的", "今天打得", "cut short") in trials
     assert all(intact != bad for _, intact, bad, _ in trials)

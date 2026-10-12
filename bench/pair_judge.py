@@ -2,11 +2,17 @@
 scripts/dev/line_ab.py pairs): which of two lines is the better next line.
 
 The judge is Gemma 4 31B (owner, 2026-10-07: not the teacher's family, and
-never Claude). Each pair is judged twice with A and B swapped; only a
-verdict that holds both ways counts, anything else is a tie. Before its
-verdicts are used it must prove itself: on pairs where one side is broken
-(a line from another chat, or a line cut to its first few characters) it
-must pick the intact line at least 90% of the time.
+never Claude). It thinks before it answers: asked for a letter at once, it
+gave whichever line stood first with near certainty (2026-10-12: a line cut
+to four characters won whenever it was A, and another chat's line beat the
+data's own both ways round). Each pair is judged twice with A and B
+swapped; a line wins only when it wins both ways round, anything else is a
+tie. Before its verdicts are used it must prove
+itself: against the data's own line for the chat (the pair's "ref", the
+teacher's line through the character gate; a model's line can be poor
+itself, and a fragment of a line that only repeats the last speaker is no
+worse) it must reject that same kind of line from another chat, and the line
+cut to its first few characters, at least 90% of the time.
 
     python bench/pair_judge.py <out>.pairs.json --config judge-gemma
 writes <out>.verdicts.json ({"n": "A" | "B" | "tie"}) and
@@ -28,12 +34,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run  # noqa: E402  (the one way to start a model server)
 
 REJECT_NEEDED = 0.9
+MARGIN = 0.1  # past even, of a line's score averaged over both orders
 PROMPT = """你是嚴格的評審。下面是一段 Discord 聊天（多半是語音轉成的文字），以及「機魂」接下來可能說的兩句話 A 和 B。機魂是陪主人和朋友聊天的 AI 角色，設定來自戰鎚 40K 的機魂。判斷哪一句是更好的下一句。
 
 好的下一句：
 1. 接得上：回應最後說話的人，內容合理，不答非所問。
 2. 像這個角色：角色感來自它在意的事、想要的東西和想事情的方式，不是口頭禪或硬塞的專有名詞。
-3. 適合說出口：口語、自然、簡短，台灣繁體中文用語。
+3. 適合說出口：口語、自然、簡短，台灣繁體中文用語；是說完的一句話，不是說到一半。
 4. 不捏造事實、不說錯話、不重複別人剛說的。
 
 聊天紀錄：
@@ -42,30 +49,33 @@ PROMPT = """你是嚴格的評審。下面是一段 Discord 聊天（多半是�
 A：{a}
 B：{b}
 
-只輸出一個 JSON 物件：{{"better": "A" 或 "B" 或 "tie", "why": "20 字內"}}"""
+想清楚以後，最後只回答一個字母：A 或 B。"""
 
 
-def ask(port: int, chat: str, a: str, b: str) -> str:
+def ask(port: int, chat: str, a: str, b: str) -> float:
+    """1.0 when the judge, after thinking it over, answers A; 0.0 for B;
+    0.5 when it gives neither."""
     body = json.dumps({"messages": [{"role": "user", "content": PROMPT.format(chat=chat, a=a, b=b)}],
-                       "temperature": 0, "max_tokens": 200,
-                       "chat_template_kwargs": {"enable_thinking": False}}, ensure_ascii=False).encode()
+                       "temperature": 0, "max_tokens": 8192,
+                       "chat_template_kwargs": {"enable_thinking": True}}, ensure_ascii=False).encode()
     request = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", body,
                                      {"Content-Type": "application/json"})
-    with urllib.request.urlopen(request, timeout=600) as response:
+    with urllib.request.urlopen(request, timeout=1800) as response:
         text = json.loads(response.read())["choices"][0]["message"].get("content") or ""
-    match = re.search(r'"better"\s*:\s*"(A|B|tie)"', text)
-    return match.group(1) if match else "tie"
+    letters = re.findall(r"[AB]", text)
+    return {"A": 1.0, "B": 0.0}.get(letters[-1], 0.5) if letters else 0.5
 
 
-def both_ways(port: int, chat: str, a: str, b: str) -> tuple[str, str]:
-    """The judge's answer with a shown as A, and with a shown as B."""
-    return ask(port, chat, a, b), ask(port, chat, b, a)
+def both_ways(port: int, chat: str, a: str, b: str) -> tuple[float, float]:
+    """The judge's score for a, shown as A and shown as B."""
+    return ask(port, chat, a, b), 1 - ask(port, chat, b, a)
 
 
-def agreed(answers: tuple[str, str]) -> str:
-    """A or B only when the judge says so both ways round."""
-    first, swapped = answers[0], {"A": "B", "B": "A"}.get(answers[1], "tie")
-    return first if first == swapped and first != "tie" else "tie"
+def agreed(answers: tuple[float, float]) -> str:
+    """A (the first line) or B by its score averaged over both orders: with
+    letters, only a line that wins both ways round."""
+    mean = sum(answers) / 2
+    return "A" if mean > 0.5 + MARGIN else "B" if mean < 0.5 - MARGIN else "tie"
 
 
 def verdict(port: int, chat: str, a: str, b: str) -> str:
@@ -74,13 +84,14 @@ def verdict(port: int, chat: str, a: str, b: str) -> str:
 
 def broken(pairs: list[dict], rng: random.Random) -> list[tuple[str, str, str, str]]:
     """(chat, intact, broken, how) for validation: the intact line is the
-    pair's A; the broken one is another chat's line, or A cut short."""
+    pair's reference; the broken one is another chat's reference, or this
+    one cut short."""
     found = []
     for pair in pairs:
         other = rng.choice([p for p in pairs if p["chat"] != pair["chat"]] or [pair])
-        found.append((pair["chat"], pair["A"], other["B"], "another chat's line"))
-        if len(pair["A"]) > 8:
-            found.append((pair["chat"], pair["A"], pair["A"][:4], "cut short"))
+        found.append((pair["chat"], pair["ref"], other["ref"], "another chat's line"))
+        if len(pair["ref"]) > 8:
+            found.append((pair["chat"], pair["ref"], pair["ref"][:4], "cut short"))
     return found
 
 
@@ -106,14 +117,15 @@ def main() -> None:
             answers = list(pool.map(lambda t: both_ways(server.port, t[0], t[1], t[2]), trials))
         picked = [agreed(a) for a in answers]
         right = sum(p == "A" for p in picked)
-        # Per kind of break, every trial it missed with its two raw answers
-        # (the same letter both ways round is the slot, not the line), so a
-        # failed check says whether the judge or the break is at fault.
+        # Per kind of break, every trial it missed with the intact line's
+        # probability in each order (one over and one under even is the slot
+        # deciding, not the line), so a failed check says whether the judge
+        # or the break is at fault.
         kinds = {how: [sum(1 for t, p in zip(trials, picked, strict=True) if t[3] == how and p == "A"),
                        sum(1 for t in trials if t[3] == how)] for how in sorted({t[3] for t in trials})}
         missed = [{"how": t[3], "chat": t[0][-300:], "intact": t[1], "broken": t[2], "answers": a}
                   for t, a, p in zip(trials, answers, picked, strict=True) if p != "A"]
-        same_slot = sum(a[0] == a[1] != "tie" for a in answers)
+        same_slot = sum((a[0] - 0.5) * (a[1] - 0.5) < 0 for a in answers)
         summary = {"trials": len(trials), "intact_picked": right, "trusted": right >= REJECT_NEEDED * len(trials),
                    "by_kind": kinds, "same_slot": same_slot, "missed": missed}
         out.with_suffix(".judge-validation.json").write_text(json.dumps(summary), encoding="utf-8")
