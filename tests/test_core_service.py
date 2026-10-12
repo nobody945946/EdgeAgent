@@ -285,3 +285,40 @@ def test_router_keeps_parent_and_verifies_loaded_context(
     assert manager.router.process is parent
     assert manager.active_model == DEFAULT_MODEL
     assert manager.chat.model == DEFAULT_MODEL
+
+
+def test_a_model_that_died_is_loaded_again_with_its_lease(tmp_path, monkeypatch):
+    """A crashed llama-server worker leaves the router up and the model
+    unloaded and failed; the monitor loads the same mode and lease again."""
+    manager = core.EdgeAgent(tmp_path)
+    lease = {"model": "base.gguf", "lora": "", "port": 18088, "context_size": 32768}
+    manager.mode, manager.owner_pid, manager.character = "character", 123, lease
+    manager.active_model = "base.gguf"
+    monkeypatch.setattr(manager.router, "running", lambda: True)
+    monkeypatch.setattr(manager.router, "state", lambda: {"value": "unloaded", "failed": True, "exit_code": 1})
+    loads = []
+    monkeypatch.setattr(manager, "_start_child", lambda *args: loads.append(args))
+    assert manager._model_died()
+    manager._reload_after_crash()
+    assert loads == [("character", 123, lease)]
+    assert manager.error == "" and not manager.loading
+    monkeypatch.setattr(manager.router, "state", lambda: {"value": "loaded"})
+    assert not manager._model_died()
+
+
+def test_a_failed_reload_shows_and_waits_before_the_next_try(tmp_path, monkeypatch):
+    manager = core.EdgeAgent(tmp_path)
+    manager.mode, manager.active_model = "base", "base.gguf"
+    monkeypatch.setattr(manager.router, "running", lambda: False)
+
+    def refuse(*args):
+        raise RuntimeError("out of memory")
+
+    monkeypatch.setattr(manager, "_start_child", refuse)
+    assert manager._model_died()
+    manager._reload_after_crash()
+    assert "重新載入失敗" in manager.error and "out of memory" in manager.error
+    assert not manager._model_died()  # not again for 30 seconds
+    manager.active_model = ""
+    manager.recover_after = 0.0
+    assert not manager._model_died()  # nothing loaded on purpose: nothing to recover

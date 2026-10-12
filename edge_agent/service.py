@@ -34,7 +34,7 @@ def main() -> int:
     Handler.core = core
     server = ExclusiveHTTPServer(("127.0.0.1", CONTROL_PORT), Handler)
     threading.Thread(
-        target=core.monitor_owner, name="edge-agent-owner", daemon=True
+        target=core.monitor, name="edge-agent-monitor", daemon=True
     ).start()
     threading.Thread(
         target=lambda: core.switch("base"), name="edge-agent-bootstrap", daemon=True

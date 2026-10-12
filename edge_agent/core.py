@@ -48,6 +48,8 @@ class EdgeAgent:
         self.owner_pid: int | None = None
         self.owner_dead_since: float | None = None
         self.handoff_until = 0.0
+        self.character: dict[str, object] | None = None  # the lease's, to load it again
+        self.recover_after = 0.0
         self.error = ""
         self.loading = False
         self.config_path = self.core_dir / "config.json"
@@ -296,6 +298,7 @@ class EdgeAgent:
             plan.character_lora.name if plan.character_lora else ""
         )
         self.owner_pid = owner_pid if mode == "character" else None
+        self.character = character if mode == "character" else None
         self.owner_dead_since = None
         self.handoff_until = 0.0
         self.chat.configure_context(
@@ -322,9 +325,13 @@ class EdgeAgent:
         self.agent_slot = None
         self.router.stop()
 
-    def monitor_owner(self) -> None:
+    def monitor(self) -> None:
+        """Once a second: a character lease whose application died goes back
+        to base, and a model process that died on its own is loaded again."""
         while True:
             time.sleep(1)
+            if self._model_died():
+                self._reload_after_crash()
             with self.lock:
                 dead = (
                     self.mode == "character"
@@ -347,6 +354,37 @@ class EdgeAgent:
                     self.switch("base", owner_pid)
                 except (OSError, RuntimeError, ValueError):
                     time.sleep(2)
+
+    def _model_died(self) -> bool:
+        """The loaded model's process ended on its own: the router reports it
+        failed, or the router itself is gone (2026-10-12: a llama-server
+        worker that crashes leaves the router up and the model unloaded, and
+        every request is answered "model is not loaded" until it is loaded
+        again; the dev box's llama-server b11193 crashed twice so)."""
+        with self.lock:
+            if self.loading or not self.active_model or time.monotonic() < self.recover_after:
+                return False
+            if not self.router.running():
+                return True
+            try:
+                return bool(self.router.state().get("failed"))
+            except (OSError, ValueError, TypeError, RuntimeError):
+                return False
+
+    def _reload_after_crash(self) -> None:
+        """The same mode, lease and adapters as before the crash; a failed
+        reload is kept in the status and tried again 30 seconds later."""
+        with self.lock:
+            self.loading = True
+            self.error = "模型程序意外結束，重新載入中"
+            try:
+                self._start_child(self.mode, self.owner_pid, self.character)
+                self.error = ""
+            except Exception as exc:  # noqa: BLE001 - shown in the status, tried again
+                self.error = f"模型程序意外結束，重新載入失敗：{exc}"
+                self.recover_after = time.monotonic() + 30
+            finally:
+                self.loading = False
 
     def hold_handoff(self, seconds: float = 30.0) -> dict[str, object]:
         with self.lock:
