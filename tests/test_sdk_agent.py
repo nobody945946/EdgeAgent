@@ -98,6 +98,23 @@ def test_real_sdk_lets_the_agent_write_without_a_cap_but_stops_a_loop(tmp_path, 
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_stops_a_loop_in_the_agents_thinking(tmp_path, repeating_model):  # noqa: F811
+    """A thought stuck on one unit is stopped like any other output: every
+    run-away of machine-spirit-fw3n (2026-10-12: a path, a few numbers, a
+    city's name over and over to the 8192-token cap) was in its thinking."""
+    port, state = repeating_model
+    state["answer"] = True
+    state["thought"] = "Copy-Item 失敗，路徑：備份/20261010" + "/備份/20261010" * 400
+    chat = NativeChat(model_port=port)
+    try:
+        events = list(chat.stream_reply("t", "寫一個備份腳本", agent=True, working_dir=tmp_path,
+                                        permissions={"edit": "ask", "shell": "ask", "web": "deny"}))
+    finally:
+        chat.close()
+    assert any(name == "status" and "一直重複同一段" in data.get("message", "") for name, data in events), events[-3:]
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
 def test_real_sdk_tells_the_model_todays_date(tmp_path, repeating_model):  # noqa: F811
     """The host states the date and time zone, so the model never assumes one
     from its training data."""
