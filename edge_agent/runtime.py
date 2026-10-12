@@ -21,13 +21,16 @@ GENERAL_PORT = 18_089
 DEFAULT_MODEL = "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf"
 # Also shipped, for the owner to choose (writes code better, measured).
 QWEN_MODEL = "Qwen3.5-4B-Q4_K_M.gguf"
-# The adapters for DEFAULT_MODEL, one per client (a shared one diluted the
-# Agent: bench 44.2% against agent-fw1's 48.7%). The Agent's: the 27B
-# teacher's checked runs inside this framework (bench/). The machine spirit's,
-# which SilentTalk's lease names: its lines and chat-work questions. Both ship
-# in edge_agent/adapters and deploy copies them into models/.
-AGENT_ADAPTER = "agent-fw1.q8_0.gguf"
-CHARACTER_ADAPTER = "machine-spirit-char-v1.q8_0.gguf"
+# The adapter for DEFAULT_MODEL, the Agent's and the machine spirit's alike
+# (SilentTalk's lease names it too): trained on the 27B teacher's checked runs
+# inside this framework (bench/) and the character's lines and chat-work
+# questions together. One adapter lets both slots run at once, so the
+# character answers in voice while the Agent works (laptop: 0.62 s; with two
+# adapters it waited past its 30 s). It carries its own temperature per mode
+# (models.SAMPLING). It ships in edge_agent/adapters; deploy copies it into
+# models/.
+AGENT_ADAPTER = "machine-spirit-fw3n.q8_0.gguf"
+CHARACTER_ADAPTER = AGENT_ADAPTER
 # Saved prompt states kept in RAM, and checkpoints per slot (sliding-window
 # and recurrent models need them to reuse a prompt). Upstream defaults are
 # 8 GiB and 32: more than the laptop's whole RAM.

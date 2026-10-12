@@ -164,14 +164,13 @@ def test_agent_install_does_not_require_private_toy_assets(tmp_path, monkeypatch
         ),
     )
     assert deploy.install(tmp_path, "cpu")["backend"] == "cpu"
-    # Only the public base the Agent and SilentTalk share is downloaded; the
-    # Agent's and the machine spirit's adapters ship with the code and are
-    # copied next to it.
+    # Only the public base the Agent and SilentTalk share is downloaded; their
+    # adapter ships with the code and is copied next to it.
     assert downloads[0] == runtime.DEFAULT_MODEL
     assert runtime.QWEN_MODEL not in downloads
     assert not any("lora" in name.lower() or name in deploy.ADAPTERS for name in downloads)
-    for name in (runtime.AGENT_ADAPTER, runtime.CHARACTER_ADAPTER):
-        assert deploy.sha256(tmp_path / "models" / name) == deploy.ADAPTERS[name]
+    assert list(deploy.ADAPTERS) == [runtime.AGENT_ADAPTER] == [runtime.CHARACTER_ADAPTER]
+    assert deploy.sha256(tmp_path / "models" / runtime.AGENT_ADAPTER) == deploy.ADAPTERS[runtime.AGENT_ADAPTER]
 
 
 def test_a_damaged_bundled_adapter_is_copied_again(tmp_path):
