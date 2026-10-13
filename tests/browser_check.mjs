@@ -51,7 +51,7 @@ const wait = async (expression,timeout=10000) => {
     const screenshot=await cdp('Page.captureScreenshot',{format:'png'});
     await writeFile('.test-tmp/edge-agent-browser-failure.png',Buffer.from(screenshot.data,'base64'));
   }
-  console.error(await evaluate('({title:document.title,threads:document.querySelectorAll(".thread").length,dialog:document.querySelector("#folder-dialog").open,folderError:document.querySelector("#folder-error").textContent,folderRows:document.querySelectorAll(".folder-item").length,viewport:[innerWidth,innerHeight]})'));
+  console.error(await evaluate('({title:document.title,threads:document.querySelectorAll(".thread").length,dialog:document.querySelector("#folder-dialog").open,folderError:document.querySelector("#folder-error").textContent,folderRows:document.querySelectorAll(".folder-item").length,viewport:[innerWidth,innerHeight],busy,completedTurns,queuePaused,approvalButtons:document.querySelectorAll(".approval-card button:not(:disabled)").length,toolCards:document.querySelectorAll(".tool-card").length,toolErrors:document.querySelectorAll(".tool-error").length})'));
   throw Error('Browser state timed out');
 };
 const click = async selector => {

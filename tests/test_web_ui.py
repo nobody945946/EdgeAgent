@@ -6,9 +6,21 @@ from edge_agent import runtime, web
 from edge_agent.web import NATIVE_CHAT_HTML
 
 
-def test_model_help_uses_both_runtime_adapter_names():
-    assert f"<code>{runtime.AGENT_ADAPTER}</code>" in web.NATIVE_CHAT_HTML
-    assert f"<code>{runtime.CHARACTER_ADAPTER}</code>" in web.NATIVE_CHAT_HTML
+def test_model_help_describes_one_shared_runtime_adapter(monkeypatch):
+    import importlib
+
+    monkeypatch.setattr(runtime, "AGENT_ADAPTER", "shared-test-adapter.gguf")
+    try:
+        page = importlib.reload(web).NATIVE_CHAT_HTML
+        assert (
+            "附帶一個 E4B 的 adapter，Agent 和機魂共用 "
+            "<code>shared-test-adapter.gguf</code>"
+        ) in page
+        assert page.count("<code>shared-test-adapter.gguf</code>") == 1
+        assert "兩個 adapter" not in page
+    finally:
+        monkeypatch.undo()
+        importlib.reload(web)
     assert "@@AGENT_ADAPTER@@" not in web.NATIVE_CHAT_HTML
     assert "@@CHARACTER_ADAPTER@@" not in web.NATIVE_CHAT_HTML
 

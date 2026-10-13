@@ -64,13 +64,47 @@ function Ensure-Python312 {
     return $python
 }
 
+function Ensure-EdgePython312 {
+    param([string]$Root, [string]$CacheDir)
+    # The browser app uses Python's portable NuGet distribution; it needs no
+    # desktop Tcl/Tk installation and never registers a shared Python or PATH.
+    $destination = Join-Path $Root '.runtime\python'
+    $python = Join-Path $destination 'tools\python.exe'
+    if (Test-Path -LiteralPath $python) {
+        try {
+            & $python -c 'import sys,struct,ssl,venv; raise SystemExit(sys.version_info[:3] != (3,12,10) or struct.calcsize(chr(80)) != 8)' *> $null
+            if ($LASTEXITCODE -eq 0) { return $python }
+        } catch { }
+    }
+    $archive = Join-Path $CacheDir 'python-3.12.10.zip'
+    Get-VerifiedFile 'https://api.nuget.org/v3-flatcontainer/python/3.12.10/python.3.12.10.nupkg' $archive '0eb85c2dfccccf1b17352de4c397f69194035b7d37149eacc16f1147d93de3b8'
+    Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force
+    Invoke-Checked $python @('-c', 'import sys,struct,ssl,venv; assert sys.version_info[:3] == (3,12,10) and struct.calcsize(chr(80)) == 8')
+    return $python
+}
+
+function Ensure-ProjectVenv {
+    param([string]$Root, [string]$Python)
+    $directory = Join-Path $Root '.venv'
+    $venv = Join-Path $directory 'Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $venv)) {
+        Invoke-Checked $Python @('-m', 'venv', $directory)
+    } else {
+        $base = ''
+        try {
+            $base = & $venv -c 'import sys; print(sys._base_executable)' 2>$null
+            if ($LASTEXITCODE -ne 0) { $base = '' }
+        } catch { $base = '' }
+        if ([string]$base -ine [IO.Path]::GetFullPath($Python)) {
+            # Repoint the interpreter while preserving installed packages.
+            Invoke-Checked $Python @('-m', 'venv', '--upgrade', $directory)
+        }
+    }
+    return $venv
+}
+
 function Ensure-Git {
     param([string]$Root, [string]$CacheDir)
-    $existing = Get-Command git.exe -ErrorAction SilentlyContinue
-    if ($existing) {
-        Invoke-Checked $existing.Source @('--version')
-        return
-    }
     $directory = Join-Path $Root '.runtime\git'
     $executable = Join-Path $directory 'cmd\git.exe'
     if (-not (Test-Path -LiteralPath $executable)) {
@@ -87,10 +121,9 @@ function Install-EdgeAgent {
     $Root = [IO.Path]::GetFullPath($Root)
     $cache = Join-Path $Root '.runtime\downloads'
     New-Item -ItemType Directory -Force -Path $cache | Out-Null
-    $python = Ensure-Python312 $cache
+    $python = Ensure-EdgePython312 $Root $cache
     Ensure-Git $Root $cache
-    $venv = Join-Path $Root '.venv\Scripts\python.exe'
-    if (-not (Test-Path -LiteralPath $venv)) { Invoke-Checked $python @('-m', 'venv', (Join-Path $Root '.venv')) }
+    $venv = Ensure-ProjectVenv $Root $python
     $projectHash = (Get-FileHash -LiteralPath (Join-Path $Root 'pyproject.toml')).Hash
     $receipt = Join-Path $Root '.runtime\python-dependencies.sha256'
     $dependenciesReady = (Test-Path -LiteralPath $receipt) -and (Get-Content -LiteralPath $receipt -Raw).Trim() -eq $projectHash

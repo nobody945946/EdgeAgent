@@ -283,7 +283,7 @@ def test_real_sdk_only_urls_the_model_built_itself_need_approval(
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
-@pytest.mark.parametrize("shell", ["allow", "routine"])
+@pytest.mark.parametrize("shell", ["allow", "reversible"])
 @pytest.mark.parametrize("command,target,explicit", [
     ("Remove-Item data.db", "data.db", "destructive"),
     ("Get-Content settings.json", "settings.json", "protected"),
@@ -307,7 +307,7 @@ def test_real_sdk_sensitive_shell_needs_its_own_approval(
 
 
 @pytest.mark.skipif(os.name != "nt" or not installed_pi(), reason="Windows native shell and pinned Pi")
-def test_real_sdk_routine_count_runs_without_approval_but_write_still_asks(tmp_path, repeating_model):  # noqa: F811
+def test_real_sdk_reversible_count_runs_without_approval_but_write_still_asks(tmp_path, repeating_model):  # noqa: F811
     port, state = repeating_model
     for name in ("one.tmp", "two.tmp", "other.txt"):
         (tmp_path / name).write_text("fixture")
@@ -317,7 +317,7 @@ def test_real_sdk_routine_count_runs_without_approval_but_write_still_asks(tmp_p
     ]
     chat = NativeChat(model_port=port)
     try:
-        events = permission_run(chat, tmp_path, {"edit": "ask", "shell": "routine", "web": "deny"}, prompt="Count .tmp files; do not write a result file.")
+        events = permission_run(chat, tmp_path, {"edit": "ask", "shell": "reversible", "web": "deny"}, prompt="Count .tmp files; do not write a result file.")
     finally:
         chat.close()
     approvals = [data for name, data in events if name == "approval"]

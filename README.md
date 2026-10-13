@@ -6,7 +6,7 @@ EdgeAgent 是可換模型的 Windows 本機編程 Agent。開啟專案後，Agen
 
 已安裝 SilentTalk 的使用者不必另外安裝 Agent：玩家 ZIP 的啟動器會一起部署 EdgeAgent，預設位置為 `%USERPROFILE%\EdgeAgent`。玩家 ZIP 在公開的 [SilentTalk 下載頁](https://github.com/nobody945946/SilentTalk-download/releases/latest)，下載和部署都不需要 GitHub 帳號。原始碼 repository 不公開。
 
-雙擊 `開啟 EdgeAgent.cmd`。首次啟動器自動準備 Python 3.12、獨立 venv、Git、Node、Pi SDK、llama.cpp 與預設 Agent 模型，不需預裝 Python、Git、winget 或 CUDA Toolkit。需要 Windows x64；有可用 NVIDIA 驅動時選 CUDA，否則使用 CPU。下載中斷或元件缺損時重跑同一入口。`開啟 EdgeAgent.cmd --check` 部署與檢查元件，不開介面。
+雙擊 `開啟 EdgeAgent.cmd`。首次啟動器自動準備 Python 3.12、獨立 venv、Git、Node、Pi SDK、llama.cpp 與預設 Agent 模型，不需預裝 Python、Git、winget 或 CUDA Toolkit。Python 與 Git 固定放在 EdgeAgent 自己的 `.runtime`；舊 venv 會自動遷移至內附 Python，保留套件。Agent 獨立啟動，瀏覽器只負責介面，不需要先開 SilentTalk、Discord 或其他常駐程式，也不會替它們啟動或恢復自啟動。需要 Windows x64；有可用 NVIDIA 驅動時選 CUDA，否則使用 CPU。下載中斷或元件缺損時重跑同一入口。`開啟 EdgeAgent.cmd --check` 部署與檢查元件，不開介面。
 
 完成部署後，執行 `edge-agent` 或雙擊啟動器，介面位於 `http://127.0.0.1:18087/`。選專案資料夾、輸入工作，查看工具操作與修改審閱；附件、模型與工作佇列都在同一介面。
 

@@ -225,6 +225,7 @@ def test_browser_exports_conversations_and_displays_native_tool_errors(
     core_dir = tmp_path / "core"
     core_dir.mkdir()
     core = EdgeAgent(core_dir)
+    core.update_config({"permissions": {"ui": {"edit": "ask"}}})
     core.chat.close()
     core.chat = NativeChat(model_port=port)
     core.active_model = "synthetic UI fixture"

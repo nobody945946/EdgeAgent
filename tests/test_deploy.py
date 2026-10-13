@@ -207,6 +207,19 @@ def test_search_deployment_repairs_missing_and_corrupt_tools(tmp_path, monkeypat
     assert len(probes) == 4
 
 
+def test_python_and_node_commands_use_the_applications_own_runtime(tmp_path, monkeypatch):
+    python = tmp_path / ".runtime/python/tools"
+    node = tmp_path / f".runtime/node/node-v{runtime.NODE_VERSION}-win-x64"
+    python.mkdir(parents=True)
+    node.mkdir(parents=True)
+    monkeypatch.setenv("PATH", "system-only")
+    runtime.activate_deployment_tools(tmp_path)
+    assert runtime.os.environ["PATH"].split(runtime.os.pathsep)[:2] == [str(python), str(node)]
+    runtime.activate_deployment_tools(tmp_path)
+    assert runtime.os.environ["PATH"].split(runtime.os.pathsep).count(str(python)) == 1
+    assert runtime.os.environ["PATH"].split(runtime.os.pathsep).count(str(node)) == 1
+
+
 def test_powershell_is_the_benchs_and_is_extracted_again_when_it_changes(
     tmp_path, monkeypatch
 ):

@@ -49,8 +49,11 @@ class EdgeAgentError(RuntimeError):
 def tool_paths(root: Path = CORE_ROOT) -> list[Path]:
     """The deployment's own tools, ahead of the system's on PATH: the Agent's
     PowerShell 7 (deploy.install_powershell; Pi takes pwsh.exe before
-    Windows PowerShell), rg and fd, portable Git, GitHub CLI."""
-    paths = [root / ".runtime/tools/pwsh", root / ".runtime/tools", root / ".runtime/git/cmd"]
+    Windows PowerShell), rg and fd, Python, Node, portable Git, GitHub CLI."""
+    paths = [root / ".runtime/tools/pwsh", root / ".runtime/tools",
+             root / ".runtime/python/tools",
+             root / f".runtime/node/node-v{NODE_VERSION}-win-x64",
+             root / ".runtime/git/cmd"]
     local = os.environ.get("LOCALAPPDATA")
     if local:
         paths.append(Path(local) / "EdgeAgent/GitHubCLI/2.102.0/bin")
