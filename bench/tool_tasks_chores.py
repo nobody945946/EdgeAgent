@@ -381,11 +381,14 @@ def gen_calc(rng: random.Random) -> Task:
     a, b, c = rng.randint(1200, 98000), rng.randint(300, 9000), rng.choice((0.9, 0.85, 0.8, 0.75, 0.95))
     people = rng.randint(3, 9)
     value = round((a + b) * c / people, 2)
+    # Both amounts in the request (one left out made a task no one could
+    # answer), and the share counted by its value: a request need not ask for
+    # two decimals, so a right share may read 13,237.2 or 22,200.525 (2026-10-13).
     t = Task("tool", "read", f"使用者要算錢：兩筆費用 {a:,} 元和 {b:,} 元加起來，打 {int(c * 100)} 折，再由 {people} 個人平分，每人要付多少（算到小數點兩位）。",
-             [f"{a:,}".replace(",", ""), str(people)])
-    whole = f"{value:,.2f}"
+             [str(a), str(b), str(people)])
     t.check = f'''
-    need({whole!r} in ANSWER or {whole.replace(",", "")!r} in ANSWER, "value {whole}")
+    numbers = [float(n.replace(",", "")) for n in re.findall(r"\\d[\\d,]*(?:\\.\\d+)?", ANSWER)]
+    need(any(abs(n - {(a + b) * c / people!r}) < 0.01 for n in numbers), "value {value:,.2f}")
     '''
     t.extra["may_change"] = []
     return t

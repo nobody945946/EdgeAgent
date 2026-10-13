@@ -95,15 +95,17 @@ STYLES = ("很簡短，像在聊天室隨手打的", "有禮貌、交代清楚",
 
 
 def describe_prompt(spec: dict, style: str) -> str:
-    must = "、".join(spec.get("must_mention") or []) or "（無）"
+    # With no words to say there is no such rule: 「一定要提到這些字：（無）」
+    # put 「（無）」 into 5 requests (2026-10-13).
+    must = "、".join(spec.get("must_mention") or [])
+    rules = ["只寫那個人說的話本身，不要旁白，不要加引號。", *([f"一定要提到這些字：{must}。"] if must else []),
+             "不要說要用哪個工具或指令，不要教機魂怎麼做；不要提到「情境」「練習」「題目」。", "一到三句。"]
+    listed = "\n".join(f"{n}. {rule}" for n, rule in enumerate(rules, 1))
     return f"""情境：{spec["situation"]}
 
 寫法：{style}。
 規則：
-1. 只寫那個人說的話本身，不要旁白，不要加引號。
-2. 一定要提到這些字：{must}。
-3. 不要說要用哪個工具或指令，不要教機魂怎麼做；不要提到「情境」「練習」「題目」。
-4. 一到三句。
+{listed}
 只輸出 JSON：{{"request": "..."}}"""
 
 
