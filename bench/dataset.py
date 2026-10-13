@@ -88,6 +88,33 @@ def final_answer(trajectory: list[dict]) -> dict | None:
     return None
 
 
+# Searching a whole drive or the whole user folder (Get-ChildItem C:\ -Recurse)
+# takes minutes on the owner's laptop and is never how to find a file the user
+# put in the work folder; the teacher did it when a file was not where it
+# first looked (v3 recording, 2026-10-14: 8 of about 1,200 jobs, some passed).
+# The student must not learn it, so such a job gives no rows.
+_SEGMENT = re.compile(r"[;|\n]")
+_LISTING = re.compile(r"(?i)(?:^|[\s=(&])(?:Get-ChildItem|gci|ls|dir)(?=\s)")
+_RECURSE = re.compile(r"(?i)\s-r(?:e(?:c(?:u(?:r(?:se?)?)?)?)?)?\b")
+_SHALLOW = re.compile(r"(?i)\s-d(?:e(?:p(?:th?)?)?)?\s+[0-2]\b")
+_WHOLE = re.compile(r"(?i)(?:^|[\s'\"(,=])(?:[A-Za-z]:[\\/]?(?:Users(?:[\\/][^\\/'\"\s,)]+)?[\\/]?)?"
+                    r"|\$env:(?:USERPROFILE|HOMEDRIVE|SystemDrive)\\?|\$HOME|~)(?=$|[\s'\"),])")
+
+
+def whole_drive_scan(trajectory: list[dict]) -> bool:
+    """Whether a PowerShell call listed a whole drive or user folder recursively."""
+    for message in trajectory:
+        for item in message.get("content") or [] if message.get("role") == "assistant" else []:
+            if not (isinstance(item, dict) and item.get("type") == "toolCall" and item.get("name") == "powershell"):
+                continue
+            command = str((item.get("arguments") or {}).get("command") or "")
+            for segment in _SEGMENT.split(command):
+                shallow = _SHALLOW.search(segment)  # -Depth 2 or less looks around, it does not sweep
+                if _LISTING.search(segment) and _RECURSE.search(segment) and _WHOLE.search(segment) and not shallow:
+                    return True
+    return False
+
+
 def user_turns(request: dict) -> int:
     return sum(m.get("role") == "user" for m in request["messages"])
 
@@ -132,7 +159,11 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
         if not requests or not trajectory_path.is_file():
             skip("no recording")
             continue
-        answer = final_answer(json.loads(trajectory_path.read_text(encoding="utf-8")))
+        trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
+        if whole_drive_scan(trajectory):
+            skip("searched a whole drive")
+            continue
+        answer = final_answer(trajectory)
         if answer is None:
             skip("no final answer")
             continue

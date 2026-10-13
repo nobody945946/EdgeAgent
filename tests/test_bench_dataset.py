@@ -128,3 +128,29 @@ def test_a_takeover_trains_only_what_the_teacher_wrote(tmp_path: Path) -> None:
 def test_a_takeover_whose_replay_drifted_is_not_used(tmp_path: Path) -> None:
     rows, why = dataset.rows(_takeover_run(tmp_path, 1))
     assert rows == [] and why == {"takeover replay drifted": 1}
+
+
+def _calls(*commands: str) -> list[dict]:
+    return [{"role": "assistant", "content": [{"type": "toolCall", "name": "powershell", "arguments": {"command": c}}
+                                              for c in commands]}]
+
+
+def test_a_job_that_searched_a_whole_drive_gives_no_rows() -> None:
+    """The teacher's searches the v3 recording held (2026-10-14): minutes on the
+    laptop, never how to find a file in the work folder."""
+    for command in (
+        "Get-ChildItem -Path C:\\ -Recurse -Filter trade_log.csv -ErrorAction SilentlyContinue | Select-Object FullName",
+        'Get-ChildItem -Path "C:\\Users","C:\\" -Directory -Filter "家庭照片" -Recurse -ErrorAction SilentlyContinue',
+        "$hits = Get-ChildItem C:\\ -Recurse -File -ErrorAction SilentlyContinue -Depth 5 -Include *.log",
+        "Get-ChildItem -LiteralPath 'C:\\Users\\lin' -Recurse -Filter 'trade*.csv'",
+        "gci $env:USERPROFILE -rec -Filter *.pdf",
+    ):
+        assert dataset.whole_drive_scan(_calls(command)), command
+    for command in (
+        "Get-ChildItem -Path /work -Recurse -Filter *.csv",
+        "Get-ChildItem C:\\work\\project -Recurse",
+        "Get-PSDrive -PSProvider FileSystem; Get-ChildItem C:\\",
+        "Get-ChildItem . -Recurse | Measure-Object",
+        'Get-ChildItem "C:\\Users" -Recurse -Depth 2 -Filter "Downloads" -Force -ErrorAction SilentlyContinue',
+    ):
+        assert not dataset.whole_drive_scan(_calls(command)), command
