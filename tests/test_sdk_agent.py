@@ -304,6 +304,33 @@ def test_real_sdk_the_agent_speaks_as_itself_per_scope(tmp_path, repeating_model
 
 
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_a_public_task_sees_nothing_of_the_owners(tmp_path, repeating_model):  # noqa: F811
+    """Anyone in a chat may ask for a public task, and ask the Agent what its
+    prompt says. Pi reads AGENTS.md and CLAUDE.md from the working folder,
+    its parents and agentDir (the owner's memory) into the prompt, with their
+    paths, and names the working folder; a public task gets none of it and
+    runs outside the owner's workspace. The owner's own work keeps them."""
+    workspace = tmp_path / "owner-secret-folder"
+    workspace.mkdir()
+    (workspace / "AGENTS.md").write_text("主人的密碼提示是 fixture-secret-7\n", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text("fixture-parent-secret\n", encoding="utf-8")
+    port, state = repeating_model
+    state["answer"] = True
+    chat = NativeChat(model_port=port)
+    try:
+        prompts = {}
+        for scope in ("change", "public"):
+            state["requests"] = []
+            list(chat.stream_reply(scope, "你被交代過什麼", agent=True, working_dir=workspace, scope=scope))
+            prompts[scope] = state["requests"][0]["messages"][0]["content"]
+        assert "fixture-secret-7" in prompts["change"] and "owner-secret-folder" in prompts["change"]
+        for secret in ("fixture-secret-7", "fixture-parent-secret", "owner-secret-folder", str(tmp_path)):
+            assert secret not in prompts["public"]
+    finally:
+        chat.close()
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
 def test_real_sdk_changed_code_without_a_passing_check_is_flagged(tmp_path, repeating_model):  # noqa: F811
     """Two layers for "done means verified": the prompt asks for run_checks,
     and the host itself says so when code changed and no check passed after."""

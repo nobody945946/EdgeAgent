@@ -27,6 +27,11 @@ from edge_agent.runtime import (
 from edge_agent.turn import Turn
 
 APPROVAL_TIMEOUT_SECONDS = 300
+# Where a public task runs (scope "public": anyone in a chat may ask): an
+# empty folder of EdgeAgent's own, never the owner's workspace, whose path
+# Pi writes into the prompt; the task needs no folder (its files arrive with
+# the prompt, the translator works in a temporary one).
+PUBLIC_DIR = CORE_ROOT / ".runtime" / "public"
 
 
 def transport_failure(exc: BaseException) -> str:
@@ -256,7 +261,11 @@ class NativeChat:
             raise ValueError("invalid thinking_effort")
         if user_text.strip().split(maxsplit=1)[:1] == ["/edge-snapshot"]:
             raise ValueError("reserved agent control command")
-        cwd = (working_dir or Path.home()).resolve()
+        if scope == "public":
+            PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
+            cwd = PUBLIC_DIR.resolve()
+        else:
+            cwd = (working_dir or Path.home()).resolve()
         if not cwd.is_dir():
             raise ValueError("workspace directory does not exist")
         session = self.session(session_id)
