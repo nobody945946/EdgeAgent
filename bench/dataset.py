@@ -11,6 +11,12 @@ requests with the same tools is one row (its last request plus the reply),
 trained only on the replies written in that stretch, under the tools the
 model saw when it wrote them.
 
+A takeover job (run.py --takeover: a student's failed conversation replayed
+word for word up to a point, then the teacher's) trains only the teacher's
+replies; the student's are the situation. One whose replayed prefix got other
+tool results than the student did is not the student's situation and is
+skipped.
+
 Eval tasks (bench/tasks, and the eval splits of the scenario cards and the
 Python tasks) never become training rows: only runs over training tasks
 (.runtime/agentdata/tool-tasks, scenario train cards, Python train tasks) are
@@ -113,6 +119,12 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
         if not result["passed"] or result["grade"].get("problems") or result.get("outcome") != "done":
             skip("not a clean pass")
             continue
+        takeover = result.get("takeover")
+        if takeover and takeover.get("replay_differs"):
+            # The replayed prefix got other tool results than the student did:
+            # the teacher did not take over the student's situation.
+            skip("takeover replay drifted")
+            continue
         records = sorted((run_dir / "records" / job).glob("*.json"))
         requests = [json.loads(p.read_text(encoding="utf-8")) for p in records]
         requests = [r for r in requests if r.get("tools")]
@@ -132,6 +144,10 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
             seen, after = request["messages"], requests[index + 1]["messages"]
             follows = after[:len(seen)] == seen and len(after) > len(seen)
             replies.append(after[len(seen)] if follows and after[len(seen)].get("role") == "assistant" else None)
+        if takeover:
+            # Learning from its own mistakes (run.py --takeover): the student's
+            # answers before the takeover are the situation, never a target.
+            replies[:takeover["at"]] = [None] * min(takeover["at"], len(replies))
         start = 0
         for index, request in enumerate(requests):
             reply = replies[index]
@@ -155,6 +171,7 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
             kept.append({"messages": messages, "tools": request["tools"], "train": "all",
                          "train_from": len(requests[start]["messages"]),
                          "source": {"run": run_dir.name, "job": job, "kind": result.get("kind", ""),
+                                    **({"takeover": {k: takeover[k] for k in ("from", "at", "of")}} if takeover else {}),
                                     "first_tools": {t["function"]["name"]: _digest(t["function"])
                                                     for t in requests[0]["tools"]}}})
             start = index + 1

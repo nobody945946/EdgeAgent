@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
+import itertools
 import json
 import os
 import shutil
@@ -43,7 +44,7 @@ BENCH = ROOT / "bench"
 STATE = ROOT / ".runtime/bench"
 IMAGE = "edgeagent-bench:1"
 TRAIN_IMAGE = "edgeagent-train:1"
-VRAM_EXIT = 3  # gave up waiting for free VRAM
+VRAM_EXIT = 3  # the GPU had no room for this run
 CONVERSATION_TURNS = 2  # a scenario conversation may take two turns' budget in all
 # What llama.cpp writes at the end of a thought the reasoning budget cut short
 # (a config with --reasoning-budget): 21% of teacher-cards-1024's thoughts
@@ -236,24 +237,20 @@ class Server:
     """llama-server for one configuration plus the host end of the relay."""
 
     def __init__(self, config: dict, run_dir: Path, parallel: int, port: int,
-                 vram_wait_min: float = 0, fit_slots: bool = False) -> None:
+                 fit_slots: bool = False) -> None:
         self.port = port
         base, slot = config["vram_base_mib"], config["vram_slot_mib"]
-        give_up = time.monotonic() + vram_wait_min * 60 if vram_wait_min else None
         # fit_slots: up to `parallel` slots, as many as the GPU holds now
         # (another tenant's share changes by the hour); at least one.
-        while True:
-            free = free_vram_mib()
-            fits = min(parallel, (free - base) // slot) if fit_slots else parallel
-            if fits >= 1 and free >= base + slot * fits:
-                break
-            if give_up is not None and time.monotonic() > give_up:
-                # Another tenant kept the GPU: give the queue back instead of
-                # blocking it all night; the run resumes when started again.
-                raise SystemExit(VRAM_EXIT)
-            print(f"waiting for {base + slot * (1 if fit_slots else parallel)} MiB free VRAM (now {free})",
+        free = free_vram_mib()
+        fits = min(parallel, (free - base) // slot) if fit_slots else parallel
+        if fits < 1 or free < base + slot * fits:
+            # Another tenant holds the GPU: hand the queue back at once, no
+            # waiting by asking again (owner, 2026-10-14); the session that
+            # the stopped queue wakes decides when to start again.
+            print(f"needs {base + slot * (1 if fit_slots else parallel)} MiB free VRAM, has {free}; handing back",
                   flush=True)
-            time.sleep(30)
+            raise SystemExit(VRAM_EXIT)
         self.parallel = parallel = fits
         need = base + slot * parallel  # weights and buffers, plus a full context window per slot
         # Relative to the student models folder; teachers live next to it.
@@ -450,12 +447,21 @@ def selftest(pattern: str) -> None:
         raise SystemExit(f"{bad} task(s) failed the selftest")
 
 
-def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: Path,
+def run_job(task_dir: Path, rep: int | str, config_name: str, config: dict, run_dir: Path,
             sock_dir: Path, keep: bool, bridge: Path | None, product: Path,
-            record_port: int | None = None, simulator_sock: Path | None = None) -> dict:
+            record_port: int | None = None, simulator_sock: Path | None = None,
+            takeover: dict | None = None) -> dict:
     task = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
     job = f"{task_dir.name}-r{rep}"
     relay = None
+    replay: list[str] = []
+    if takeover is not None:
+        # The student's answers, given back word for word until this run's
+        # model takes over (relay.py --replay).
+        path = run_dir / "replay" / f"{job}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(takeover["replies"], ensure_ascii=False), encoding="utf-8")
+        replay = ["--replay", str(path)]
     if record_port is not None:
         # This job's own relay, keeping every request the Agent sends (the
         # exact prompts training rows are rendered from).
@@ -468,7 +474,7 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
         relay = subprocess.Popen(
             [sys.executable, str(BENCH / "relay.py"), "--listen",
              f"unix:{sock_dir / 'model.sock'}", "--connect", f"tcp:127.0.0.1:{record_port}",
-             "--record", str(run_dir / "records" / job)], stdout=subprocess.PIPE)
+             "--record", str(run_dir / "records" / job), *replay], stdout=subprocess.PIPE)
         assert relay.stdout is not None
         relay.stdout.readline()
     workspace, original = run_dir / "ws" / job, run_dir / "orig" / job
@@ -506,7 +512,9 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
             "permissions": task.get("permissions", config.get("permissions")),
             "mcp_servers": task.get("mcp_servers"),
             # A scenario's timeout is per turn; the conversation gets twice that.
-            "timeout_s": timeout, "conversation_s": timeout * (CONVERSATION_TURNS if task.get("scenario") else 1)}
+            "timeout_s": timeout, "conversation_s": timeout * (CONVERSATION_TURNS if task.get("scenario") else 1),
+            # A takeover: the user's lines the student heard, until the takeover.
+            **({"script": takeover["script"]} if takeover else {})}
     name = f"eab-{config_name}-{job}".replace("_", "-")[:120]
     mounts, env, web = web_fixture(task_dir, task)
     if simulator_sock is not None and task.get("scenario"):
@@ -544,9 +552,78 @@ def run_job(task_dir: Path, rep: int, config_name: str, config: dict, run_dir: P
         shutil.rmtree(workspace, ignore_errors=True)
         shutil.rmtree(original, ignore_errors=True)
         shutil.rmtree(memory, ignore_errors=True)
-    return {"task": task_dir.name, "kind": task.get("kind", ""), "rep": rep,
-            "config": config_name, "wall": wall, **result, "grade": grade,
-            "passed": bool(grade.get("passed"))}
+    row = {"task": task_dir.name, "kind": task.get("kind", ""), "rep": rep,
+           "config": config_name, "wall": wall, **result, "grade": grade,
+           "passed": bool(grade.get("passed"))}
+    if takeover is not None:
+        row["takeover"] = {"from": takeover["from"], "at": takeover["at"], "of": takeover["of"],
+                           "replay_differs": replay_differs(run_dir / "records" / job, takeover["at"], takeover["seen"])}
+    return row
+
+
+def model_requests(folder: Path) -> list[dict]:
+    """A job's recorded requests to the Agent's model, in order (the
+    simulated user's go through the same relay but carry no tools)."""
+    requests = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(folder.glob("*.json"))]
+    return [request for request in requests if request.get("tools")]
+
+
+def tool_results(request: dict) -> list[str]:
+    return [json.dumps(m.get("content"), ensure_ascii=False) for m in request["messages"] if m.get("role") == "tool"]
+
+
+def replay_differs(folder: Path, at: int, seen: list[str]) -> int:
+    """How many tool results the replayed prefix got that differ from what
+    the student got (a clock, a random name), as the takeover's first
+    request shows them: the teacher took over a situation that is not quite
+    the student's. All of them when the job never got that far."""
+    live = model_requests(folder)
+    if len(live) <= at:
+        return max(1, len(seen))
+    results = tool_results(live[at])
+    return sum(a != b for a, b in zip(results, seen, strict=False)) + abs(len(results) - len(seen))
+
+
+def takeover_plans(student: Path, at: list[float], patterns: str) -> list[tuple[Path, str, dict]]:
+    """Learning from its own mistakes: every job a student failed in its
+    recorded run (not passed, not done, or a scenario its judge failed),
+    taken over by this run's model at the fractions `at` of the student's
+    model calls. Its answers before that point are given back word for word
+    (relay.py --replay), so the sandbox really runs what the student did and
+    the teacher continues from where the student went. (task dir, rep label
+    "<rep>t<point>", plan)."""
+    verdicts = student / "verdicts.jsonl"
+    judged = ({row["job"]: bool(row["passed"]) for row in map(json.loads, verdicts.read_text(encoding="utf-8").splitlines())}
+              if verdicts.is_file() else {})
+    rows = [json.loads(line) for line in (student / "results.jsonl").read_text(encoding="utf-8").splitlines()]
+    if any(row.get("kind") == "scenario" for row in rows) and not judged:
+        raise SystemExit(f"{student} has scenarios but no verdicts: judge it first (bench/scenario_judge.py)")
+    tasks = {task.name: task for task in load_tasks(patterns)}
+    plans = []
+    for row in rows:
+        job = f"{row['task']}-r{row['rep']}"
+        failed = (not row.get("passed") or row.get("outcome") != "done" or (row.get("grade") or {}).get("problems")
+                  or (row.get("kind") == "scenario" and not judged.get(job)))
+        if row["task"] not in tasks or not failed or row.get("takeover"):
+            continue
+        requests = model_requests(student / "records" / job)
+        for point in sorted({min(len(requests) - 1, max(1, round(f * len(requests)))) for f in at}):
+            if point < 1:
+                continue
+            replies = []
+            for before, after in itertools.pairwise(requests[:point + 1]):
+                seen = before["messages"]
+                if after["messages"][:len(seen)] != seen or after["messages"][len(seen)].get("role") != "assistant":
+                    break  # the history was rewritten (a compaction): no word-for-word replay
+                replies.append(after["messages"][len(seen)])
+            if len(replies) < point:
+                continue
+            users = sum(1 for message in requests[point]["messages"] if message.get("role") == "user")
+            plans.append((tasks[row["task"]], f"{row['rep']}t{point}", {
+                "from": job, "at": point, "of": len(requests), "replies": replies,
+                "script": [turn["user"] for turn in (row.get("dialogue") or [])[:users]],
+                "seen": tool_results(requests[point])}))
+    return plans
 
 
 def web_ca() -> Path:
@@ -622,8 +699,6 @@ def main() -> None:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--parallel", type=int, default=4)
     parser.add_argument("--port", type=int, default=18189)
-    parser.add_argument("--vram-wait", type=float, default=0,
-                        help=f"minutes to wait for free VRAM, then exit {VRAM_EXIT} (0: forever)")
     parser.add_argument("--fit-slots", action="store_true",
                         help="--parallel is the most: start with as many slots as fit now; with fewer, "
                              f"hand back after {REFIT_MIN} minutes (exit {VRAM_EXIT}) to grow when started again")
@@ -633,6 +708,10 @@ def main() -> None:
                         help="keep each job's model requests in run_dir/records (training data)")
     parser.add_argument("--product", type=Path, default=ROOT / "edge_agent",
                         help="edge_agent package to test (e.g. a development worktree)")
+    parser.add_argument("--takeover", type=Path,
+                        help="a student's recorded run: take over each job it failed (implies --record)")
+    parser.add_argument("--at", default="0.4,0.75",
+                        help="--takeover: where, as fractions of the student's model calls")
     parser.add_argument("--task-root", type=Path,
                         help="task directory (default bench/tasks; the tool training tasks live in "
                              ".runtime/agentdata/tool-tasks)")
@@ -664,8 +743,13 @@ def main() -> None:
             # A crash is the sandbox failing to report, not a result: rerun it.
             if row.get("outcome") != "crash":
                 done.add((row["task"], row["rep"]))
-    jobs = [(t, r) for t in load_tasks(args.tasks) for r in range(args.repeats)
-            if (t.name, r) not in done]
+    if args.takeover:
+        args.record = True
+        jobs = [plan for plan in takeover_plans(args.takeover.resolve(), [float(x) for x in args.at.split(",")],
+                                                args.tasks) if (plan[0].name, plan[1]) not in done]
+    else:
+        jobs = [(t, r) for t in load_tasks(args.tasks) for r in range(args.repeats)
+                if (t.name, r) not in done]
     print(f"{len(jobs)} jobs, {len(done)} already done", flush=True)
     if not jobs:
         return
@@ -678,7 +762,7 @@ def main() -> None:
         shutil.copytree(args.product.resolve(), product,
                         ignore=shutil.ignore_patterns("__pycache__"))
     bridge = bridge_variant(config, run_dir, product)
-    server = Server(config, run_dir, args.parallel, args.port, args.vram_wait, args.fit_slots)
+    server = Server(config, run_dir, args.parallel, args.port, fit_slots=args.fit_slots)
     # Fewer slots than asked: stop taking jobs after a while so the queue
     # starts the run again with what the GPU holds by then.
     refit_at = time.monotonic() + REFIT_MIN * 60 if server.parallel < args.parallel else None
@@ -690,7 +774,7 @@ def main() -> None:
     if config.get("simulator"):
         (run_dir / "simulator").mkdir(exist_ok=True)
         simulator = Server(configs[config["simulator"]], run_dir / "simulator", server.parallel,
-                           args.port + 1, args.vram_wait)
+                           args.port + 1)
     # The main thread sits in the worker pool, so exiting there would wait
     # for every job: the handler closes the servers and exits at once.
     close_on_term(server, simulator)
@@ -698,7 +782,7 @@ def main() -> None:
     try:
         print(f"server ready, {server.parallel} slots, {server.speed()} tok/s single stream", flush=True)
 
-        def work(job: tuple[Path, int]) -> None:
+        def work(job: tuple) -> None:
             if refit_at is not None and time.monotonic() > refit_at:
                 handed_back.set()
                 return
@@ -706,7 +790,8 @@ def main() -> None:
             row = run_job(job[0], job[1], args.config, config, run_dir, server.sock_dir,
                           args.keep, bridge, product,
                           record_port=server.port if args.record else None,
-                          simulator_sock=simulator.sock_dir if simulator is not None else None)
+                          simulator_sock=simulator.sock_dir if simulator is not None else None,
+                          takeover=job[2] if len(job) > 2 else None)
             row["revision"], row["task_digest"] = revision, digest
             # A model server that died mid-run (2026-10-07: another tenant took
             # the GPU) fails every later job in seconds; those are not the

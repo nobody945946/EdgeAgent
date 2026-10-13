@@ -218,8 +218,13 @@ def main() -> None:
             if time.monotonic() >= deadline:
                 ended = "conversation timeout"
                 break
-            line = simulate(card, simulator_port, [t["user"] for t in dialogue],
-                            [t["answer"] for t in dialogue], card["max_turns"] - len(dialogue))
+            # A takeover (run.py --takeover) replays the student's own
+            # conversation up to where the teacher takes over: the user said
+            # then what the user said that time.
+            script = spec.get("script") or []
+            line = (script[len(dialogue)] if len(dialogue) < len(script) else
+                    simulate(card, simulator_port, [t["user"] for t in dialogue],
+                             [t["answer"] for t in dialogue], card["max_turns"] - len(dialogue)))
             if END in line:
                 ended = "end" if dialogue else "simulator ended before speaking"
                 break

@@ -3,6 +3,7 @@ settings (its MCP servers, web denied) are not a version."""
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -91,3 +92,39 @@ def test_no_eval_split_ever_becomes_a_row() -> None:
     assert dataset.is_eval("eval-G-016") and dataset.is_eval("py-eval-002")
     assert all(map(dataset.is_eval, dataset.EVAL_TASKS))
     assert not any(map(dataset.is_eval, ("train-G-016", "py-train-002", "archive-00")))
+
+
+def _takeover_run(tmp_path: Path, differs: int) -> Path:
+    """A takeover job (run.py --takeover) over four model calls: the student's
+    two answers replayed, then the teacher's two."""
+    run_dir = tmp_path / "takeover"
+    records = run_dir / "records" / "archive-00-r1t2"
+    records.mkdir(parents=True)
+    messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "整理檔案"}]
+    for index in range(4):
+        (records / f"{index:04d}.json").write_text(json.dumps({"messages": messages, "tools": [{"type": "function", "function": READ}]}), encoding="utf-8")
+        messages = [*messages, {"role": "assistant", "content": None, "tool_calls": [
+            {"id": f"c{index}", "type": "function", "function": {"name": "read", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": f"c{index}", "content": f"結果{index}"}]
+    (run_dir / "traj").mkdir()
+    (run_dir / "traj" / "archive-00-r1t2.json").write_text(json.dumps(
+        [{"role": "assistant", "content": [{"type": "text", "text": "整理好了"}]}]), encoding="utf-8")
+    (run_dir / "results.jsonl").write_text(json.dumps({
+        "task": "archive-00", "rep": "1t2", "kind": "", "passed": True, "outcome": "done", "grade": {},
+        "takeover": {"from": "archive-00-r1", "at": 2, "of": 4, "replay_differs": differs}}) + "\n", encoding="utf-8")
+    return run_dir
+
+
+def test_a_takeover_trains_only_what_the_teacher_wrote(tmp_path: Path) -> None:
+    """Learning from its own mistakes: the student's replayed answers are the
+    situation; only the teacher's answers from the takeover on are targets."""
+    (row,), _ = dataset.rows(_takeover_run(tmp_path, 0))
+    targets = [m for m in row["messages"][row["train_from"]:] if m["role"] == "assistant"]
+    # Four calls answer c0, c1, c2 and the final answer: from call 2 on, c2 and the answer.
+    assert row["train_from"] == 2 + 2 * 2 and [m.get("content") for m in targets] == [None, "整理好了"]
+    assert row["source"]["takeover"] == {"from": "archive-00-r1", "at": 2, "of": 4}
+
+
+def test_a_takeover_whose_replay_drifted_is_not_used(tmp_path: Path) -> None:
+    rows, why = dataset.rows(_takeover_run(tmp_path, 1))
+    assert rows == [] and why == {"takeover replay drifted": 1}
