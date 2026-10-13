@@ -35,6 +35,8 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from serve_wait import LlamaServer
+
 ROOT = Path(__file__).resolve().parents[1]
 SCENARIOS = ROOT / "bench/grill/scenarios.jsonl"
 SERVER = Path("/home/clawd/SilentTalk/.runtime/tools/llama.cpp-b11193-src/build-cuda/bin/llama-server")
@@ -201,23 +203,14 @@ class Workspace:
 
 
 def start_server(model: Path, ctx: int, ngl: int) -> subprocess.Popen:
-    log = open(f"/tmp/grill-eval-{PORT}.log", "w")  # noqa: SIM115 - the server's own stdout
-    process = subprocess.Popen(
+    """Back once it says it is listening (serve_wait.py); its log holds this start only."""
+    log = Path(f"/tmp/grill-eval-{PORT}.log")
+    log.write_bytes(b"")
+    return LlamaServer(
         [str(SERVER), "-m", str(model), "--host", "127.0.0.1", "--port", str(PORT), "-ngl", str(ngl),
          "--fit", "off", "-c", str(ctx), "--parallel", "1", "-fa", "on", "--jinja",
          "--cache-type-k", "q8_0", "--cache-type-v", "q8_0"],
-        stdout=log, stderr=subprocess.STDOUT)
-    for _ in range(240):
-        try:
-            if json.loads(urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=2).read()).get("status") == "ok":
-                return process
-        except (OSError, ValueError):
-            pass
-        if process.poll() is not None:
-            raise SystemExit(f"llama-server exited; see /tmp/grill-eval-{PORT}.log")
-        time.sleep(1)
-    process.kill()
-    raise SystemExit("llama-server did not become ready")
+        log, timeout=240).process
 
 
 def complete(request: dict, messages: list[dict], timeout: float = 1800) -> dict:

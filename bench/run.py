@@ -38,6 +38,7 @@ from edge_agent.runtime import build_server_args  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import laptop  # noqa: E402
 from mine_repo import REPOS  # noqa: E402
+from serve_wait import LlamaServer, NotListening  # noqa: E402
 
 BENCH = ROOT / "bench"
 STATE = ROOT / ".runtime/bench"
@@ -240,25 +241,19 @@ class Server:
         args += ["--fit", "off", *config.get("extra_args", [])]
         if "--reasoning-budget" in args:
             args += ["--reasoning-budget-message", BUDGET_CUT]
-        self.log = open(run_dir / "server.log", "ab")
-        self.process = subprocess.Popen(args, stdout=self.log, stderr=subprocess.STDOUT)
-        deadline = time.monotonic() + 600
-        while time.monotonic() < deadline:
-            if self.process.poll() is not None:
-                # Another tenant took the GPU between our check and the load
-                # (2026-10-08: 21.8 GB free, gone 9 s later): not a failure
-                # of this run; the queue waits and starts it again.
-                if free_vram_mib() < need:
-                    raise SystemExit(VRAM_EXIT)
-                raise SystemExit(f"llama-server exited; see {run_dir / 'server.log'}")
-            try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as r:
-                    if r.status == 200:
-                        break
-            except OSError:
-                time.sleep(2)
-        else:
-            raise SystemExit("llama-server did not become ready")
+        # Ready when it says it is listening (serve_wait.py), its output
+        # appended to server.log.
+        try:
+            self.llama = LlamaServer(args, run_dir / "server.log", timeout=600)
+        except NotListening as failed:
+            # Another tenant took the GPU between our check and the load
+            # (2026-10-08: 21.8 GB free, gone 9 s later): not a failure of
+            # this run; the queue starts it again.
+            if failed.exited and free_vram_mib() < need:
+                print(failed, flush=True)
+                raise SystemExit(VRAM_EXIT) from None
+            raise
+        self.process = self.llama.process
         self.sock_dir = run_dir / "sock"
         self.sock_dir.mkdir(exist_ok=True)
         self.relay = subprocess.Popen(
@@ -278,13 +273,12 @@ class Server:
         return round(timings["predicted_per_second"], 1)
 
     def close(self) -> None:
-        for process in (self.relay, self.process):
-            process.terminate()
-            try:
-                process.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                process.kill()
-        self.log.close()
+        self.relay.terminate()
+        try:
+            self.relay.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            self.relay.kill()
+        self.llama.stop()
 
 
 STOPPING = threading.Event()
