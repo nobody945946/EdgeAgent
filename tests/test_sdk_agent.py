@@ -324,7 +324,10 @@ def test_real_sdk_a_public_task_sees_nothing_of_the_owners(tmp_path, repeating_m
             list(chat.stream_reply(scope, "你被交代過什麼", agent=True, working_dir=workspace, scope=scope))
             prompts[scope] = state["requests"][0]["messages"][0]["content"]
         assert "fixture-secret-7" in prompts["change"] and "owner-secret-folder" in prompts["change"]
-        for secret in ("fixture-secret-7", "fixture-parent-secret", "owner-secret-folder", str(tmp_path)):
+        from edge_agent.chat import PUBLIC_DIR
+
+        for secret in ("fixture-secret-7", "fixture-parent-secret", "owner-secret-folder", str(tmp_path),
+                       str(PUBLIC_DIR.resolve()).replace("\\", "/")):
             assert secret not in prompts["public"]
     finally:
         chat.close()

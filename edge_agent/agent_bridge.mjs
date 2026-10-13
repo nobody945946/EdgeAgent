@@ -249,6 +249,9 @@ function policy(pi) {
     // training data. The date alone (no clock time) keeps the prompt prefix,
     // and llama.cpp's cache, unchanged until the day turns.
     event.systemPromptOptions.sections = { ...event.systemPromptOptions.sections, today: today(), runtime: modelFacts(init, memoryFile) };
+    // A public task has no folder of the owner's, and its own folder's path
+    // names the Windows user (anyone in a chat may ask what the prompt says).
+    if (publicOnly) event.systemPromptOptions.cwd = 'none';
   });
   pi.on('before_provider_request', (event, ctx) => {
     // The Agent samples as measured: the adapter's own temperature for this
