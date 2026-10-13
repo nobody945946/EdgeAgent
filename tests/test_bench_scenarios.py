@@ -3,6 +3,7 @@ judge's corrupted controls, without a model."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import sys
@@ -508,6 +509,134 @@ def test_a_card_speaks_of_memory_across_conversations_only_as_the_memory_file(it
 def test_a_goal_denying_memory_across_conversations_retires_the_card() -> None:
     goal = "確認助理是否具備跨對話記憶能力（答案應為否），並釐清其模型基礎。"
     assert scenario_cards.problems(card(goal=goal), "D", {"web": "fixture"}) == MEMORY_RETIRED
+
+
+STORY_RETIRED = {"outside": "the story puts files outside the work folder",
+                 "binary": "the story treats a binary file as already there"}
+
+
+@pytest.mark.parametrize("field,text,retired", [
+    # The files, or what the Agent writes, outside the work folder (the 2026-10-14 audit's wording).
+    ("opening", "「機魂，我剛把『紅隊』章節的筆記存到桌面了，但覺得內容太乾，想加點料。」", "outside"),  # train-A-015
+    ("plan", "使用者：寫個 PowerShell 腳本，把 C:\\Dev\\ProjectA 下面所有 .cs 檔裡以 // 開頭的行刪掉。", "outside"),  # train-C-044
+    ("goal", "使用者希望助理讀取桌面名為「紅隊筆記.txt」的檔案。", "outside"),
+    ("plan", "使用者確認完成，或要求將此表格存為 C:\\work\\error_summary.md。", "outside"),  # train-C-070
+    ("plan", "使用者會不耐煩地糾正「檔案就在 Documents/Games/Warhammer 40K/ 底下，自己掃」。", "outside"),  # train-I-o018
+    ("must", "助理必須把輸出路徑設為 [Environment]::GetFolderPath('Desktop')。", "outside"),  # train-A-014
+    ("opening", "機魂，我剛整理完桌面上的《銀河帝國歷年戰役總表》檔案。", "outside"),  # eval-B-003
+    # The same in must_not names what must not happen; a desktop that is no folder.
+    ("must_not", "絕對不能說「我剛把『紅隊』章節的筆記存到桌面了」這類沒做過的事。", None),
+    ("must_not", "不能假裝可以讀到工作資料夾以外的檔案（如桌面、C:\\Dev\\ProjectA）。", None),
+    ("must", "必須分清楚是桌面戰鎚的規則還是電玩版的規則。", None),
+    # A PDF, Word or Excel file already there; one the Agent is asked to make; one on the web.
+    ("plan", "使用者說：「讀一下那份 report.pdf，告訴我第 3 頁寫什麼。」", "binary"),
+    ("opening", "機魂，我剛把 2025 年度的《財報合規檢查清單.docx》丟進工作資料夾了，你先讀一下。", "binary"),  # train-D-036
+    ("opening", "「機魂，我剛把《戰鎚：混沌之戟》的規則書 PDF 丟進工作資料夾了，你讀得到嗎？」", "binary"),  # train-D-033
+    ("plan", "使用者最後要求：「把結果存成 PDF。」", None),
+    ("opening", "先幫我把這份報告的草稿存成 PDF 放在工作資料夾裡，檔名叫 report_draft.pdf。", None),  # train-D-021
+    ("plan", "使用者誤導說網址是 www.starring-semi.com/news/2026-q2.pdf，助理應先直接回答。", None),  # train-F-018
+    ("plan", "用 python.exe 跑一下工作資料夾裡的 check.py。", None),
+])
+def test_a_story_keeps_its_files_in_the_work_folder_and_in_text(field: str, text: str, retired: str | None) -> None:
+    value = [text, "再追問"] if field == "plan" else [text] if field in ("must", "must_not") else text
+    found = scenario_cards.problems(card(**{field: value}), "C", {"web": "fixture"})
+    if retired is None:
+        assert found == []
+    else:
+        assert len(found) == 1 and found[0].startswith(STORY_RETIRED[retired]), found
+
+
+def test_the_teacher_checks_the_folder_against_the_story(monkeypatch) -> None:
+    answers = iter(["一致", "不一致：卡片說『Q3 區域市場概覽.md』，資料夾裡是 Q3_Region_Summary.md",
+                    "我覺得大致上沒有問題。", "**不一致**：沒有 app.log\n其他都對"])
+    asked = []
+
+    def ask(port: int, prompt: str, max_tokens: int = 6000, temperature: float = 0.9) -> str:
+        asked.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr(scenario_cards, "ask", ask)
+    files = {"Q3_Region_Summary.md": "x" * 400}
+    assert scenario_cards.consistency_problems(0, card(), files) == []
+    assert scenario_cards.consistency_problems(0, card(), files) == [
+        "inconsistent: 卡片說『Q3 區域市場概覽.md』，資料夾裡是 Q3_Region_Summary.md"]
+    assert scenario_cards.consistency_problems(0, card(), files)[0].startswith("unreadable consistency answer")
+    assert scenario_cards.consistency_problems(0, card(), {}) == ["inconsistent: 沒有 app.log"]
+    # The teacher reads the story with each file's path and first 300 characters.
+    assert "叫使用者自己查" in asked[0] and "--- Q3_Region_Summary.md ---" in asked[0]
+    assert "x" * 300 in asked[0] and "x" * 301 not in asked[0]
+    assert "（沒有檔案）" in asked[3]
+
+
+def fake_teacher(monkeypatch, ask) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(scenario_cards.run, "Server", lambda *a, **k: SimpleNamespace(
+        port=0, parallel=2, close=lambda: None))
+    monkeypatch.setattr(scenario_cards.run, "close_on_term", lambda *a: None)
+    monkeypatch.setattr(scenario_cards, "ask", ask)
+
+
+def test_consistency_retires_the_cards_whose_folder_disagrees(tmp_path: Path, monkeypatch, capsys) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(scenario_cards, "OUT", tmp_path)
+    asked = []
+
+    def ask(port: int, prompt: str, max_tokens: int = 6000, temperature: float = 0.9) -> str:
+        asked.append(prompt)
+        if "app_logs.txt" in prompt:
+            return "不一致：卡片說「這堆 .log」，資料夾裡只有一份"
+        return "嗯……" if "notes.md" in prompt else "一致"
+
+    fake_teacher(monkeypatch, ask)
+    base = {**card(), "family": "C", "topic": "t", "source": {}}
+    cards = [{**base, "id": "train-C-001", "files": {"sales.csv": "a,b"}},
+             {**base, "id": "train-C-002", "files": {"app_logs.txt": "[ERROR] x"}},
+             {**base, "id": "train-C-003", "files": {"notes.md": "# 筆記"}},
+             {**base, "id": "train-C-004"}]  # no files yet: the files step checks it
+    path = tmp_path / "train-cards.jsonl"
+    path.write_text("".join(json.dumps(c, ensure_ascii=False) + "\n" for c in cards), encoding="utf-8")
+    args = SimpleNamespace(config="teacher-38-iq3", split="train", port=0, parallel=2)
+    scenario_cards.consistency(args)
+    out = capsys.readouterr().out
+    assert "train-C-002: retired (inconsistent: 卡片說「這堆 .log」，資料夾裡只有一份)" in out
+    assert "train-C-003: retired (unreadable consistency answer" in out
+    assert out.rstrip().endswith("train: 2 cards retired, 2 kept")
+    assert sum("notes.md" in p for p in asked) == 3  # an unreadable answer is asked again, three times in all
+    left = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [c["id"] for c in left] == ["train-C-001", "train-C-004"]
+    stamp = hashlib.sha256(scenario_cards.CONSISTENCY_PROMPT.encode()).hexdigest()[:12]
+    assert left[0]["source"]["consistency_prompt"] == stamp and "consistency_prompt" not in left[1]["source"]
+    # A card that passed this check is not asked again.
+    fake_teacher(monkeypatch, lambda *a, **k: pytest.fail("asked again"))
+    scenario_cards.consistency(args)
+    assert capsys.readouterr().out.rstrip().endswith("train: 0 cards retired, 2 kept")
+
+
+def test_the_files_step_tries_again_when_the_folder_disagrees_with_the_story(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(scenario_cards, "OUT", tmp_path)
+    verdicts = {"train-C-001": iter(["不一致：卡片說三份 .log，資料夾裡只有一份", "一致"]),
+                "train-C-002": iter(["不一致：少了 app.log"] * 3)}
+
+    def ask(port: int, prompt: str, max_tokens: int = 6000, temperature: float = 0.9) -> str:
+        card_id = "train-C-001" if "目標一" in prompt else "train-C-002"
+        if "請檢查卡片和工作資料夾是否一致" in prompt:
+            return next(verdicts[card_id])
+        return "=== 檔案：logs/app.log ===\n[ERROR] db 逾時\n=== 結束 ==="
+
+    fake_teacher(monkeypatch, ask)
+    base = {**card(), "family": "C", "topic": "t", "source": {}}
+    cards = [{**base, "id": "train-C-001", "goal": "目標一"}, {**base, "id": "train-C-002", "goal": "目標二"}]
+    path = tmp_path / "train-cards.jsonl"
+    path.write_text("".join(json.dumps(c, ensure_ascii=False) + "\n" for c in cards), encoding="utf-8")
+    scenario_cards.files(SimpleNamespace(config="teacher-38-iq3", split="train", port=0, parallel=2))
+    left = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [c["id"] for c in left] == ["train-C-001"]
+    assert left[0]["files"] == {"logs/app.log": "[ERROR] db 逾時"}
+    assert set(left[0]["source"]) == {"files_prompt", "consistency_prompt"}
 
 
 def test_the_pair_judge_counts_a_line_only_when_it_wins_both_ways_round(monkeypatch):

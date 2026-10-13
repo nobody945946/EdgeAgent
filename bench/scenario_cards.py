@@ -15,6 +15,7 @@ teacher spent those conversations searching the machine for them.
 
     python bench/scenario_cards.py generate --config teacher-38 --split train --per-family 40
     python bench/scenario_cards.py files --config teacher-38-iq3 --split train
+    (cards whose files came before the consistency check: python bench/scenario_cards.py consistency --split train)
     python bench/scenario_cards.py tasks --split train
     (then: python bench/run.py --config teacher-38 --task-root .runtime/agentdata/scenarios/train-tasks
            --tasks '*' --repeats 1 --record --tag scen-train-...; judge with scenario_judge.py)
@@ -49,6 +50,18 @@ SPLITS = ("train", "eval")
 EVAL_EVERY = 4  # every 4th topic is held out for eval cards only
 TIMEOUT_S = 1800
 
+# What a card may say about the files its conversation starts with, for every
+# prompt that writes cards (here and scenario_exports.py). The 2026-10-14 audit
+# found 38 of 408 cards whose story disagreed with the work folder: notes "on
+# the Desktop", C:\Dev\ProjectA, a PDF the files step had turned into a .txt,
+# "this pile of .log" with one file; the teacher searched the whole disk for 30
+# minutes and timed out. The story names each file where the Agent can see it,
+# as text, and says how many there are.
+FILE_RULES = """- 使用者可以要助理處理工作資料夾裡已有的檔案（檔案內容之後另外寫，這張卡不用給）；助理看不到工作資料夾以外的地方。
+- 使用者提到的每個已有檔案都在工作資料夾裡，用檔名稱呼（例如「工作資料夾裡的 sales_q3.csv」）；不要說檔案在桌面、下載、文件或任何磁碟路徑（例如 C:\\Work\\、~/），也不要叫助理把東西存到那些地方。
+- 已有的檔案只能是純文字格式（.txt .md .csv .json .log .py .ps1 之類），不能是 PDF、Word、Excel、圖片這類檔案；助理被要求新建的檔案不在此限。
+- 提到好幾個已有檔案時，說出是幾個（例如「三份 .log」），不要只說「一堆」「所有」。"""
+
 CARD_PROMPT = """你要為一個 AI 助理的訓練與測驗設計一張「情境卡」：一段多輪對話的劇本大綱，之後會由另一個模型照卡扮演使用者，和助理真的對話。
 
 助理是誰：使用者筆電上的個人代理「機魂」（戰鎚 40K 機魂的角色），能查網路（web_research，web_fetch 讀網頁、JSON 和 PDF）、呼叫 API、在工作資料夾裡讀寫檔案、執行 PowerShell 和 Python。今天是 {today}。
@@ -73,7 +86,7 @@ CARD_PROMPT = """你要為一個 AI 助理的訓練與測驗設計一張「情�
 - must 和 must_not 只寫看得出能力的事，不要要求角色語氣、口頭禪或特定術語：角色感由助理自己的想法和選擇表現。
 - 假網頁要像真的網頁：文字裡不要出現「陷阱」「假新聞，勿信」這類給出題者看的說明。
 - 虛構就整組虛構（城市、公司、股票代號、人名一起編），不要把真實的代號或名稱配上錯的資料。
-- 使用者可以要助理處理工作資料夾裡已有的檔案（檔案內容之後另外寫，這張卡不用給）；助理看不到工作資料夾以外的地方。"""
+""" + FILE_RULES
 
 WEB_RULES = {
     "fixture": '- "pages"：3 到 7 個假網頁（助理查網路時只會查到這些），每個是 {{"url", "title", "published"（YYYY-MM-DD，可省略）, "text"（200 到 900 字）}}。'
@@ -99,14 +112,53 @@ FILES_PROMPT = """下面是一張情境卡：另一個模型會照卡扮演使�
 === 檔案：相對路徑 ===
 檔案完整內容
 === 結束 ===
-- 只能是純文字格式（.txt .md .csv .json .log .py .ps1 之類），每個不超過 1500 字。卡片提到 PDF、Word、Excel、圖片這類檔案時，改用內容相同、主檔名相同的 .txt、.md 或 .csv。
-- 路徑用卡片裡的檔名；卡片說檔案在桌面或別的地方，也一樣放進工作資料夾。
+- 只能是純文字格式（.txt .md .csv .json .log .py .ps1 之類），每個不超過 1500 字。
+- 路徑用卡片裡的檔名，一字不改；卡片說了幾個檔案、哪些檔名，資料夾裡就是那幾個、那些檔名，不多也不少。
 - 內容要具體，而且和卡片一致：卡片說有幾筆錯誤、哪些欄位、什麼數字，檔案裡就真的是那樣，讓 must 的每一條都做得到。
 - 文字用台灣繁體中文；程式碼、設定檔、紀錄檔照該格式的慣例。虛構的人名、公司、數字照卡片。"""
+# The files step can still give a folder the story disagrees with (2026-10-14
+# audit: eval-F-005's 『Q3 區域市場概覽.md』 came as Q3_Region_Summary.md;
+# train-C-002's 「這堆 .log」 was one app_logs.txt; eval-I-005's 「一批 PDF 和
+# CSV」 none at all), so the teacher reads the story and the folder side by side.
+CONSISTENCY_PROMPT = """下面是一張情境卡：另一個模型會照卡扮演使用者，和 AI 助理「機魂」多輪對話。助理只能讀寫一個工作資料夾，看不到使用者電腦的其他地方。
+
+{card}
+
+對話開始時，工作資料夾裡有這些檔案（相對路徑和每個檔案的前 300 字）：
+{files}
+
+請檢查卡片和工作資料夾是否一致：
+- 卡片當作「已經存在」的每個檔案，資料夾裡都有，而且檔名和卡片說的一樣。
+- 卡片說出或暗示的數量（例如「三份」「一堆」「所有」「那幾個」）和資料夾裡的檔案對得上。
+- 對話需要用到的檔案和內容，資料夾裡都沒有缺。
+以下情況算一致：卡片要助理新建、資料夾裡還沒有的檔案；卡片故意讓使用者提到不存在的檔案，要看助理會不會發現它不存在。
+第一行只能是「一致」，或「不一致：」接一句原因；不要寫別的。"""
+CONSISTENT = re.compile(r"一致(?:[。.]|[：:，,].*)?")
+INCONSISTENT = re.compile(r"不一致\s*(?:[：:，,]\s*(.*))?")
 FILE_COUNTS = {"H": "這是電腦雜事，給 2 到 6 個檔案",
                None: "卡片沒用到既有檔案就只輸出「沒有檔案」四個字；用到了就給 1 到 6 個檔案"}
 FILE_BLOCK = re.compile(r"^=== 檔案：(.+?) ===\n(.*?)\n=== 結束 ===", re.MULTILINE | re.DOTALL)
 BINARY = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".zip", ".png", ".jpg", ".jpeg", ".gif", ".exe"}
+
+
+def shown(card: dict) -> str:
+    """The story as the files step and the consistency check read it."""
+    return json.dumps({key: card[key] for key in ("persona", "opening", "goal", "plan", "must", "must_not")},
+                      ensure_ascii=False, indent=1)
+
+
+def consistency_problems(port: int, card: dict, files: dict) -> list[str]:
+    """Why the teacher finds the folder at odds with the story (empty when it
+    agrees); an answer of neither form counts as a failure too."""
+    listing = "\n".join(f"--- {path} ---\n{text[:300]}" for path, text in files.items()) or "（沒有檔案）"
+    answer = ask(port, CONSISTENCY_PROMPT.format(card=shown(card), files=listing), max_tokens=600, temperature=0)
+    first = next((line.replace("*", "").strip().strip("「」 ") for line in answer.splitlines() if line.strip()), "")
+    if CONSISTENT.fullmatch(first):
+        return []
+    match = INCONSISTENT.fullmatch(first)
+    if match:
+        return [f"inconsistent: {(match.group(1) or '').strip() or 'no reason given'}"]
+    return [f"unreadable consistency answer: {first[:80]!r}"]
 
 
 def parse_files(text: str) -> dict | None:
@@ -133,11 +185,11 @@ def prompt_for(family_id: str, family: dict, topic: str, today: str) -> str:
         web_rule=WEB_RULES[family["web"]])
 
 
-def ask(port: int, prompt: str, max_tokens: int = 6000) -> str:
+def ask(port: int, prompt: str, max_tokens: int = 6000, temperature: float = 0.9) -> str:
     # Without thinking: a card is a structured outline the 27B writes well
     # straight away, and thinking made one card take minutes (owner wants the
     # first distilled adapter fast, 2026-10-07).
-    body = json.dumps({"messages": [{"role": "user", "content": prompt}], "temperature": 0.9,
+    body = json.dumps({"messages": [{"role": "user", "content": prompt}], "temperature": temperature,
                        "max_tokens": max_tokens, "chat_template_kwargs": {"enable_thinking": False}}).encode()
     request = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", body,
                                      {"Content-Type": "application/json"})
@@ -202,6 +254,53 @@ ASKED_PART = re.compile(r"(?:若|如果|當)使用者[^。；]{0,8}(?:要求|說
 CROSS_SESSION = re.compile(r"跨對話|跨會話|跨\s*[Ss]ession|新對話|新的對話|新會話|下次(?:開|再|的)?(?:對話|聊|會話)"
                            r"|未來的?(?:新的?)?(?:對話|會話)|長期記憶|永久記憶|持久記憶|自動記(?:得|住)")
 MEMORY_FILE = re.compile(r"記憶檔|AGENTS\.md|寫進記憶|存進記憶|記憶裡")
+# The story's files are in the work folder (FILE_RULES); the 2026-10-14 audit
+# found cards placing them, or what the Agent writes, on the Desktop (train-A-015
+# 「筆記存到桌面了」), in Downloads or Documents, or at a drive path
+# (train-C-044 C:\Dev\ProjectA, train-C-070 C:\work\api_response.json). Desktop
+# words that are no folder (桌面戰鎚, 桌面版, 遠端桌面) do not count. must_not
+# may name what must not happen; every other part of the story is held to it,
+# a family's deliberate trap too.
+OUTSIDE = re.compile(r"(?<![A-Za-z])[A-Za-z]:[\\/][^\s，。；、「」『』《》`'\"（）()]*"
+                     r"|(?<!遠端)(?<!遠程)桌面(?!戰|遊|版|環境|應用|程式|軟體|電腦|通知|背景|端|系統|主題|型|級|小工具|排版)"
+                     r"|(?<![A-Za-z])(?<!Remote )(?<!Docker )(?<!GitHub )(?:Desktop|Downloads|Documents)"
+                     r"(?=\s*(?:[\\/'\"]|資料夾|目錄|folder|裡|上|中))"
+                     r"|(?:[\\/~]|在|到|存|放|於|至)\s*(?:Desktop|Downloads|Documents)(?![A-Za-z])"
+                     r"|下載的?(?:資料夾|目錄)|「下載」|我的文件|~[\\/]|%USERPROFILE%|\$HOME|\$env:(?:USERPROFILE|HOMEPATH)"
+                     r"|GetFolderPath", re.IGNORECASE)
+# An existing file is text (FILE_RULES); a PDF, Word or Excel file the story
+# treats as already there (train-F-012 「檢查工作資料夾中的 `ESG_Checklist.pdf`，
+# 確認其中第 3 頁」) had its files step write a .md the story never names. A
+# binary name the Agent is asked to make (「存成 report.pdf」) is fine: a create
+# word comes before it in the same sentence. A web address ending in .pdf
+# (train-F-018 www.starring-semi.com/news/2026-q2.pdf) is no file in the folder.
+BINARY_NAME = re.compile(r"\.(?:" + "|".join(sorted(ext[1:] for ext in BINARY)) + r")(?![A-Za-z0-9])"
+                         r"|(?<![A-Za-z])(?:PDF|Word|Excel|PowerPoint)\s*檔?案?\s*(?:丟進|放進|放到|放在|存進|拉進)了?(?:工作)?資料夾",
+                         re.IGNORECASE)
+CREATE = re.compile(r"存成|存為|儲存成|儲存為|另存|轉成|轉為|轉換成|轉存|匯出|輸出成|輸出為|產生|產出|生成|做成|製作|建立|新建"
+                    r"|寫成|寫出|畫|繪|打包|壓縮|編譯")
+CREATE_REACH = 40  # characters before a binary name, within its sentence, that may hold the create word
+SENTENCE_END = re.compile(r"[。！？!?；;\n]")
+PROGRAM = re.compile(r"(?i)(?:python|pwsh|powershell|cmd|notepad|explorer|code|git|node|winget|msiexec)$")
+WEB_ADDRESS = re.compile(r"(?:https?://|www\.|[A-Za-z0-9-]+\.(?:com|net|org|io|gov|edu|tw|example|dev|info)/)[\x21-\x7e]*")
+
+
+def story(card: dict) -> list[str]:
+    """What the card tells the simulated user to say and the Agent to do: not must_not."""
+    parts = [card.get("opening"), card.get("goal"), *(card.get("plan") or []), *(card.get("must") or [])]
+    return [part for part in parts if isinstance(part, str)]
+
+
+def existing_binary(text: str) -> str | None:
+    """The first PDF/Word/Excel/image the text treats as already there, if any."""
+    text = WEB_ADDRESS.sub(" ", text)
+    for match in BINARY_NAME.finditer(text):
+        stem = re.search(r"[A-Za-z0-9_\-.]*$", text[:match.start()]).start()
+        if match.group().lower() == ".exe" and PROGRAM.search(text[:match.start()]):
+            continue  # python.exe, pwsh.exe: a program, not a file in the folder
+        if not CREATE.search(SENTENCE_END.split(text[max(0, stem - CREATE_REACH):stem])[-1]):
+            return re.search(r"[^\s'\"`「」『』《》()（）,，、:：]*$", text[:match.start()]).group() + match.group()
+    return None
 
 
 def problems(card: dict, family_id: str, family: dict) -> list[str]:
@@ -220,6 +319,12 @@ def problems(card: dict, family_id: str, family: dict) -> list[str]:
         found.append("an item forbids posting the corrected table whole")
     if any(CROSS_SESSION.search(text) and not MEMORY_FILE.search(text) for text in [*items, str(card.get("goal", ""))]):
         found.append("an item or the goal speaks of memory across conversations without the memory file")
+    outside = next((m.group() for text in story(card) for m in [OUTSIDE.search(text)] if m), None)
+    if outside:
+        found.append(f"the story puts files outside the work folder ({outside})")
+    binary = next((name for text in story(card) for name in [existing_binary(text)] if name), None)
+    if binary:
+        found.append(f"the story treats a binary file as already there ({binary}); existing files are text")
     if not _strings(card.get("plan"), 2, 5):
         found.append("plan must be 2-5 steps")
     if not _strings(card.get("must"), 1, 5):
@@ -478,11 +583,27 @@ def recheck(args: argparse.Namespace) -> None:
     print(f"{args.split}: {len(cards) - len(keep)} cards retired, {len(keep)} kept", flush=True)
 
 
+def teacher(args: argparse.Namespace) -> run.Server:
+    """The teacher's server for a split's files and checks, closed on SIGTERM."""
+    configs = json.loads((BENCH / "configs.json").read_text(encoding="utf-8"))
+    run_dir = OUT / f"server-{args.split}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    server = run.Server(configs[args.config], run_dir, args.parallel, args.port, fit_slots=True)
+    run.close_on_term(server)
+    return server
+
+
+def save(path: Path, cards: list[dict]) -> None:
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text("".join(json.dumps(c, ensure_ascii=False) + "\n" for c in cards), encoding="utf-8")
+    temporary.replace(path)
+
+
 def files(args: argparse.Namespace) -> None:
     """The files each card's conversation starts with, written by the teacher
-    (none when the card uses none); a card it cannot give usable files is
-    dropped. Resumes: a card that has "files" is done."""
-    configs = json.loads((BENCH / "configs.json").read_text(encoding="utf-8"))
+    (none when the card uses none) and checked against the story
+    (consistency_problems); a card it cannot give usable, consistent files in
+    three tries is dropped. Resumes: a card that has "files" is done."""
     path = OUT / f"{args.split}-cards.jsonl"
     cards = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     todo = [card for card in cards if "files" not in card]
@@ -490,26 +611,18 @@ def files(args: argparse.Namespace) -> None:
     if not todo:
         return
     stamp = hashlib.sha256(FILES_PROMPT.encode()).hexdigest()[:12]
-    run_dir = OUT / f"server-{args.split}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    server = run.Server(configs[args.config], run_dir, args.parallel, args.port, fit_slots=True)
-    run.close_on_term(server)
+    checked = hashlib.sha256(CONSISTENCY_PROMPT.encode()).hexdigest()[:12]
+    server = teacher(args)
     lock = threading.Lock()
 
-    def save() -> None:
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text("".join(json.dumps(c, ensure_ascii=False) + "\n" for c in cards), encoding="utf-8")
-        temporary.replace(path)
-
     def one(card: dict) -> None:
-        shown = {key: card[key] for key in ("persona", "opening", "goal", "plan", "must", "must_not")}
-        prompt = FILES_PROMPT.format(card=json.dumps(shown, ensure_ascii=False, indent=1),
-                                     count=FILE_COUNTS.get(card["family"], FILE_COUNTS[None]))
-        why = ["not answered"]
+        prompt = FILES_PROMPT.format(card=shown(card), count=FILE_COUNTS.get(card["family"], FILE_COUNTS[None]))
         for _ in range(3):
             found = parse_files(ask(server.port, prompt, max_tokens=12000))
             found = traditional(found) if found is not None else None
             why = ["unreadable answer"] if found is None else file_problems(found, card["family"])
+            if not why:
+                why = consistency_problems(server.port, card, found)
             if not why:
                 break
         with lock:
@@ -518,15 +631,52 @@ def files(args: argparse.Namespace) -> None:
                 print(f"{card['id']}: dropped ({'; '.join(why)})", flush=True)
             else:
                 card["files"] = found
-                card["source"]["files_prompt"] = stamp
+                card["source"].update(files_prompt=stamp, consistency_prompt=checked)
                 print(f"{card['id']}: {len(found)} files", flush=True)
-            save()
+            save(path, cards)
 
     try:
         with ThreadPoolExecutor(server.parallel) as pool:
             list(pool.map(one, todo))
     finally:
         server.close()
+
+
+def consistency(args: argparse.Namespace) -> None:
+    """Retire, as recheck does, the cards whose files the teacher finds at odds
+    with the story (consistency_problems; the files step checks every card it
+    writes from now on). An unreadable answer is asked again, three times in
+    all. Resumes: a card stamped with this check's prompt passed it."""
+    path = OUT / f"{args.split}-cards.jsonl"
+    cards = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    checked = hashlib.sha256(CONSISTENCY_PROMPT.encode()).hexdigest()[:12]
+    todo = [card for card in cards if "files" in card and card["source"].get("consistency_prompt") != checked]
+    print(f"{len(todo)} of {len(cards)} cards to check against their files", flush=True)
+    retired = []
+    if todo:
+        server = teacher(args)
+        lock = threading.Lock()
+
+        def one(card: dict) -> None:
+            for _ in range(3):
+                why = consistency_problems(server.port, card, card["files"])
+                if not why or why[0].startswith("inconsistent"):
+                    break
+            with lock:
+                if why:
+                    cards.remove(card)
+                    retired.append(card["id"])
+                    print(f"{card['id']}: retired ({'; '.join(why)})", flush=True)
+                else:
+                    card["source"]["consistency_prompt"] = checked
+                save(path, cards)
+
+        try:
+            with ThreadPoolExecutor(server.parallel) as pool:
+                list(pool.map(one, todo))
+        finally:
+            server.close()
+    print(f"{args.split}: {len(retired)} cards retired, {len(cards)} kept", flush=True)
 
 
 def tasks(args: argparse.Namespace) -> None:
@@ -586,12 +736,18 @@ def main() -> None:
     f.add_argument("--split", choices=SPLITS, required=True)
     f.add_argument("--port", type=int, default=18389)
     f.add_argument("--parallel", type=int, default=4, help="cards side by side (fewer if the GPU holds fewer)")
+    c = sub.add_parser("consistency")
+    c.add_argument("--config", default="teacher-38-iq3", help="the teacher's bench config (configs.json)")
+    c.add_argument("--split", choices=SPLITS, required=True)
+    c.add_argument("--port", type=int, default=18389)
+    c.add_argument("--parallel", type=int, default=4, help="cards side by side (fewer if the GPU holds fewer)")
     r = sub.add_parser("recheck")
     r.add_argument("--split", choices=SPLITS, required=True)
     t = sub.add_parser("tasks")
     t.add_argument("--split", choices=SPLITS, required=True)
     args = parser.parse_args()
-    {"generate": generate, "recheck": recheck, "files": files, "tasks": tasks}[args.command](args)
+    {"generate": generate, "recheck": recheck, "files": files, "consistency": consistency,
+     "tasks": tasks}[args.command](args)
 
 
 if __name__ == "__main__":
