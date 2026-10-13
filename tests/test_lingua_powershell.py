@@ -164,7 +164,7 @@ def test_a_public_translation_says_nothing_about_what_this_computer_has() -> Non
     the same, with no path; what COMMANDS explains is still explained."""
     installed = Path(PWSH)
     own = powershell.translate(f"{installed.name} -NoLogo").text()
-    shown = re.search(r"執行外部程式 (\S+?)。", own)  # the owner's own translation names its path
+    shown = re.search(r"執行外部程式 (.+?)。", own)  # the owner's own translation names its path
     assert shown and "/" in shown[1].replace("\\", "/")
     text = powershell.translate(f"{installed.name} -NoLogo; Not-A-Command-Here -x; Get-ChildItem -Path .",
                                 public=True).text()
