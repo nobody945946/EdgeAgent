@@ -501,6 +501,10 @@ const factory = async ({ cwd, sessionManager, sessionStartEvent }) => {
     cwd, agentDir, modelRuntime, settingsManager: settings,
     resourceLoaderOptions: { noExtensions: true, noSkills: true,
       noPromptTemplates: true, noThemes: true, extensionFactories: [policy, ...mcpExtensions],
+      // A public task reads no AGENTS.md or CLAUDE.md, the global one in
+      // agentDir included: they are the owner's, and anyone in a chat could
+      // ask the Agent what they say (2026-10-14).
+      noContextFiles: publicOnly,
       // The Agent's own prompt (edge_agent/prompt.py) in place of Pi's.
       systemPrompt: init.system_prompt,
       appendSystemPrompt: mcpPrefixes.length && init.mcp_overview !== false ? [mcpOverview()] : [],
