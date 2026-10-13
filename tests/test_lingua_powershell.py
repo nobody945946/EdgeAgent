@@ -10,6 +10,7 @@ PowerShell and PowerShell 7.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -163,10 +164,11 @@ def test_a_public_translation_says_nothing_about_what_this_computer_has() -> Non
     the same, with no path; what COMMANDS explains is still explained."""
     installed = Path(PWSH)
     own = powershell.translate(f"{installed.name} -NoLogo").text()
-    assert "執行外部程式" in own and str(installed.parent) in own  # the owner's own translation names it
+    shown = re.search(r"執行外部程式 (\S+?)。", own)  # the owner's own translation names its path
+    assert shown and "/" in shown[1].replace("\\", "/")
     text = powershell.translate(f"{installed.name} -NoLogo; Not-A-Command-Here -x; Get-ChildItem -Path .",
                                 public=True).text()
-    assert str(installed.parent) not in text
+    assert shown[1] not in text
     assert "執行外部程式" not in text and "找不到" not in text
     assert f"「{installed.name}」不在這裡的 PowerShell 說明裡" in text
     assert "「Not-A-Command-Here」不在這裡的 PowerShell 說明裡" in text
