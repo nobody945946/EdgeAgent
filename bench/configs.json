@@ -245,6 +245,25 @@
   ],
   "time_scale": 1
  },
+ "teacher-38-iq3-long": {
+  "_note": "teacher-38-iq3 with an hour a turn (time_scale 2), only for re-recording what the 30-minute turn cut: the v3 recording (2026-10-14) lost 10 of 118 conversations to it, the teacher thinking 36-48K characters a step at about 14 tokens a second each, four side by side; dropping them keeps only shorter thinking, the bias the thinking budget was raised to end.",
+  "model": "../teacher/Qwen3.8-27B-UD-IQ3_XXS.gguf",
+  "self_model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": false,
+  "context_size": 65536,
+  "max_output_tokens": 16384,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 10200,
+  "vram_slot_mib": 2600,
+  "search_tools": true,
+  "extra_args": [
+   "--reasoning-budget",
+   "12288"
+  ],
+  "time_scale": 2
+ },
  "teacher-38-mini": {
   "_note": "The teacher (teacher-38-iq3) in the mini-swe-agent harness on SWE-bench Verified: is it a good enough Python teacher? (E4B: 4/60 in the same harness). Same sampling as e4b-mini.",
   "model": "../teacher/Qwen3.8-27B-UD-IQ3_XXS.gguf",
