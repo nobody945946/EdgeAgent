@@ -1,10 +1,13 @@
 """The core service's state: which model and mode are loaded, who leases the
-model, the Agent's own selection, and the status every client reads."""
+model, the Agent's own selection, and the status every client reads (and
+the status stream pushes each time it changes)."""
 
 from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from edge_agent import apis, hardware
@@ -32,6 +35,36 @@ from edge_agent.runtime import (
 from edge_agent.terminal import NativeTerminal
 
 
+class StatusChanges:
+    """Wakes the status streams (GET /status/events) whenever something the
+    status shows may have changed. Driven by the places that change it (a
+    load, a lease, a task, the inference lanes): no timer."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._count = 0
+
+    @property
+    def count(self) -> int:
+        with self._condition:
+            return self._count
+
+    def publish(self) -> None:
+        with self._condition:
+            self._count += 1
+            self._condition.notify_all()
+
+    def wait(self, seen: int, gone: threading.Event) -> None:
+        """Until a change after `seen` (a count), or `gone` is set."""
+        with self._condition:
+            self._condition.wait_for(lambda: self._count != seen or gone.is_set())
+
+    def wake(self) -> None:
+        """Wake the waiters without a change (a stream whose client left)."""
+        with self._condition:
+            self._condition.notify_all()
+
+
 class EdgeAgent:
     """Owns the model process; applications can only lease it through HTTP."""
 
@@ -54,7 +87,8 @@ class EdgeAgent:
         self.loading = False
         self.config_path = self.core_dir / "config.json"
         self.config = load_config(self.config_path)
-        self.inference = InferenceGateway(self.router.port)
+        self.changes = StatusChanges()
+        self.inference = InferenceGateway(self.router.port, self.changes.publish)
         self.chat = NativeChat(model_port=CONTROL_PORT, core_dir=self.core_dir)
         self.chat.api_key = self.inference.access.agent_key
         self.terminal = NativeTerminal()
@@ -163,31 +197,45 @@ class EdgeAgent:
             if candidate == self.config and self.status()["ready"]:
                 return self.status()
             previous = dict(self.config)
-            self.loading = True
-            self.error = ""
             self.config = candidate
-            try:
-                self._start_child("base", None, None)
-                self._save_config(candidate)
-            except Exception as exc:
-                self.config = previous
+            with self._loading():
                 try:
                     self._start_child("base", None, None)
-                except Exception as restore_exc:  # noqa: BLE001 - preserve both failures
-                    self.error = f"切換失敗：{exc}；恢復失敗：{restore_exc}"
-                raise RuntimeError(f"模型切換失敗：{exc}") from exc
-            finally:
-                self.loading = False
+                    self._save_config(candidate)
+                except Exception as exc:
+                    self.config = previous
+                    try:
+                        self._start_child("base", None, None)
+                    except Exception as restore_exc:  # noqa: BLE001 - preserve both failures
+                        self.error = f"切換失敗：{exc}；恢復失敗：{restore_exc}"
+                    raise RuntimeError(f"模型切換失敗：{exc}") from exc
             return self.status()
         finally:
             self.lock.release()
 
+    @contextmanager
+    def _loading(self, error: str | None = "") -> Iterator[None]:
+        """A model load or stop: the status says loading (with `error`; None
+        keeps the one it has) until it ends, and the status streams hear both."""
+        self.loading = True
+        if error is not None:
+            self.error = error
+        self.changes.publish()
+        try:
+            yield
+        finally:
+            self.loading = False
+            self.changes.publish()
+
     def status(self) -> dict[str, object]:
+        """What every client reads (GET /status), and what the status stream
+        (GET /status/events) sends each time it changes."""
         ready = (
             not self.loading
             and self.router.running()
             and self._model_ready()
         )
+        admitted, refused = self.inference.access.character_admission()
         return {
             "service": "edge-agent",
             "mode": self.mode,
@@ -201,6 +249,10 @@ class EdgeAgent:
             "agent_slot": self.agent_slot,
             "agent_busy": self.chat_in_progress,
             "inference_reserved": self.inference.access.agent_reserved,
+            # Whether the gateway would take a character request now (the size
+            # of the last one it turned away), and how many it turned away.
+            "character_admitted": admitted,
+            "character_refused": refused,
             "error": self.error,
             "model": self.active_model,
             "lora": self.active_lora,
@@ -253,22 +305,20 @@ class EdgeAgent:
                     self.owner_pid = owner_pid
                     self.owner_dead_since = None
                     self.handoff_until = 0.0
+                    self.changes.publish()
                 return self.status()
 
-            self.loading = True
-            self.error = ""
-            try:
-                self._start_child(mode, owner_pid, character)
-            except Exception as exc:
-                self.error = str(exc)
-                self.loading = False
-                if mode != "base":
-                    try:
-                        self._start_child("base", None, None)
-                    except Exception as base_exc:  # noqa: BLE001 - preserve first failure
-                        self.error += f"; base restore failed: {base_exc}"
-                raise
-            self.loading = False
+            with self._loading():
+                try:
+                    self._start_child(mode, owner_pid, character)
+                except Exception as exc:
+                    self.error = str(exc)
+                    if mode != "base":
+                        try:
+                            self._start_child("base", None, None)
+                        except Exception as base_exc:  # noqa: BLE001 - preserve first failure
+                            self.error += f"; base restore failed: {base_exc}"
+                    raise
             return self.status()
 
     def _start_child(
@@ -374,17 +424,13 @@ class EdgeAgent:
     def _reload_after_crash(self) -> None:
         """The same mode, lease and adapters as before the crash; a failed
         reload is kept in the status and tried again 30 seconds later."""
-        with self.lock:
-            self.loading = True
-            self.error = "模型程序意外結束，重新載入中"
+        with self.lock, self._loading("模型程序意外結束，重新載入中"):
             try:
                 self._start_child(self.mode, self.owner_pid, self.character)
                 self.error = ""
             except Exception as exc:  # noqa: BLE001 - shown in the status, tried again
                 self.error = f"模型程序意外結束，重新載入失敗：{exc}"
                 self.recover_after = time.monotonic() + 30
-            finally:
-                self.loading = False
 
     def hold_handoff(self, seconds: float = 30.0) -> dict[str, object]:
         with self.lock:
@@ -402,11 +448,10 @@ class EdgeAgent:
                 raise PermissionError("SilentTalk still owns character mode")
             self.chat.close()
             self.terminal.close_all()
-            self.loading = True
-            self._stop_child()
-            self.mode = "stopped"
-            self.owner_pid = None
-            self.owner_dead_since = None
-            self.handoff_until = 0.0
-            self.loading = False
+            with self._loading(error=None):
+                self._stop_child()
+                self.mode = "stopped"
+                self.owner_pid = None
+                self.owner_dead_since = None
+                self.handoff_until = 0.0
             return self.status()

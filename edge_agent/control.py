@@ -40,6 +40,8 @@ class Handler(BaseHTTPRequestHandler):
                        {"status": "ok" if ready else "loading"})
         elif self.path == "/status":
             self._json(HTTPStatus.OK, self.core.status())
+        elif self.path == "/status/events":
+            self._status_events()
         elif self.path == "/config":
             self._json(HTTPStatus.OK, self.core.config)
         elif self.path == "/records":
@@ -210,6 +212,43 @@ class Handler(BaseHTTPRequestHandler):
         if stop_control_server:
             threading.Thread(target=self.server.shutdown, daemon=True).start()
 
+    def _status_events(self) -> None:
+        """The status as it changes, for a client that keeps this open
+        (SilentTalk's lease): the status at once, then one `status` event each
+        time it differs from the last one sent, woken by the changes
+        themselves (core.StatusChanges), never by a timer. No heartbeat: on
+        localhost a client that dies closes its socket, and that ends this."""
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.close_connection = True
+        changes = self.core.changes
+        gone = threading.Event()
+
+        def watch() -> None:
+            # The client never sends anything: its socket ending is its leaving.
+            try:
+                while self.connection.recv(1024):
+                    pass
+            except OSError:
+                pass
+            gone.set()
+            changes.wake()
+
+        threading.Thread(target=watch, name="status-events-client", daemon=True).start()
+        last = None
+        try:
+            while not gone.is_set():
+                seen = changes.count
+                status = self.core.status()
+                if status != last:
+                    self._event("status", status)
+                    last = status
+                changes.wait(seen, gone)
+        except ConnectionAbortedError:
+            pass
+
     def _terminal(self, payload: dict[str, object]) -> None:
         session_id = self._session_id(payload)
         command = payload.get("command")
@@ -300,6 +339,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not self.core.capabilities[capability]:
                         raise ValueError("目前模型不支援此附件，請更換模型")
                 self.core.chat_in_progress = True
+            self.core.changes.publish()
             try:
                 with self.core.inference.access.agent_turn():
                     for event, data in self.core.chat.stream_reply(
@@ -321,6 +361,7 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 with self.core.lock:
                     self.core.chat_in_progress = False
+                self.core.changes.publish()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.core.chat.cancel(session_id)
         except Exception as exc:  # noqa: BLE001 - stream errors must reach the browser
