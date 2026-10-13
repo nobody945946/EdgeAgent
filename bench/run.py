@@ -34,6 +34,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from edge_agent.models import model_metadata  # noqa: E402
 from edge_agent.runtime import build_server_args  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -447,10 +448,23 @@ def selftest(pattern: str) -> None:
         raise SystemExit(f"{bad} task(s) failed the selftest")
 
 
+def run_sampling(config: dict, given: str | None) -> dict[str, float]:
+    """The Agent's temperature per mode: the product samples an adapter at
+    what its file says (edge_agent.models SAMPLING; nothing said: the bridge's
+    own); --sampling sets it for a sweep that measures which is best."""
+    if given:
+        if "=" not in given:
+            return {"off": float(given), "thinking": float(given)}
+        return {mode: float(value) for mode, value in (part.split("=", 1) for part in given.split(","))}
+    if not config.get("lora"):
+        return {}
+    return dict(model_metadata((MODELS / config["lora"]).resolve()).get("sampling", {}))
+
+
 def run_job(task_dir: Path, rep: int | str, config_name: str, config: dict, run_dir: Path,
             sock_dir: Path, keep: bool, bridge: Path | None, product: Path,
             record_port: int | None = None, simulator_sock: Path | None = None,
-            takeover: dict | None = None) -> dict:
+            takeover: dict | None = None, sampling: dict | None = None) -> dict:
     task = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
     job = f"{task_dir.name}-r{rep}"
     relay = None
@@ -514,7 +528,9 @@ def run_job(task_dir: Path, rep: int | str, config_name: str, config: dict, run_
             # A scenario's timeout is per turn; the conversation gets twice that.
             "timeout_s": timeout, "conversation_s": timeout * (CONVERSATION_TURNS if task.get("scenario") else 1),
             # A takeover: the user's lines the student heard, until the takeover.
-            **({"script": takeover["script"]} if takeover else {})}
+            **({"script": takeover["script"]} if takeover else {}),
+            # The Agent adapter's temperature per mode, as the product samples it.
+            "sampling": sampling or {}}
     name = f"eab-{config_name}-{job}".replace("_", "-")[:120]
     mounts, env, web = web_fixture(task_dir, task)
     if simulator_sock is not None and task.get("scenario"):
@@ -712,6 +728,9 @@ def main() -> None:
                         help="a student's recorded run: take over each job it failed (implies --record)")
     parser.add_argument("--at", default="0.4,0.75",
                         help="--takeover: where, as fractions of the student's model calls")
+    parser.add_argument("--sampling",
+                        help="the Agent's temperature, both modes (0.6) or each (off=0.2,thinking=1.0); "
+                             "default: what the config's adapter file says, as the product reads it")
     parser.add_argument("--task-root", type=Path,
                         help="task directory (default bench/tasks; the tool training tasks live in "
                              ".runtime/agentdata/tool-tasks)")
@@ -731,6 +750,7 @@ def main() -> None:
         return
     configs = json.loads((BENCH / "configs.json").read_text(encoding="utf-8"))
     config = configs[args.config]
+    sampling = run_sampling(config, args.sampling)
     run_dir = STATE / (args.tag or args.config)
     run_dir.mkdir(parents=True, exist_ok=True)
     containment(run_dir)
@@ -750,7 +770,7 @@ def main() -> None:
     else:
         jobs = [(t, r) for t in load_tasks(args.tasks) for r in range(args.repeats)
                 if (t.name, r) not in done]
-    print(f"{len(jobs)} jobs, {len(done)} already done", flush=True)
+    print(f"{len(jobs)} jobs, {len(done)} already done; sampling {sampling or 'the bridge default'}", flush=True)
     if not jobs:
         return
     revision = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
@@ -791,8 +811,8 @@ def main() -> None:
                           args.keep, bridge, product,
                           record_port=server.port if args.record else None,
                           simulator_sock=simulator.sock_dir if simulator is not None else None,
-                          takeover=job[2] if len(job) > 2 else None)
-            row["revision"], row["task_digest"] = revision, digest
+                          takeover=job[2] if len(job) > 2 else None, sampling=sampling)
+            row["revision"], row["task_digest"], row["sampling"] = revision, digest, sampling
             # A model server that died mid-run (2026-10-07: another tenant took
             # the GPU) fails every later job in seconds; those are not the
             # model's results. Stop without recording: the next start resumes.

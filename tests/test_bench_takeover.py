@@ -80,3 +80,21 @@ def test_a_replay_that_drifted_is_counted(tmp_path):
     assert run.replay_differs(folder, 3, ['"結果0"', '"結果2"']) == 0
     assert run.replay_differs(folder, 3, ['"結果0"', '"結果9"']) == 1
     assert run.replay_differs(folder, 5, ['"結果0"']) == 1  # it never got that far
+
+
+def test_the_bench_samples_an_adapter_as_the_product_does(tmp_path, monkeypatch):
+    """The product samples an Agent adapter at the temperatures its file
+    carries (load_plan, models.SAMPLING); the bench reads the same, and a
+    sweep sets them on purpose."""
+    from test_models import gguf
+
+    stamped = tmp_path / "stamped.q8_0.gguf"
+    stamped.write_bytes(gguf(adapter=True, extra={"edgeagent.sampling.off.temp": 0.6,
+                                                  "edgeagent.sampling.thinking.temp": 1.0}))
+    (tmp_path / "plain.q8_0.gguf").write_bytes(gguf(adapter=True))
+    monkeypatch.setattr(run, "MODELS", tmp_path)
+    assert run.run_sampling({"lora": "stamped.q8_0.gguf"}, None) == {"off": 0.6, "thinking": 1.0}
+    assert run.run_sampling({"lora": "plain.q8_0.gguf"}, None) == {}
+    assert run.run_sampling({}, None) == {}
+    assert run.run_sampling({"lora": "stamped.q8_0.gguf"}, "0.2") == {"off": 0.2, "thinking": 0.2}
+    assert run.run_sampling({}, "off=0.2,thinking=1.0") == {"off": 0.2, "thinking": 1.0}

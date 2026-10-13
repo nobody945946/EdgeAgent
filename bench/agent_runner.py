@@ -146,6 +146,8 @@ def main() -> None:
     # server picks a free slot for each, as it did before the pinning.
     chat.slot_id = None
     chat.hardware = spec.get("hardware", "")  # the laptop's, for the runtime section (products that have it)
+    # The adapter's temperature per mode, as the product's load plan sets it (products that have it).
+    chat.sampling = dict(spec.get("sampling") or {})
     # A scenario's registered APIs, as edge_agent.apis.for_session gives them: listed without the key,
     # the key in the shell's environment (products that have it).
     chat.api_session = ([{k: api[k] for k in ("name", "purpose", "base_url", "docs", "key_in", "key_name")}
