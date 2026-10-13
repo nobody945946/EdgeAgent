@@ -209,6 +209,7 @@ function policy(pi) {
         const args = ['-P', '-m', 'edge_agent.lingua', params.kind];
         for (const key of ['flavor', 'dialect', 'arch']) if (params[key]) args.push(`--${key}`, params[key]);
         if (params.samples?.length) args.push('--samples', JSON.stringify(params.samples));
+        if (publicOnly) args.push('--public');
         // The translators work on the given text alone; a public lookup runs
         // them in an empty folder, away from the workspace.
         const cwd = publicOnly ? mkdtempSync(join(tmpdir(), 'edgeagent-public-')) : root;

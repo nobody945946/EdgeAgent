@@ -501,6 +501,12 @@ def describe_command(cmd: dict, depth: int, lines: list[str], effects: list[str]
         lines.append(f"{pad}- `{cmd['text']}`：執行一段動態決定的指令{invocation}（無法事先確定內容）")
         effects.append("會執行其他程式或程式碼：" + cmd["text"])
         return
+    if kind == "Foreign":
+        lines.append(f"{pad}- `{cmd['text']}`：「{name}」不在這裡的 PowerShell 說明裡（外部程式或其他模組的指令；"
+                     f"公開查詢不查這台電腦裝了什麼）{invocation}，參數不翻譯")
+        unknown.append(name)
+        effects.append("可能執行其他程式或程式碼：" + name)
+        return
     if not kind:
         lines.append(f"{pad}- `{cmd['text']}`：這台電腦找不到名為「{name}」的指令或程式")
         unknown.append(name)
@@ -599,9 +605,32 @@ def describe_statement(node: dict, depth: int, lines: list[str], effects: list[s
             describe_command(cmd, depth + 1, lines, effects, unknown, windows)
 
 
+def _commands(node: dict):
+    """Every command a statement holds, the way describe_statement walks it."""
+    kind = node["kind"]
+    if kind == "pipeline":
+        yield from (element for element in node["elements"] if element["kind"] == "command")
+    elif kind == "chain":
+        yield from _commands(node["left"])
+        yield from _commands(node["right"])
+    elif kind == "assignment":
+        yield from _commands(node["value"])
+    elif kind != "expression":
+        yield from node["commands"]
+
+
 def translate(script: str, pwsh: str | None = None, cwd: str | None = None,
-              timeout: float = 120) -> Translation:
+              timeout: float = 120, public: bool = False) -> Translation:
+    """`public`: asked by anyone in a chat, so the answer depends on the text
+    and COMMANDS alone: a command outside COMMANDS reads the same whether
+    this computer has it or not, and no program's path is shown (a stranger
+    must not learn what is installed here, or where)."""
     info = analyze(script, pwsh, cwd, timeout)
+    if public:
+        for statement in info["statements"]:
+            for cmd in _commands(statement):
+                if cmd["name"] and cmd["resolved"] not in COMMANDS:
+                    cmd.update(type="Foreign", target_type="", source="")
     environment = (f"{'Windows PowerShell' if info['edition'] == 'Desktop' else 'PowerShell'} "
                    f"{info['version']}（{'Windows' if info['windows'] else '非 Windows'}）")
     lines: list[str] = []

@@ -269,6 +269,10 @@ class NativeChat:
         if not cwd.is_dir():
             raise ValueError("workspace directory does not exist")
         session = self.session(session_id)
+        if session.public is None:
+            session.public = scope == "public"
+        elif session.public != (scope == "public"):
+            raise ValueError("this conversation's scope cannot change between public and the owner's work")
         with session.lock:
             session.cancelled.clear()
             session.cancelled_at = None

@@ -330,6 +330,23 @@ def test_real_sdk_a_public_task_sees_nothing_of_the_owners(tmp_path, repeating_m
         chat.close()
 
 
+def test_a_conversation_keeps_the_scope_it_started_with(tmp_path):
+    """EdgeAgent keys conversations by id alone: one that a public task
+    started must never continue as the owner's work (it would see his
+    history), nor the other way round."""
+    chat = NativeChat(model_port=1)
+    try:
+        chat.session("discord-7").public = True
+        for scope in ("read", "change"):
+            with pytest.raises(ValueError, match="scope cannot change"):
+                next(chat.stream_reply("discord-7", "x", agent=True, working_dir=tmp_path, scope=scope))
+        chat.session("discord-8").public = False
+        with pytest.raises(ValueError, match="scope cannot change"):
+            next(chat.stream_reply("discord-8", "x", agent=True, working_dir=tmp_path, scope="public"))
+    finally:
+        chat.close()
+
+
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
 def test_real_sdk_changed_code_without_a_passing_check_is_flagged(tmp_path, repeating_model):  # noqa: F811
     """Two layers for "done means verified": the prompt asks for run_checks,
