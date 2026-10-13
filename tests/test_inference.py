@@ -88,6 +88,91 @@ def test_a_new_agent_request_lets_the_character_finish_speaking(monkeypatch):
         assert evict is None
 
 
+def _speaking(access, seconds=None):
+    """A character request that holds its lane until the returned event is
+    set (or `seconds` pass); returns (thread, done)."""
+    speaking, done = threading.Event(), threading.Event()
+
+    def character():
+        with access.generation(agent=False, need=4000):
+            speaking.set()
+            done.wait(seconds)
+
+    thread = threading.Thread(target=character)
+    thread.start()
+    assert speaking.wait(1)
+    return thread, done
+
+
+def test_the_agents_voice_first_wait_ends_at_the_deadline_itself(monkeypatch):
+    """No re-check every half second: the Agent's request waits on the lanes
+    until the character ends or the deadline, whichever comes first."""
+    from edge_agent import inference
+
+    monkeypatch.setattr(inference, "VOICE_FIRST_SECONDS", 0.3)
+    access = InferenceAccess()
+    access.reset(65536)
+    thread, done = _speaking(access)
+    started = time.monotonic()
+    with access.agent_turn(), access.generation(agent=True, need=20000) as evict:
+        waited = time.monotonic() - started
+        assert evict is None  # it fits beside the character: they run side by side
+    assert 0.28 <= waited < 0.45
+    done.set()
+    thread.join(2)
+    # The character ends first: the Agent goes the moment it does.
+    monkeypatch.setattr(inference, "VOICE_FIRST_SECONDS", 30.0)
+    thread, done = _speaking(access, seconds=0.15)
+    started = time.monotonic()
+    with access.agent_turn(), access.generation(agent=True, need=20000):
+        assert time.monotonic() - started < 0.3
+    thread.join(2)
+
+
+def test_character_done_ends_with_the_character_or_at_the_deadline():
+    access = InferenceAccess()
+    access.reset(65536)
+    thread, done = _speaking(access)
+    started = time.monotonic()
+    access.character_done(started + 0.3)
+    assert 0.28 <= time.monotonic() - started < 0.45
+    started = time.monotonic()
+    threading.Timer(0.1, done.set).start()
+    access.character_done(started + 30)
+    assert time.monotonic() - started < 0.3
+    thread.join(2)
+
+
+def test_every_lane_change_is_told_and_a_refused_character_hears_when_it_fits():
+    """The status stream hears each change (on_change, no timer); a
+    character request turned away is counted, and admission is asked for its
+    size until a change lets it in."""
+    changes = []
+    access = InferenceAccess(lambda: changes.append(True))
+    access.reset(65536)
+    assert access.character_admission() == (True, 0)
+    told = len(changes)
+    with access.agent_turn():
+        assert len(changes) == told + 1
+        with access.generation(agent=True, need=60000):
+            told = len(changes)
+            with pytest.raises(InferenceBusy), access.generation(agent=False, need=8000):
+                pass
+            assert len(changes) == told + 1
+            assert access.character_admission() == (False, 1)
+        told = len(changes)
+        access.settle("agent", 59000)  # still too full for 8,000 beside it
+        assert access.character_admission() == (False, 1)
+        access.settle("agent", 50000)  # now it fits
+        assert access.character_admission() == (True, 1)
+        assert len(changes) == told + 2
+    told = len(changes)
+    with access.maintenance():
+        assert access.character_admission() == (False, 1)  # the model is loading
+    assert len(changes) == told + 2
+    assert access.character_admission() == (True, 1)
+
+
 def test_the_agent_always_gets_the_whole_pool():
     """64K is the Agent's floor: cells the character's cache holds are erased
     when the Agent needs them; the character waits, never the Agent."""

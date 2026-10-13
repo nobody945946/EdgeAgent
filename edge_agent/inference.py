@@ -32,7 +32,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
@@ -60,16 +60,31 @@ class InferenceBusy(RuntimeError):
 class InferenceAccess:
     """The two lanes and the cells each slot's cache holds (or a running
     request may grow to). `pool` is 0 without a character lease: one slot,
-    the Agent's, and nothing to count."""
+    the Agent's, and nothing to count.
 
-    def __init__(self) -> None:
+    Every change wakes the waiters here and calls `on_change` (the status
+    stream, core.StatusChanges): whoever waits is told, nobody asks again on a
+    timer."""
+
+    def __init__(self, on_change: Callable[[], None] = lambda: None) -> None:
         self.agent_key = uuid4().hex
         self._condition = threading.Condition()
+        self._on_change = on_change
         self._agent_reserved = False
         self._active = {AGENT: False, CHARACTER: False}
         self._paused = False
         self.pool = 0
         self.cells = {AGENT: 0, CHARACTER: 0}
+        # Character requests turned away so far, and the cells the last one
+        # needed: whether one would be admitted now is asked for that size
+        # (character_admission), so the status says when to send it again.
+        self._refused = 0
+        self._refused_need = 0
+
+    def _changed(self) -> None:
+        """With the condition held: the lanes changed."""
+        self._condition.notify_all()
+        self._on_change()
 
     @property
     def agent_reserved(self) -> bool:
@@ -81,6 +96,7 @@ class InferenceAccess:
         with self._condition:
             self.pool = pool
             self.cells = {AGENT: 0, CHARACTER: 0}
+            self._changed()
 
     @contextmanager
     def agent_turn(self) -> Iterator[None]:
@@ -91,16 +107,35 @@ class InferenceAccess:
             if self._agent_reserved or self._paused:
                 raise InferenceBusy("Agent 工作正在進行或模型正在載入")
             self._agent_reserved = True
+            self._changed()
         try:
             yield
         finally:
             with self._condition:
                 self._agent_reserved = False
-                self._condition.notify_all()
+                self._changed()
 
     def _fits(self, lane: str, need: int) -> bool:
         other = CHARACTER if lane == AGENT else AGENT
         return not self.pool or self.cells[other] + need <= self.pool
+
+    def _character_refusal(self, need: int) -> str | None:
+        """Why a character request of `need` cells cannot run now, or None."""
+        if self._paused:
+            return "模型正在載入"
+        if self._active[CHARACTER]:
+            return "角色正在生成"
+        if not self._fits(CHARACTER, need) and (self._agent_reserved or self._active[AGENT]):
+            return "Agent 工作需要整個視窗，角色推論等待"
+        return None
+
+    def character_admission(self) -> tuple[bool, int]:
+        """Whether a character request the size of the last one turned away
+        would be admitted now, and how many were turned away so far (the
+        status stream sends both: a client turned away waits for a status
+        after its refusal that admits it)."""
+        with self._condition:
+            return self._character_refusal(self._refused_need) is None, self._refused
 
     @contextmanager
     def generation(self, *, agent: bool, need: int = 0) -> Iterator[str | None]:
@@ -110,54 +145,59 @@ class InferenceAccess:
         lane = AGENT if agent else CHARACTER
         evict = None
         with self._condition:
-            if self._paused:
-                raise InferenceBusy("模型正在載入")
             if agent:
+                if self._paused:
+                    raise InferenceBusy("模型正在載入")
                 if not self._agent_reserved:
                     raise PermissionError("Agent inference requires an active task")
                 self._condition.wait_for(lambda: not self._active[AGENT])
-                # Voice first: wait while the character speaks; after the
-                # deadline run beside it, unless its cells are needed.
-                deadline = time.monotonic() + VOICE_FIRST_SECONDS
-                while self._active[CHARACTER] and (time.monotonic() < deadline or not self._fits(AGENT, need)):
-                    self._condition.wait(timeout=0.5)
+                # Voice first: wait while the character speaks, until it ends
+                # or the deadline itself; after that run beside it, unless its
+                # cells are needed (then until it ends or they fit).
+                self._condition.wait_for(lambda: not self._active[CHARACTER], VOICE_FIRST_SECONDS)
+                self._condition.wait_for(lambda: not self._active[CHARACTER] or self._fits(AGENT, need))
                 if not self._fits(AGENT, need):
                     evict = CHARACTER
             else:
-                if self._active[CHARACTER]:
-                    raise InferenceBusy("角色正在生成")
+                refusal = self._character_refusal(need)
+                if refusal is not None:
+                    self._refused += 1
+                    self._refused_need = need
+                    self._changed()
+                    raise InferenceBusy(refusal)
                 if not self._fits(CHARACTER, need):
-                    if self._agent_reserved or self._active[AGENT]:
-                        raise InferenceBusy("Agent 工作需要整個視窗，角色推論等待")
                     evict = AGENT
             self._active[lane] = True
             if evict:
                 self._active[evict] = True  # nothing runs there while its cache is erased
             self.cells[lane] = need
+            self._changed()
         try:
             yield evict
         finally:
             with self._condition:
                 self._active[lane] = False
-                self._condition.notify_all()
+                self._changed()
 
     def character_done(self, deadline: float) -> None:
         """Wait until the character's lane is idle, or the deadline."""
         with self._condition:
-            while self._active[CHARACTER] and time.monotonic() < deadline:
-                self._condition.wait(timeout=0.5)
+            self._condition.wait_for(
+                lambda: not self._active[CHARACTER], max(0.0, deadline - time.monotonic())
+            )
 
     def evicted(self, lane: str) -> None:
         """The gateway erased `lane`'s cache: its cells are free, its lane open."""
         with self._condition:
             self.cells[lane] = 0
             self._active[lane] = False
-            self._condition.notify_all()
+            self._changed()
 
     def settle(self, lane: str, cells: int) -> None:
         """What the slot's cache holds after a request, as the server reported it."""
         with self._condition:
             self.cells[lane] = min(self.cells[lane], cells)
+            self._changed()
 
     @contextmanager
     def maintenance(self) -> Iterator[None]:
@@ -165,6 +205,7 @@ class InferenceAccess:
             if self._agent_reserved or self._paused:
                 raise InferenceBusy("工作正在進行，不能重載模型")
             self._paused = True
+            self._changed()
         try:
             with self._condition:
                 self._condition.wait_for(lambda: not any(self._active.values()))
@@ -172,7 +213,7 @@ class InferenceAccess:
         finally:
             with self._condition:
                 self._paused = False
-                self._condition.notify_all()
+                self._changed()
 
 
 class InferenceGateway:
@@ -180,8 +221,8 @@ class InferenceGateway:
 
     PATHS = frozenset({"/v1/chat/completions", "/completion"})
 
-    def __init__(self, upstream_port: int) -> None:
-        self.access = InferenceAccess()
+    def __init__(self, upstream_port: int, on_change: Callable[[], None] = lambda: None) -> None:
+        self.access = InferenceAccess(on_change)
         self.upstream_url = f"http://127.0.0.1:{upstream_port}"
         self.owner_pid: int | None = None
         self.adapter_count = 0

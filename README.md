@@ -85,6 +85,8 @@ API（`edge_agent/apis.py`）：設定裡的 `apis` 是登錄清單（名稱、�
 
 SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸還後恢復原 Agent 配置。最多載入一個完整模型；租借期間 Agent 自動跟隨角色的基底與 LoRA，使用獨立 slot 做工作，不需要修改原本的 Agent 選擇。租借或工作中禁止手動切換模型。所有 slot 共用一塊 context（`--kv-unified`），大小就是 EdgeAgent 的 context 設定（不超過模型上限）；角色只說它要多少（預設 32,768，有 LoRA 時兩個 slot 各一份），剩下的是 Agent 的視窗。GPU／CPU 分配一律由 EdgeAgent 的設定決定。剩下不到 8,192 時 Agent 不共用，租借期間暫停。
 
+控制 API 的 `GET /status/events`（server-sent events）推送狀態：連上立刻送目前狀態（和 `/status` 相同，另含推論閘道現在會不會收角色請求 `character_admitted`，以及擋下過幾次 `character_refused`），之後狀態每變一次送一則。推送由變化本身觸發（載入、租借、Agent 工作、推論 lane），沒有計時器，也沒有心跳：本機對方一死，socket 就關。SilentTalk 靠它知道租借還在不在，以及被擋下（423 `inference_busy`）的角色請求何時再送。Agent 的新請求讓正在說話的角色先說完：等到角色說完或 30 秒到期，先到為準。
+
 安裝時準備公開的 Gemma 4 E4B（Agent 和 SilentTalk 共用）和附帶的 Agent adapter（複製，不下載）。角色有 LoRA 時使用兩個推論 slot，區分套用與未套用 cache；其他情況角色使用一個 slot。另加 Agent 專用 slot，避免互相清除 cache。記憶體不足時載入會失敗並回報。
 
 | 操作 | 指令 |
@@ -105,12 +107,12 @@ SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸�
 | llama.cpp b11193 router | 模型子程序、載入／卸載、LoRA；最多一個完整模型 |
 | `edge_agent/agent_bridge.mjs` | 本機 provider、RAM session、批准與輸出政策 |
 | `edge_agent/chat.py`、`bridge.py`、`turn.py` | RAM 對話、SDK RPC 與 UI 事件轉接、RAM checkpoint |
-| `edge_agent/service.py`、`control.py` | 服務進入點、UI／控制端點 |
+| `edge_agent/service.py`、`control.py` | 服務進入點、UI／控制端點、狀態串流 |
 | `edge_agent/core.py`、`router.py`、`load_plan.py` | 模型子程序、模型切換與租借協調 |
 | `edge_agent/config.py`、`model_jobs.py` | 模型設定、下載 |
 | `edge_agent/models.py` | GGUF 掃描與 Hub metadata |
 | `edge_agent/deploy.py` | 校驗資產與固定 runtime；npm lockfile 固定版本 |
-| SilentTalk `agent_lease.py` | 控制 API client、租借／歸還；不擁有推論引擎 |
+| SilentTalk `agent_lease.py` | 控制 API client、租借／歸還、跟著狀態串流；不擁有推論引擎 |
 
 控制／UI 位於 `127.0.0.1:18087`，推論位於 `127.0.0.1:18089`。Pi 與 router 沿用上游實作，本產品負責 UI、批准與租借轉接。新模型不需重建 Agent；更新 runtime 要重新驗證工具與協定。
 
