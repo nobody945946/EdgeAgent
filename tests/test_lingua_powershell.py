@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -155,6 +156,21 @@ def test_unknown_is_said_not_guessed() -> None:
     assert "找不到名為「Not-A-Command-Here」" in text
     text = powershell.translate("if ($a) { Remove-Item x }").text()
     assert "if 條件判斷" in text and "不代表都會執行" in text and "會刪除：x" in text
+
+
+def test_a_public_translation_says_nothing_about_what_this_computer_has() -> None:
+    """Anyone in a chat may ask: an installed program and a missing one read
+    the same, with no path; what COMMANDS explains is still explained."""
+    installed = Path(PWSH)
+    own = powershell.translate(f"{installed.name} -NoLogo").text()
+    assert "執行外部程式" in own and str(installed.parent) in own  # the owner's own translation names it
+    text = powershell.translate(f"{installed.name} -NoLogo; Not-A-Command-Here -x; Get-ChildItem -Path .",
+                                public=True).text()
+    assert str(installed.parent) not in text
+    assert "執行外部程式" not in text and "找不到" not in text
+    assert f"「{installed.name}」不在這裡的 PowerShell 說明裡" in text
+    assert "「Not-A-Command-Here」不在這裡的 PowerShell 說明裡" in text
+    assert "Get-ChildItem" in text and "-Path" in text
 
 
 def test_windows_aliases() -> None:

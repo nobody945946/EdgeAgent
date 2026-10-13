@@ -34,7 +34,7 @@ def regex_samples(pattern: str, flavor: str, flags: str, samples: list[str]) -> 
 
 
 def translate(kind: str, text: str, flavor: str, flags: str, dialect: str, arch: str, address: int,
-              samples: list[str] | None = None) -> str:
+              samples: list[str] | None = None, public: bool = False) -> str:
     if kind == "regex":
         from edge_agent.lingua import regex
 
@@ -44,7 +44,7 @@ def translate(kind: str, text: str, flavor: str, flags: str, dialect: str, arch:
     if kind == "powershell":
         from edge_agent.lingua import powershell
 
-        return powershell.translate(text).text()
+        return powershell.translate(text, public=public).text()
     if kind == "excel":
         from edge_agent.lingua import excel
 
@@ -78,13 +78,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--arch", default="x86-64", choices=("x86-64", "x86-32", "thumb", "arm", "arm64"))
     parser.add_argument("--address", default="0", help="machine code start address (0x... or decimal)")
     parser.add_argument("--samples", default="", help="regex: a JSON list of strings to run through the real engine")
+    parser.add_argument("--public", action="store_true",
+                        help="asked by anyone in a chat: nothing about what this computer has")
     args = parser.parse_args(argv)
     try:
         samples = json.loads(args.samples) if args.samples else None
         if samples is not None and not (isinstance(samples, list) and all(isinstance(x, str) for x in samples)):
             raise ValueError("--samples 要是字串的 JSON 清單")
         out = translate(args.kind, sys.stdin.read(), args.flavor, args.flags, args.dialect, args.arch,
-                        int(args.address, 0), samples)
+                        int(args.address, 0), samples, args.public)
     # Each translator refuses with a ValueError subclass; no PowerShell is a RuntimeError.
     except (ValueError, RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
         print(f"無法翻譯：{exc}")
