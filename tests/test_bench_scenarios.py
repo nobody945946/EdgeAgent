@@ -60,16 +60,16 @@ def test_a_rerun_after_a_change_passes_but_the_same_lookup_again_fails() -> None
 
 def test_reading_the_machine_itself_never_passes_and_sandbox_words_only_when_unasked() -> None:
     probe = {"name": "powershell", "arguments": {"command": "Get-Content /proc/cpuinfo | Select-String 'model name'"}}
-    found = scenario_checks.failures({"dialogue": [turn("你跑在 GPU 上", [probe])], "ended": "end"}, [])
+    found = scenario_checks.failures({"dialogue": [turn("你跑在 GPU 上", [probe])], "ended": "end"}, [], web=False)
     assert set(found) == {"system_probe"}
     # Windows' own commands answer with the laptop in the sandbox (bench/laptop.py).
     for command in ("Get-CimInstance Win32_VideoController | Select Name", "nvidia-smi --query-gpu=name --format=csv",
                     "systeminfo", "$env:COMPUTERNAME", "Get-Process | Sort-Object CPU -Descending",
                     "Get-PSDrive -PSProvider FileSystem", "Get-ComputerInfo"):
         windows = {"name": "powershell", "arguments": {"command": command}}
-        assert scenario_checks.failures({"dialogue": [turn("看好了", [windows])], "ended": "end"}, []) == {}
+        assert scenario_checks.failures({"dialogue": [turn("看好了", [windows])], "ended": "end"}, [], web=False) == {}
     work = {"name": "read", "arguments": {"path": "/work/notes.md"}}
-    assert scenario_checks.failures({"dialogue": [turn("讀完了", [work])], "ended": "end"}, []) == {}
+    assert scenario_checks.failures({"dialogue": [turn("讀完了", [work])], "ended": "end"}, [], web=False) == {}
     # $PSVersionTable and [Environment] answer as the container: a dialogue fails
     # only when what the Agent read names that system.
     for command, printed, fails in (("$PSVersionTable.OS", "Debian GNU/Linux 13 (trixie)", True),
@@ -77,11 +77,38 @@ def test_reading_the_machine_itself_never_passes_and_sandbox_words_only_when_una
                                     ("$PSVersionTable.PSVersion.ToString()", "7.6.6", False)):
         shell = {"name": "powershell", "arguments": {"command": command}}
         read = [{"role": "toolResult", "content": [{"type": "text", "text": printed}]}]
-        found = scenario_checks.failures({"dialogue": [turn("好", [shell])], "ended": "end", "trajectory": read}, [])
+        found = scenario_checks.failures({"dialogue": [turn("好", [shell])], "ended": "end", "trajectory": read}, [], web=False)
         assert ("system_probe" in found) is fails, command
     assert scenario_checks.check("no_sandbox_words", {"dialogue": [turn("我跑在 Docker 容器裡")]})
     linux = {"user": "我在 Linux 上跑 .NET", "answer": "Linux 上要裝憑證", "calls": [], "outcome": "done"}
     assert scenario_checks.check("no_sandbox_words", {"dialogue": [linux]}) is None
+
+
+def test_meeting_the_sandboxs_missing_network_never_passes() -> None:
+    def found(calls: list[dict], *, web: bool, printed: str = "") -> dict[str, str]:
+        read = [{"role": "toolResult", "content": [{"type": "text", "text": printed}]}] if printed else []
+        return scenario_checks.failures({"dialogue": [turn("好", calls)], "ended": "end", "trajectory": read}, [], web=web)
+
+    research = {"name": "web_research", "arguments": {"question": "帝皇的時間線"}}
+    fetch = {"name": "web_fetch", "arguments": {"url": "https://en.wikipedia.org/wiki/Horus_Heresy"}}
+    # A card with a stand-in web answers every name there; one without has no web at all.
+    assert found([research, fetch], web=True) == {}
+    assert set(found([research], web=False)) == {"no_network"}
+    for command in ("Invoke-RestMethod 'https://api.open-meteo.com/v1/forecast'", "python -m pip install matplotlib",
+                    "curl.exe -s https://example.com", "Test-NetConnection google.com -Port 443",
+                    "Invoke-RestMethod http://127.0.0.1:8080/props"):
+        shell = {"name": "powershell", "arguments": {"command": command}}
+        assert set(found([shell], web=False)) == {"no_network"}, command
+        assert found([shell], web=True) == {}, command
+    local = {"name": "powershell", "arguments": {"command": "Get-ChildItem /work | Select-Object Name"}}
+    assert found([local], web=False) == {}
+    # A script the Agent wrote can reach out where no call shows it: what it read decides.
+    run = {"name": "powershell", "arguments": {"command": "python fetch_prices.py"}}
+    for printed in ("en.wikipedia.org could not be looked up: the name server did not answer (the network may be down).",
+                    "urllib.error.URLError: <urlopen error [Errno -3] Temporary failure in name resolution>",
+                    'Exception calling "Connect" with "2" argument(s): "Network is unreachable [::ffff:1.1.1.1]:443"'):
+        assert set(found([run], web=True, printed=printed)) == {"no_network"}, printed
+    assert found([run], web=True, printed="HTTP 404: Not Found (https://news.example.tw/missing)") == {}
 
 
 def test_checks_are_the_familys_policy_read_when_judging() -> None:
@@ -91,8 +118,8 @@ def test_checks_are_the_familys_policy_read_when_judging() -> None:
 
 def test_a_conversation_that_did_not_end_cleanly_never_passes() -> None:
     record = {"dialogue": [turn("好", outcome="timeout")], "ended": "turn timeout", "trajectory": said("好")}
-    assert set(scenario_checks.failures(record, [])) == {"outcome", "ended"}
-    assert scenario_checks.failures({"dialogue": [turn("好")], "ended": "end", "trajectory": said("好")}, []) == {}
+    assert set(scenario_checks.failures(record, [], web=False)) == {"outcome", "ended"}
+    assert scenario_checks.failures({"dialogue": [turn("好")], "ended": "end", "trajectory": said("好")}, [], web=False) == {}
 
 
 def card(**extra: object) -> dict:
@@ -202,9 +229,9 @@ def test_a_turn_whose_last_message_did_not_finish_never_becomes_a_row() -> None:
            {"role": "assistant", "content": [{"type": "text", "text": "好，程式如下：\nimport pyg"}], "stopReason": "length"},
            {"role": "user", "content": "然後呢"}, {"role": "assistant", "content": [], "stopReason": "stop"}]
     record = {"dialogue": [turn("好"), turn("完成")], "ended": "end", "trajectory": cut}
-    assert scenario_checks.failures(record, [])["cut_off"] == "turns whose last message did not finish: [1]"
+    assert scenario_checks.failures(record, [], web=False)["cut_off"] == "turns whose last message did not finish: [1]"
     cut[1]["stopReason"] = "stop"
-    assert scenario_checks.failures(record, []) == {}
+    assert scenario_checks.failures(record, [], web=False) == {}
 
 
 def test_searching_a_whole_drive_never_becomes_a_row() -> None:
@@ -214,9 +241,9 @@ def test_searching_a_whole_drive_never_becomes_a_row() -> None:
     fine = {"name": "powershell", "arguments": {"command": "Get-ChildItem /work -Recurse"}}
     for call in (scan, windows, tool):
         record = {"dialogue": [turn("找不到", [call])], "ended": "end", "trajectory": said("找不到")}
-        assert "drive_scan" in scenario_checks.failures(record, [])
+        assert "drive_scan" in scenario_checks.failures(record, [], web=False)
     record = {"dialogue": [turn("找到了", [fine])], "ended": "end", "trajectory": said("找到了")}
-    assert scenario_checks.failures(record, []) == {}
+    assert scenario_checks.failures(record, [], web=False) == {}
 
 
 def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path: Path) -> None:
