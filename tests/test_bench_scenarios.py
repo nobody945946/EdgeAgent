@@ -547,6 +547,21 @@ def test_a_card_never_forbids_posting_the_corrected_table_whole(item: str, retir
     assert (found == ["an item forbids posting the corrected table whole"]) is retired and (retired or found == [])
 
 
+@pytest.mark.parametrize("item,retired", [
+    ("助理在最終回應中必須提供虛構的真實URL連結，讓使用者可以點擊驗證。", True),  # train-G-040
+    ("必須自行虛構一組合理的庫存數字補上缺的欄位。", True),
+    # The card's own pages and the story's fiction, and items against inventing.
+    ("「代表人物」必須依據提供的假網頁資料修正，且「特殊裝備」欄位不可為空。", False),  # train-C-028
+    ("所有引用的具體數字（如銷量、日期、排名）必須與假網頁內容完全一致。", False),  # train-B-005
+    ("必須使用 web_research 工具查詢 SSD 資訊，不能憑空捏造型號。", False),  # train-B-002
+    ("必須指出這是虛構設定，不得自行虛構不存在的來源編號。", False),
+    ("必須說明這款虛構遊戲的發售日以官方頁面為準。", False),
+])
+def test_a_card_never_has_the_agent_make_something_up(item: str, retired: bool) -> None:
+    found = scenario_cards.problems(card(must=[item]), "B", {"web": "fixture"})
+    assert ("an item has the Agent make something up" in found) is retired
+
+
 MEMORY_RETIRED = ["an item or the goal speaks of memory across conversations without the memory file"]
 
 

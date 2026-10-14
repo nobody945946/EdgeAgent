@@ -285,6 +285,23 @@ PROGRAM = re.compile(r"(?i)(?:python|pwsh|powershell|cmd|notepad|explorer|code|g
 WEB_ADDRESS = re.compile(r"(?:https?://|www\.|[A-Za-z0-9-]+\.(?:com|net|org|io|gov|edu|tw|example|dev|info)/)[\x21-\x7e]*")
 
 
+# A must item that has the Agent make something up itself: train-G-040
+# 「助理在最終回應中必須提供虛構的真實URL連結」, where the pages held the real
+# order link; the judge would hold the Agent to inventing one. The pages the
+# card provides (提供的假網頁), the story's own fiction (a made-up brand, game
+# or planet the pages describe) and an item that forbids inventing are not it.
+INVENT = re.compile(r"(?:提供|給出|給予|附上|寫出|編出|生成|產生|自行|自己|編一?個|想一?個|創造|捏造)"
+                    r"(?:一個|一些|一份|一組|出)?(?:虛構|假|模擬)"
+                    r"(?!的?網頁|的?頁面|的?IP|的?品牌|的?公司|的?遊戲|的?行星|的?程式庫|的?設定)")
+FORBID = re.compile(r"不得|不能|不可|不要|不准|禁止|避免|而非|不應|絕不")
+
+
+def invents(item: str) -> bool:
+    """The item has the Agent make something up (INVENT), not forbid it in the same sentence."""
+    return any(match and not FORBID.search(sentence[:match.start()])
+               for sentence in SENTENCE_END.split(item) for match in [INVENT.search(sentence)])
+
+
 def story(card: dict) -> list[str]:
     """What the card tells the simulated user to say and the Agent to do: not must_not."""
     parts = [card.get("opening"), card.get("goal"), *(card.get("plan") or []), *(card.get("must") or [])]
@@ -317,6 +334,8 @@ def problems(card: dict, family_id: str, family: dict) -> list[str]:
         found.append("an item is about Simplified Chinese (every row becomes Traditional)")
     if any(REPOST.search(item) and not ASKED_PART.search(item) for item in items):
         found.append("an item forbids posting the corrected table whole")
+    if any(invents(item) for item in card.get("must") or [] if isinstance(item, str)):
+        found.append("an item has the Agent make something up")
     if any(CROSS_SESSION.search(text) and not MEMORY_FILE.search(text) for text in [*items, str(card.get("goal", ""))]):
         found.append("an item or the goal speaks of memory across conversations without the memory file")
     outside = next((m.group() for text in story(card) for m in [OUTSIDE.search(text)] if m), None)
