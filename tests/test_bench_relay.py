@@ -8,8 +8,13 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
 import relay
+
+# The relay listens on a Unix socket for the sandbox; the bench runs on the Linux dev box.
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="Unix sockets: the bench is Linux-only")
 
 STUDENT = {"role": "assistant", "content": None, "reasoning_content": "先看檔案",
            "tool_calls": [{"id": "c1", "type": "function",

@@ -227,4 +227,5 @@ def test_a_read_only_task_computes_on_what_it_read_but_never_reaches_further(tmp
 
 def test_a_function_named_like_a_system_read_is_not_one(tmp_path):
     assert not routine_shell("function Get-CimInstance { Remove-Item x }; Get-CimInstance Win32_BIOS", tmp_path)
-    assert not routine_shell("Get-CimInstance Win32_BIOS", tmp_path)  # no CimCmdlets here: nothing to prove
+    # The real one is a read where CimCmdlets is (Windows); elsewhere there is nothing to prove.
+    assert routine_shell("Get-CimInstance Win32_BIOS", tmp_path) is (sys.platform == "win32")

@@ -76,7 +76,7 @@ def test_a_replay_that_drifted_is_counted(tmp_path):
     folder.mkdir()
     request = {"tools": TOOLS, "messages": [{"role": "tool", "content": "結果0"}, {"role": "tool", "content": "結果2"}]}
     for index in range(4):
-        (folder / f"{index:04d}.json").write_text(json.dumps(request, ensure_ascii=False))
+        (folder / f"{index:04d}.json").write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
     assert run.replay_differs(folder, 3, ['"結果0"', '"結果2"']) == 0
     assert run.replay_differs(folder, 3, ['"結果0"', '"結果9"']) == 1
     assert run.replay_differs(folder, 5, ['"結果0"']) == 1  # it never got that far
