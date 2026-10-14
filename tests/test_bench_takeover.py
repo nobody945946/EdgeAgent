@@ -61,20 +61,28 @@ def test_a_failed_job_is_taken_over_with_the_students_own_answers_and_lines(tmp_
     assert late["seen"] == ['"結果0"', '"結果2"']  # what the teacher's first request shows
 
 
-def test_passed_jobs_unjudged_scenarios_and_rewritten_histories_are_not_taken_over(tmp_path):
-    assert run.takeover_plans(_student(tmp_path, passed=True), [0.5], "*") == []
-    with pytest.raises(SystemExit, match="judge it first"):
-        run.takeover_plans(_student(tmp_path / "s", passed=True, kind="scenario"), [0.5], "*")
+def test_passed_jobs_unjudged_runs_and_rewritten_histories_are_not_taken_over(tmp_path):
+    assert run.takeover_plans(_student(tmp_path, passed=True, verdict=True), [0.5], "*") == []
+    # The judge sees every scenario and every job that passed its check: one without a verdict is not judged yet.
+    for name, kind in (("s", "scenario"), ("t", "")):
+        with pytest.raises(SystemExit, match="judge it first"):
+            run.takeover_plans(_student(tmp_path / name, passed=True, kind=kind), [0.5], "*")
     assert run.takeover_plans(_student(tmp_path / "j", passed=True, kind="scenario", verdict=True), [0.5], "*") == []
     # A compaction rewrote the history: no word-for-word replay past it.
     plans = run.takeover_plans(_student(tmp_path / "r", passed=False, rewritten=True), [0.25, 0.75], "*")
     assert [rep for _, rep, _ in plans] == ["0t1"]
 
 
+def test_a_job_that_passed_its_check_but_not_the_judge_is_taken_over(tmp_path):
+    """Its check graded only what it asked for; the judge found its answers wrong."""
+    plans = run.takeover_plans(_student(tmp_path, passed=True, verdict=False), [0.75], "*")
+    assert [rep for _, rep, _ in plans] == ["0t3"]
+
+
 def test_a_crash_rerun_that_passed_is_not_taken_over(tmp_path):
     """run.py reruns a crashed job under the same name: the crash's row stays in
     results.jsonl, but the sandbox failed there, not the student."""
-    student = _student(tmp_path, passed=True)
+    student = _student(tmp_path, passed=True, verdict=True)
     rerun = (student / "results.jsonl").read_text()
     crash = {"task": "archive-00", "rep": 0, "kind": "", "passed": False, "outcome": "crash", "grade": {}}
     (student / "results.jsonl").write_text(json.dumps(crash) + "\n" + rerun)

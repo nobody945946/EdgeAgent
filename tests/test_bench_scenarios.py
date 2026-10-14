@@ -246,11 +246,14 @@ def test_searching_a_whole_drive_never_becomes_a_row() -> None:
     assert scenario_checks.failures(record, [], web=False) == {}
 
 
-def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind", ["scenario", "train-tool"])
+def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path: Path, kind: str) -> None:
     """judge and validate against a stand-in judge model whose answer check
-    accepts an answer only if it is that card's full answer: originals pass,
-    cut and swapped answers fail, and a conversation without an answer is left
-    out."""
+    accepts an answer only if it is that task's full answer, and whose
+    GROUNDED item accepts it only if it states the count the tool gave:
+    originals pass, cut, swapped and misstated answers fail, a conversation
+    without an answer is left out, and a tool job that failed its own check
+    is never judged."""
     import re
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -258,18 +261,24 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
 
     class Judge(BaseHTTPRequestHandler):
         strict = False  # a judge that rejects everything
+        blind = False  # a judge that never compares a number
 
         def do_POST(self) -> None:
             prompt = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["messages"][0]["content"]
             if "助理最後的回答：" in prompt:  # the answer check sees messages and answers only
-                assert "目標" not in prompt
-                card = re.search(r"使用者：問(\d+)", prompt).group(1)
-                ok = not Judge.strict and f"助理最後的回答：答{card}。完整的結尾{card}。" in prompt
+                assert "目標" not in prompt and "工具（" not in prompt
+                task = re.search(r"使用者：問(\d+)", prompt).group(1)
+                answer = re.search(r"助理最後的回答：(.*)", prompt).group(1)
+                ok = not Judge.strict and answer.startswith(f"答{task}：") and answer.endswith(f"完整的結尾{task}。")
                 verdict = {"turns": [{"turn": 1, "ending": "結尾", "complete": ok, "responds": ok}]}
             else:
-                keys = re.findall(r"^([MN]\d+)\. ", prompt, re.MULTILINE)
-                assert keys and "助理：" in prompt
-                verdict = {"items": [{"id": key, "pass": not Judge.strict, "evidence": "無"} for key in keys]}
+                assert "使用者的目標（使用者沒有原句說出來）：目標" in prompt and "助理：" in prompt
+                items = dict(re.findall(r"^([MN]\d+)\. (.*)$", prompt, re.MULTILINE))
+                assert len(items) == (4 if kind == "scenario" else 2)
+                given = re.search(r"工具（結果）：共 (\d+) 個檔案", prompt).group(1)
+                stated = re.search(r"助理：答\d+：共 (\d+) 個檔案", prompt).group(1)
+                verdict = {"items": [{"id": key, "evidence": "無", "pass": not Judge.strict and (
+                    Judge.blind or stated == given or scenario_judge.GROUNDED[0] not in text)} for key, text in items.items()]}
             body = json.dumps({"choices": [{"message": {"content": json.dumps(verdict)}}]}).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
@@ -283,16 +292,22 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
     (run_dir / "traj").mkdir(parents=True)
     rows = []
     count = scenario_judge.MIN_ACCEPTED + 1  # the last has no answer
-    for n in range(count):
+    for n in range(count + 1):  # and one more failed its own check
         name = f"train-C-{n:03d}"
         (task_root / name).mkdir(parents=True)
-        (task_root / name / "task.json").write_text(json.dumps(
-            {"family": "C", "must": ["做完"], "must_not": ["反問"], "scenario": {"goal": f"目標{n}"}}), encoding="utf-8")
-        answer = f"答{n}。完整的結尾{n}。" if n < count - 1 else None
-        trajectory = [{"role": "user", "content": f"問{n}"}, *(said(answer) if answer else [])]
+        task = ({"family": "C", "must": ["做完"], "must_not": ["反問"], "scenario": {"goal": f"目標{n}"}}
+                if kind == "scenario" else {"kind": kind, "prompt": f"問{n}", "spec": {"situation": f"目標{n}"}})
+        (task_root / name / "task.json").write_text(json.dumps(task, ensure_ascii=False), encoding="utf-8")
+        answer = f"答{n}：共 {30 + n} 個檔案。完整的結尾{n}。" if n < count - 1 else None
+        trajectory = [{"role": "user", "content": f"問{n}"},
+                      {"role": "assistant", "content": [{"type": "toolCall", "name": "ls", "arguments": {}}]},
+                      {"role": "toolResult", "content": [{"type": "text", "text": f"共 {30 + n} 個檔案"}]},
+                      *(said(answer) if answer else [])]
         (run_dir / "traj" / f"{name}-r0.json").write_text(json.dumps(trajectory, ensure_ascii=False), encoding="utf-8")
-        rows.append({"task": name, "rep": 0, "kind": "scenario", "outcome": "done", "ended": "end",
-                     "dialogue": [turn(answer or "")]})
+        rows.append({"task": name, "rep": 0, "kind": kind, "outcome": "done", "ended": "end", "passed": n < count,
+                     "grade": {}, "dialogue": [turn(answer or "")]})
+    if kind == "scenario":
+        rows.pop()  # a scenario has no check of its own to fail
     (run_dir / "results.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Judge)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -306,18 +321,38 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
         scenario_judge.validate(args, server)
         summary = json.loads((run_dir / "judge-validation.json").read_text(encoding="utf-8"))
         accepted = count - 1
+        each = dict.fromkeys(scenario_judge.CORRUPTIONS, accepted)
         assert {k: v for k, v in summary.items() if k != "details"} == {
-            "conversations": accepted, "originals_accepted": accepted, "corrupted": 3 * accepted,
-            "corrupted_rejected": 3 * accepted, "slipped": {"cut": 0, "swap": 0, "swap_all": 0}, "trusted": True}
+            "conversations": accepted, "originals_accepted": accepted, "corrupted": 4 * accepted,
+            "corrupted_rejected": 4 * accepted, "tried": each, "slipped": dict.fromkeys(each, 0), "trusted": True}
+        # Three kinds of four told every time do not make up for the fourth.
+        Judge.blind = True
+        with pytest.raises(SystemExit, match=rf"did not prove itself on number \(0/{accepted} rejected\)"):
+            scenario_judge.validate(args, server)
+        Judge.blind = False
         scenario_judge.judge(args, server)
         verdicts = {v["job"]: v for v in map(json.loads, (run_dir / "verdicts.jsonl").read_text(encoding="utf-8").splitlines())}
-        assert len(verdicts) == count
+        assert len(verdicts) == count  # the tool job that failed its check is not judged
         assert all(verdicts[f"train-C-{n:03d}-r0"]["passed"] for n in range(accepted))
         assert len(verdicts["train-C-000-r0"]["judge"]) == 3  # the answer check, then the items twice
         last = verdicts[f"train-C-{accepted:03d}-r0"]
         assert not last["passed"] and len(last["judge"]) == 1 and "turn 1" in last["judge"][0]["failed"]
     finally:
         httpd.shutdown()
+
+
+def test_a_misstated_number_is_one_the_transcript_gave_and_never_a_list_number() -> None:
+    numbers = scenario_judge.given([
+        {"role": "user", "content": "整理 IMG_22310 那批"},
+        {"role": "assistant", "content": [{"type": "text", "text": "共 99 張"},
+                                          {"type": "toolCall", "name": "ls", "arguments": {"path": "相簿2024"}}]},
+        {"role": "toolResult", "content": [{"type": "text", "text": "共 35 個檔案，12.5 MB"}]}])
+    # The assistant's own words give nothing; the user's, the calls' and the results' do.
+    assert {"22310", "2024", "35", "12.5"} <= numbers and "99" not in numbers
+    assert scenario_judge.misstate("1. 共 35 個檔案\n2. 12.5 MB", numbers) == "1. 共 35 個檔案\n2. 12.6 MB"
+    assert scenario_judge.misstate("IMG_22310 已改名", numbers) == "IMG_22311 已改名"
+    # A list's own numbers, a number the transcript never gave: nothing to misstate.
+    assert scenario_judge.misstate("1. 完成\n2. 共 99 張", numbers) is None
 
 
 def test_results_of_a_changed_or_retired_task_are_dropped(tmp_path: Path, monkeypatch) -> None:

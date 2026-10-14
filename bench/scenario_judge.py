@@ -1,19 +1,25 @@
-"""Judge recorded scenario conversations (bench/scenario_cards.py tasks).
+"""Judge recorded conversations: the scenario cards (bench/scenario_cards.py)
+and every other recorded task (tool, MCP, memory, public, chat, Python).
 
-A conversation passes when every programmatic check of its family passes
-(bench/scenario_checks.py) and the judge model, a different family from the
-teacher (owner, 2026-10-07: Gemma 4 31B), finds that each turn's last answer
-answers its own message in full (one call that sees only the messages and
-those answers), then every must / must_not item of the card met, twice, with
-the items in a different order each time. It sees what the asker saw plus the
-tool calls and results, never the thinking.
-Writes <run>/verdicts.jsonl; bench/dataset.py turns only passing
+A scenario conversation passes when every programmatic check of its family
+passes (bench/scenario_checks.py) and the judge model, a different family
+from the teacher (owner, 2026-10-07: Gemma 4 31B), finds that each turn's
+last answer answers its own message in full (one call that sees only the
+messages and those answers), then every must / must_not item of the card
+and GROUNDED (what the answers state is right) met, twice, with the items in
+a different order each time. Any other task is judged once it passed its own
+check: the same answer check, then GROUNDED twice, since a task's check
+grades only what it asked for. The
+judge sees what the asker saw plus the tool calls and results, never the
+thinking. Writes <run>/verdicts.jsonl; bench/dataset.py turns only passing
 conversations into rows.
 
 `validate` first proves the judge worth trusting: for the conversations it
 accepts, it must reject corrupted copies (the last answer stopped
-mid-sentence, the last answer or every answer swapped for another card's).
-A judge that accepts too few originals cannot show that and is not trusted.
+mid-sentence, the last answer or every answer swapped for another task's,
+a number the transcript gave misstated in the last answer), each kind of
+corruption on its own. A judge that accepts too few originals cannot show
+that and is not trusted.
 
     python bench/scenario_judge.py judge .runtime/bench/<run> --task-root <tasks> --config judge-gemma
     python bench/scenario_judge.py validate .runtime/bench/<run> --task-root <tasks> --config judge-gemma
@@ -46,7 +52,13 @@ REJECT_NEEDED = 0.9
 # Fewer accepted originals than this leave too few corrupted copies to tell
 # a judge that tells them apart from one that rejects everything.
 MIN_ACCEPTED = 10
-CORRUPTIONS = ("cut", "swap", "swap_all")
+CORRUPTIONS = ("cut", "swap", "swap_all", "number")
+# A task's check grades only what it asked for (the files moved, the price
+# asked), and a card's items mostly the process: v3's public_ok-05-r0 passed
+# its check with a wrong aside on how a bill splits (8 people at .66 where it
+# was 4). Every conversation is judged on what its answers state.
+GROUNDED = ("回答裡寫出的每個數字、名稱、檔名和計算結果都對：出自工具結果或使用者訊息的，和它們一致；自己算的，算對",)
+GROUNDED_NOT = ("回答說做了紀錄裡沒做、或做了但失敗的事",)
 # Every row is one turn (bench/dataset.py), so every answer must answer its own
 # message. A card's items often check only the process: on spec v2's longer
 # conversations a last answer swapped for another card's still met them all
@@ -111,9 +123,19 @@ def transcript(trajectory: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def card(task: dict) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """The goal and the must / must_not items a conversation is judged on:
+    GROUNDED, with a scenario card's goal and its own items, or any other
+    task's situation (else its message)."""
+    if "scenario" in task:
+        return (task["scenario"]["goal"], (*task["must"], *GROUNDED), (*task["must_not"], *GROUNDED_NOT))
+    return (task.get("spec") or {}).get("situation") or "第一則訊息要的事", GROUNDED, GROUNDED_NOT
+
+
 def items_for(task: dict, rng: random.Random) -> list[tuple[str, str]]:
-    found = [(f"M{i}", f"必須：{text}") for i, text in enumerate(task["must"], 1)]
-    found += [(f"N{i}", f"不可：{text}") for i, text in enumerate(task["must_not"], 1)]
+    _, must, must_not = card(task)
+    found = [(f"M{i}", f"必須：{text}") for i, text in enumerate(must, 1)]
+    found += [(f"N{i}", f"不可：{text}") for i, text in enumerate(must_not, 1)]
     rng.shuffle(found)
     return found
 
@@ -133,7 +155,7 @@ def ask(port: int, prompt: str) -> str:
 def rule(port: int, task: dict, trajectory: list[dict], seed: int) -> dict:
     """One judging pass: every item's verdict, or why it could not be read."""
     items = items_for(task, random.Random(seed))
-    prompt = JUDGE_PROMPT.format(goal=task["scenario"]["goal"], transcript=transcript(trajectory),
+    prompt = JUDGE_PROMPT.format(goal=card(task)[0], transcript=transcript(trajectory),
                                  items="\n".join(f"{key}. {text}" for key, text in items))
     match = re.search(r"\{.*\}", ask(port, prompt), re.DOTALL)
     try:
@@ -180,12 +202,20 @@ def answered(port: int, trajectory: list[dict]) -> dict:
             "passed": not missing and all(verdicts.values()) and all(answer for _, answer in pairs)}
 
 
+def checks(task: dict, record: dict) -> dict:
+    """A scenario family's programmatic checks that failed; any other task
+    comes here only after passing its own check (records)."""
+    if "scenario" not in task:
+        return {}
+    return failures(record, family_checks(task["family"]), web=bool(task.get("web")))
+
+
 def verdict(port: int | None, task: dict, record: dict) -> dict:
     """The programmatic checks, then (with a judge server) the answer check
-    and the card's items twice; each pass only runs if the one before passed.
+    and the items twice; each pass only runs if the one before passed.
     Without a server (--checks-only: the judge failed its own validation) a
     conversation passes on the checks alone."""
-    found = failures(record, family_checks(task["family"]), web=bool(task.get("web")))
+    found = checks(task, record)
     if found:
         return {"passed": False, "checks": found}
     if port is None:
@@ -199,13 +229,16 @@ def verdict(port: int | None, task: dict, record: dict) -> dict:
 
 
 def records(run_dir: Path, task_root: Path) -> list[tuple[str, dict, dict]]:
-    """(job, task, record) for every scenario job of the run."""
+    """(job, task, record) for every scenario job of the run, and every other
+    job that passed its own check (one that failed never becomes a row)."""
     found = []
     for line in (run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines():
         result = json.loads(line)
         task_file = task_root / result["task"] / "task.json"
         # A crash is the sandbox failing to report (run.py reruns it), not a conversation.
-        if result.get("kind") != "scenario" or result.get("outcome") == "crash" or not task_file.is_file():
+        if result.get("outcome") == "crash" or not task_file.is_file():
+            continue
+        if result.get("kind") != "scenario" and not run.clean(result):
             continue
         job = f"{result['task']}-r{result['rep']}"
         trajectory_file = run_dir / "traj" / f"{job}.json"
@@ -225,7 +258,8 @@ def judge(args: argparse.Namespace, server: run.Server | None) -> None:
         job, task, record = item
         found = verdict(server.port if server is not None else None, task, record)
         with lock, out.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"job": job, "family": task["family"], **found}, ensure_ascii=False) + "\n")
+            handle.write(json.dumps({"job": job, "family": task.get("family") or task.get("kind", ""), **found},
+                                    ensure_ascii=False) + "\n")
         print(f"{job}: {'PASS' if found['passed'] else 'fail'} {list(found['checks'])}", flush=True)
 
     todo = [item for item in records(args.run, args.task_root) if item[0] not in done]
@@ -261,21 +295,55 @@ def cut_short(text: str) -> str:
     return text[:start + (end - start) // 2].rstrip("，、：；,;: ")
 
 
-def corrupt(trajectory: list[dict], other: list[dict], how: str) -> list[dict]:
-    """A copy whose answers fail the answer check for sure: the last turn's
-    answer stops mid-sentence (cut), is another card's last answer (swap), or
-    every answer is another card's (swap_all)."""
+NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+
+def given(trajectory: list[dict]) -> set[str]:
+    """Every number the judge is shown outside the assistant's answers: the
+    user's messages and the tool calls and results, as transcript shows them."""
+    silent = [{**m, "content": [x for x in m.get("content") or [] if not (isinstance(x, dict) and x.get("type") == "text")]}
+              if m.get("role") == "assistant" else m for m in trajectory]
+    return set(NUMBER.findall(transcript(silent)))
+
+
+def misstate(text: str, numbers: set[str]) -> str | None:
+    """`text` with its last number of two characters or more that the
+    transcript gave (a count, a size, a price, the digits of a name) changed
+    to one it never gave; None when it states none. A one-digit number is too
+    often the answer's own (a list's 1., 2.) to make it wrong."""
+    for match in reversed(list(NUMBER.finditer(text))):
+        number = match.group(0)
+        if len(number) < 2 or number not in numbers:
+            continue
+        for step in range(1, 10):
+            changed = number[:-1] + str((int(number[-1]) + step) % 10)
+            if changed not in numbers:
+                return text[:match.start()] + changed + text[match.end():]
+    return None
+
+
+def corrupt(trajectory: list[dict], other: list[dict], how: str) -> list[dict] | None:
+    """A copy whose answers fail the judge for sure: the last turn's answer
+    stops mid-sentence (cut), is another task's last answer (swap), every
+    answer is another task's (swap_all), or the last answer misstates a
+    number the transcript gave (number; None when it states none)."""
     def replaced(index: int, text: str) -> dict:
         message = trajectory[index]
         kept = [x for x in message["content"] if not (isinstance(x, dict) and x.get("type") == "text")]
         return {**message, "content": [*kept, {"type": "text", "text": text}]}
 
     mine, theirs = answers(trajectory), ["\n".join(texts(other[i])) for i in answers(other)]
+    last = "\n".join(texts(trajectory[mine[-1]])).strip()
     out = list(trajectory)
     if how == "cut":
-        out[mine[-1]] = replaced(mine[-1], cut_short("\n".join(texts(trajectory[mine[-1]])).strip()))
+        out[mine[-1]] = replaced(mine[-1], cut_short(last))
     elif how == "swap":
         out[mine[-1]] = replaced(mine[-1], theirs[-1])
+    elif how == "number":
+        wrong = misstate(last, given(trajectory))
+        if wrong is None:
+            return None
+        out[mine[-1]] = replaced(mine[-1], wrong)
     else:
         for n, index in enumerate(mine):
             out[index] = replaced(index, theirs[n % len(theirs)])
@@ -284,7 +352,7 @@ def corrupt(trajectory: list[dict], other: list[dict], how: str) -> list[dict]:
 
 def validate(args: argparse.Namespace, server: run.Server) -> None:
     found = [(job, task, record) for job, task, record in records(args.run, args.task_root)
-             if answers(record["trajectory"]) and not failures(record, family_checks(task["family"]), web=bool(task.get("web")))][:args.limit]
+             if answers(record["trajectory"]) and not checks(task, record)][:args.limit]
 
     def one(index: int) -> dict:
         job, task, record = found[index]
@@ -294,32 +362,39 @@ def validate(args: argparse.Namespace, server: run.Server) -> None:
         if not original["passed"]:
             return {"job": job, "accepted": False, "failed": original.get("judge", [{}])[-1].get("failed", {})}
         other = found[(index + 1) % len(found)][2]["trajectory"]
-        slipped = [how for how in CORRUPTIONS
-                   if verdict(server.port, task, {**record, "trajectory": corrupt(record["trajectory"], other, how)})["passed"]]
-        return {"job": job, "accepted": True, "slipped": slipped}
+        copies = {how: corrupt(record["trajectory"], other, how) for how in CORRUPTIONS}
+        tried = [how for how, copy in copies.items() if copy is not None]
+        slipped = [how for how in tried if verdict(server.port, task, {**record, "trajectory": copies[how]})["passed"]]
+        return {"job": job, "accepted": True, "tried": tried, "slipped": slipped}
 
-    details, accepted, slipped = [], 0, []
+    details, accepted, trials, rejected = [], 0, 0, 0
     with ThreadPoolExecutor(server.parallel) as pool:
         for detail in pool.map(one, range(len(found))):
             details.append(detail)
             accepted += detail["accepted"]
-            slipped += detail.get("slipped", [])
+            trials += len(detail.get("tried", []))
+            rejected += len(detail.get("tried", [])) - len(detail.get("slipped", []))
             print(f"{detail['job']}: originals accepted {accepted}/{len(details)}, "
-                  f"corrupted rejected {accepted * len(CORRUPTIONS) - len(slipped)}/{accepted * len(CORRUPTIONS)}",
-                  flush=True)
-    trials = accepted * len(CORRUPTIONS)
+                  f"corrupted rejected {rejected}/{trials}", flush=True)
+    tried = {how: sum(how in d.get("tried", []) for d in details) for how in CORRUPTIONS}
+    slipped = {how: sum(how in d.get("slipped", []) for d in details) for how in CORRUPTIONS}
+    # Each kind on its own: a judge that tells a cut answer every time must
+    # not pass for one that tells a wrong number some of the time. A kind
+    # tried fewer than MIN_ACCEPTED times cannot show it either.
+    weak = [how for how in CORRUPTIONS
+            if tried[how] < MIN_ACCEPTED or tried[how] - slipped[how] < REJECT_NEEDED * tried[how]]
     summary = {"conversations": len(found), "originals_accepted": accepted, "corrupted": trials,
-               "corrupted_rejected": trials - len(slipped),
-               "slipped": {how: slipped.count(how) for how in CORRUPTIONS},
-               "trusted": accepted >= MIN_ACCEPTED and trials - len(slipped) >= REJECT_NEEDED * trials}
+               "corrupted_rejected": rejected, "tried": tried, "slipped": slipped,
+               "trusted": accepted >= MIN_ACCEPTED and not weak}
     (args.run / "judge-validation.json").write_text(json.dumps({**summary, "details": details}, ensure_ascii=False),
                                                     encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False))
     if accepted < MIN_ACCEPTED:
         raise SystemExit(f"the judge accepted only {accepted} originals (needs {MIN_ACCEPTED} to be tested)")
-    if not summary["trusted"]:
-        raise SystemExit(f"the judge rejected only {summary['corrupted_rejected']}/{trials} corrupted conversations "
-                         f"(needs {REJECT_NEEDED:.0%})")
+    if weak:
+        raise SystemExit("the judge did not prove itself on " + ", ".join(
+            f"{how} ({tried[how] - slipped[how]}/{tried[how]} rejected)" for how in weak)
+            + f" (each needs {MIN_ACCEPTED} tries and {REJECT_NEEDED:.0%} rejected)")
 
 
 def main() -> None:

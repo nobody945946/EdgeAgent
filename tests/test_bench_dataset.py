@@ -112,6 +112,7 @@ def _takeover_run(tmp_path: Path, differs: int) -> Path:
     (run_dir / "results.jsonl").write_text(json.dumps({
         "task": "archive-00", "rep": "1t2", "kind": "", "passed": True, "outcome": "done", "grade": {},
         "takeover": {"from": "archive-00-r1", "at": 2, "of": 4, "replay_differs": differs}}) + "\n", encoding="utf-8")
+    (run_dir / "verdicts.jsonl").write_text(json.dumps({"job": "archive-00-r1t2", "passed": True}) + "\n", encoding="utf-8")
     return run_dir
 
 
@@ -128,6 +129,16 @@ def test_a_takeover_trains_only_what_the_teacher_wrote(tmp_path: Path) -> None:
 def test_a_takeover_whose_replay_drifted_is_not_used(tmp_path: Path) -> None:
     rows, why = dataset.rows(_takeover_run(tmp_path, 1))
     assert rows == [] and why == {"takeover replay drifted": 1}
+
+
+def test_a_clean_job_whose_answers_the_judge_did_not_pass_gives_no_rows(tmp_path: Path) -> None:
+    """A tool task's check grades only what it asked for: v3's public_ok-05-r0
+    passed its check with a wrong aside on how a bill splits."""
+    run_dir = _takeover_run(tmp_path, 0)
+    (run_dir / "verdicts.jsonl").write_text(json.dumps({"job": "archive-00-r1t2", "passed": False}) + "\n", encoding="utf-8")
+    assert dataset.rows(run_dir) == ([], {"answers not passed by the judge": 1})
+    (run_dir / "verdicts.jsonl").unlink()  # a run never judged
+    assert dataset.rows(run_dir) == ([], {"answers not passed by the judge": 1})
 
 
 def test_a_job_that_met_the_sandboxs_missing_network_gives_no_rows(tmp_path: Path) -> None:

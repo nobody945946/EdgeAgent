@@ -604,9 +604,16 @@ def replay_differs(folder: Path, at: int, seen: list[str]) -> int:
     return sum(a != b for a, b in zip(results, seen, strict=False)) + abs(len(results) - len(seen))
 
 
+def clean(result: dict) -> bool:
+    """A job that passed its own check, with nothing wrong in its answer's
+    form, in a run that finished: the only kind the judge sees past a
+    scenario, and the only kind that becomes rows."""
+    return bool(result.get("passed")) and not (result.get("grade") or {}).get("problems") and result.get("outcome") == "done"
+
+
 def takeover_plans(student: Path, at: list[float], patterns: str) -> list[tuple[Path, str, dict]]:
     """Learning from its own mistakes: every job a student failed in its
-    recorded run (not passed, not done, or a scenario its judge failed),
+    recorded run (not passed, not done, or its judge failed it),
     taken over by this run's model at the fractions `at` of the student's
     model calls. Its answers before that point are given back word for word
     (relay.py --replay), so the sandbox really runs what the student did and
@@ -615,19 +622,21 @@ def takeover_plans(student: Path, at: list[float], patterns: str) -> list[tuple[
     verdicts = student / "verdicts.jsonl"
     judged = ({row["job"]: bool(row["passed"]) for row in map(json.loads, verdicts.read_text(encoding="utf-8").splitlines())}
               if verdicts.is_file() else {})
-    rows = [json.loads(line) for line in (student / "results.jsonl").read_text(encoding="utf-8").splitlines()]
-    if any(row.get("kind") == "scenario" for row in rows) and not judged:
-        raise SystemExit(f"{student} has scenarios but no verdicts: judge it first (bench/scenario_judge.py)")
+    # A crash is the sandbox failing to report, not the student failing:
+    # run.py reran it under the same name, and that row decides.
+    rows = [row for row in map(json.loads, (student / "results.jsonl").read_text(encoding="utf-8").splitlines())
+            if row.get("outcome") != "crash"]
     tasks = {task.name: task for task in load_tasks(patterns)}
+    # The judge sees every scenario and every clean job (scenario_judge.records).
+    unjudged = [job for row in rows if row["task"] in tasks and (row.get("kind") == "scenario" or clean(row))
+                and (job := f"{row['task']}-r{row['rep']}") not in judged]
+    if unjudged:
+        raise SystemExit(f"{student}: {len(unjudged)} jobs have no verdict ({unjudged[0]}...): "
+                         "judge it first (bench/scenario_judge.py)")
     plans = []
     for row in rows:
         job = f"{row['task']}-r{row['rep']}"
-        # A crash is the sandbox failing to report, not the student failing:
-        # run.py reran it under the same name, and that row decides.
-        if row.get("outcome") == "crash":
-            continue
-        failed = (not row.get("passed") or row.get("outcome") != "done" or (row.get("grade") or {}).get("problems")
-                  or (row.get("kind") == "scenario" and not judged.get(job)))
+        failed = not clean(row) or not judged[job]
         if row["task"] not in tasks or not failed or row.get("takeover"):
             continue
         requests = model_requests(student / "records" / job)

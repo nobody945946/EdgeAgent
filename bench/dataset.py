@@ -24,8 +24,10 @@ Python tasks) never become training rows: only runs over training tasks
 (.runtime/agentdata/tool-tasks, scenario train cards, Python train tasks) are
 accepted.
 
-A scenario conversation (bench/scenario_cards.py) becomes rows only if the
-judge passed it (bench/scenario_judge.py, <run>/verdicts.jsonl). Each user
+A recorded conversation becomes rows only if the judge passed it
+(bench/scenario_judge.py, <run>/verdicts.jsonl): a scenario card
+(bench/scenario_cards.py) on its items, any other task, after its own
+check, on what its answers state; a run never judged gives none. Each user
 turn ends a stretch: Gemma's template shows the model's reasoning only after
 the last user message, so a row never spans two turns. The teacher's
 reasoning comes with its replies (reasoning_content, as Pi sends it back);
@@ -62,7 +64,7 @@ from edge_agent import prompt as agent_prompt  # noqa: E402
 from edge_agent.turn import taiwan_traditional  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "bench"))
-from run import BUDGET_CUT  # noqa: E402
+from run import BUDGET_CUT, clean  # noqa: E402
 from scenario_checks import unresolved  # noqa: E402
 
 EVAL_TASKS = {p.name for p in (ROOT / "bench/tasks").iterdir() if p.is_dir()}
@@ -123,7 +125,7 @@ def user_turns(request: dict) -> int:
 
 
 def verdicts(run_dir: Path) -> dict[str, bool]:
-    """The judge's verdict per scenario job (empty when the run has none)."""
+    """The judge's verdict per job (empty when the run has none)."""
     path = run_dir / "verdicts.jsonl"
     if not path.is_file():
         return {}
@@ -146,8 +148,11 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
         if result.get("kind") == "scenario" and not judged.get(job):
             skip("scenario not passed by the judge")
             continue
-        if not result["passed"] or result["grade"].get("problems") or result.get("outcome") != "done":
+        if not clean(result):
             skip("not a clean pass")
+            continue
+        if not judged.get(job):
+            skip("answers not passed by the judge")
             continue
         takeover = result.get("takeover")
         if takeover and takeover.get("replay_differs"):
