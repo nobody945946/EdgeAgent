@@ -87,6 +87,8 @@ SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸�
 
 控制 API 的 `GET /status/events`（server-sent events）推送狀態：連上立刻送目前狀態（和 `/status` 相同，另含推論閘道現在會不會收角色請求 `character_admitted`，以及擋下過幾次 `character_refused`），之後狀態每變一次送一則。推送由變化本身觸發（載入、租借、Agent 工作、推論 lane），沒有計時器，也沒有心跳：本機對方一死，socket 就關。SilentTalk 靠它知道租借還在不在，以及被擋下（423 `inference_busy`）的角色請求何時再送。Agent 的新請求讓正在說話的角色先說完：等到角色說完或 30 秒到期，先到為準。
 
+服務裡沒有定時去問的等待（2026-10-14 的決定），每個等待都由它等的那件事叫醒，最多一個放棄用的期限：租借的 SilentTalk 程序一結束，作業系統就通知（Windows 程序 handle、Linux pidfd），3 秒後、交接時限也過了，歸還原 Agent 配置；llama.cpp router 的模型子程序自己結束（例如崩潰）時，router 的事件串流 `GET /models/sse` 推送，router 本身結束則等它的程序，兩者都以同樣的模式和租借重新載入，失敗的 30 秒後再試；router 啟動以它自己印出的 `listening on` 為準，模型載入以事件串流的狀態變化為準；`edge-agent start` 等服務自己印出它在聽、再等狀態串流說 ready，`edge-agent stop` 等服務程序結束。
+
 安裝時準備公開的 Gemma 4 E4B（Agent 和 SilentTalk 共用）和附帶的 Agent adapter（複製，不下載）。角色有 LoRA 時使用兩個推論 slot，區分套用與未套用 cache；其他情況角色使用一個 slot。另加 Agent 專用 slot，避免互相清除 cache。記憶體不足時載入會失敗並回報。
 
 | 操作 | 指令 |
@@ -109,6 +111,7 @@ SilentTalk 經控制 API 租借角色模型，使用回傳的推論端點；歸�
 | `edge_agent/chat.py`、`bridge.py`、`turn.py` | RAM 對話、SDK RPC 與 UI 事件轉接、RAM checkpoint |
 | `edge_agent/service.py`、`control.py` | 服務進入點、UI／控制端點、狀態串流 |
 | `edge_agent/core.py`、`router.py`、`load_plan.py` | 模型子程序、模型切換與租借協調 |
+| `edge_agent/waits.py` | 各種等待的共用件：程序結束（Windows handle／Linux pidfd）、喚醒、子程序的輸出行、事件串流；都由事件叫醒，不定時詢問 |
 | `edge_agent/config.py`、`model_jobs.py` | 模型設定、下載 |
 | `edge_agent/models.py` | GGUF 掃描與 Hub metadata |
 | `edge_agent/deploy.py` | 校驗資產與固定 runtime；npm lockfile 固定版本 |

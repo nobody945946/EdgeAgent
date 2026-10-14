@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from edge_agent import prompt as agent_prompt
 from edge_agent.approvals import explain_approval, host_answer
-from edge_agent.bridge import PiBridge
+from edge_agent.bridge import WAKE, PiBridge
 from edge_agent.chat_session import ChatSession
 from edge_agent.modes import MODES, THINKING_PROFILES, mode_opening
 from edge_agent.permissions import DEFAULT_PERMISSIONS, bridge_rules, scope_rules
@@ -27,6 +27,8 @@ from edge_agent.runtime import (
 from edge_agent.turn import Turn
 
 APPROVAL_TIMEOUT_SECONDS = 300
+# After a cancel, how long Pi has to settle before the turn ends anyway.
+CANCEL_GRACE_SECONDS = 10
 # Where a public task runs (scope "public": anyone in a chat may ask): an
 # empty folder of EdgeAgent's own, never the owner's workspace, whose path
 # Pi writes into the prompt; the task needs no folder (its files arrive with
@@ -118,6 +120,8 @@ class NativeChat:
             if not session.cancelled.is_set():
                 session.cancelled_at = time.monotonic()
                 session.cancelled.set()
+            if session is self.bridge.active:
+                self.bridge.wake()  # a turn waiting on Pi starts its grace now
             if session is self.bridge.active and self.bridge.alive():
                 for call_id in list(session.approvals):
                     self.bridge.send(
@@ -229,7 +233,11 @@ class NativeChat:
                 "pending_messages": session.messages,
             }
         )
-        if self.bridge.receive(30).get("type") != "ready":
+        deadline = time.monotonic() + 30
+        event = self.bridge.receive(30)
+        while event.get("type") == WAKE:  # cancelled while Pi starts: the turn sees it
+            event = self.bridge.receive(max(deadline - time.monotonic(), 0))
+        if event.get("type") != "ready":
             raise RuntimeError("Pi failed to initialize")
 
     def stream_reply(
@@ -329,17 +337,21 @@ class NativeChat:
                 )
                 session.opened_mode = mode
                 while True:
+                    # Woken by Pi's next event, or by cancel() (bridge.wake);
+                    # once cancelled, Pi has CANCEL_GRACE_SECONDS to settle.
+                    cancelled_at = session.cancelled_at
                     try:
-                        event = self.bridge.receive(timeout=1)
+                        event = self.bridge.receive(
+                            timeout=None if cancelled_at is None else max(
+                                cancelled_at + CANCEL_GRACE_SECONDS - time.monotonic(), 0
+                            )
+                        )
                     except TimeoutError:
-                        if (
-                            session.cancelled_at is not None
-                            and time.monotonic() - session.cancelled_at > 10
-                        ):
-                            yield "cancelled", {}
-                            return
-                        continue
+                        yield "cancelled", {}
+                        return
                     kind = event.get("type")
+                    if kind == WAKE:
+                        continue
                     if (
                         kind == "extension_ui_request"
                         and event.get("method") == "notify"

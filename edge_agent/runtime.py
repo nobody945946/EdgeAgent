@@ -16,6 +16,9 @@ DEFAULT_MAX_OUTPUT_TOKENS = 8_192
 DEFAULT_WORKING_CONTEXT_SIZE = GENERAL_CONTEXT_SIZE
 MIN_AGENT_CONTEXT_SIZE = 8_192
 CONTROL_PORT = 18_087
+# What the service prints once its control port listens; its launcher
+# (api.ensure_service) waits for this line.
+SERVICE_LISTENING = "EdgeAgent listening on"
 GENERAL_PORT = 18_089
 # The machine spirit's base: the character and the Agent are one model.
 DEFAULT_MODEL = "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf"

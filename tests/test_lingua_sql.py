@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from edge_agent.lingua import sql
-from edge_agent.lingua.engines import Databases
+from edge_agent.lingua.engines import Databases, ready_line
 
 T = "CREATE TABLE t (v int); INSERT INTO t VALUES (1); INSERT INTO t VALUES (NULL); INSERT INTO t VALUES (2); "
 AB = ("CREATE TABLE a (id int); INSERT INTO a VALUES (1); INSERT INTO a VALUES (2); "
@@ -128,3 +128,39 @@ def test_not_readable_is_not_called_invalid() -> None:
     with pytest.raises(sql.Untranslatable) as caught:
         sql.translate("SELECT (", "sqlite")
     assert "不代表資料庫一定會拒絕" in str(caught.value)
+
+
+# The servers' own logs as the containers print them (postgres:16 and
+# mssql/server:2022-latest, 2026-10-14), shortened.
+POSTGRES_LOG = b"""\
+The files belonging to this database system will be owned by user "postgres".
+2026-10-13 23:46:07.242 UTC [48] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+2026-10-13 23:46:07.252 UTC [48] LOG:  database system is ready to accept connections
+waiting for server to shut down....2026-10-13 23:46:07.355 UTC [48] LOG:  aborting any active transactions
+2026-10-13 23:46:07.368 UTC [48] LOG:  database system is shut down
+PostgreSQL init process complete; ready for start up.
+2026-10-13 23:46:07.467 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+2026-10-13 23:46:07.578 UTC [1] LOG:  database system is ready to accept connections
+"""
+MSSQL_LOG = b"""\
+2026-10-13 23:44:47.09 spid57s     SQL Server is now ready for client connections. This is an informational message; no user action is required.
+2026-10-13 23:44:47.26 Logon       Login failed for user 'sa'. Reason: An error occurred while evaluating the password. [CLIENT: 127.0.0.1]
+2026-10-13 23:44:49.11 spid70s     Database 'msdb' running the upgrade step from version 956 to version 957.
+2026-10-13 23:44:49.14 spid46s     Recovery is complete. This is an informational message only. No user action is required.
+"""
+
+
+def ready_at(dialect: str, log: bytes) -> int | None:
+    """The log line (from 0) its server counts as ready at."""
+    ready = ready_line(dialect)
+    return next((n for n, line in enumerate(log.splitlines(keepends=True)) if ready(line)), None)
+
+
+def test_a_server_is_ready_at_its_own_last_ready_line() -> None:
+    # Not the setup server's "ready", which is stopped right after.
+    assert ready_at("postgres", POSTGRES_LOG) == 7
+    assert ready_at("postgres", POSTGRES_LOG.split(b"PostgreSQL init")[0]) is None
+    restarted = b"PostgreSQL Database directory appears to contain a database; Skipping initialization\n"
+    assert ready_at("postgres", restarted + POSTGRES_LOG.splitlines(keepends=True)[-1]) == 1
+    # Not "ready for client connections": sa cannot log in until recovery ends.
+    assert ready_at("tsql", MSSQL_LOG) == 3
