@@ -16,6 +16,8 @@ def pid_alive(pid: int) -> bool:
     waits on (waits.ProcessExit), looked at once."""
     try:
         process = ProcessExit.open(pid)
+    except PermissionError:
+        return True  # it runs, as another user's or an elevated process
     except OSError:
         return False
     if process is None:

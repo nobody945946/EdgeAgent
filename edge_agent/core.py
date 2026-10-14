@@ -432,9 +432,15 @@ class EdgeAgent:
                 if pid is not None and watched is None and self.owner_dead_since is None:
                     try:
                         watched = ProcessExit.open(pid)
+                        gone = watched is None
+                    except PermissionError:
+                        # It runs but is not ours to wait on (another user's,
+                        # an elevated one): the lease stays until it is given
+                        # back or taken, as pid_alive says.
+                        gone = False
                     except OSError:
-                        watched = None  # cannot be watched: as gone as pid_alive says
-                    if watched is None:
+                        gone = True
+                    if gone:
                         self.owner_dead_since = time.monotonic()
                 if watched is not None and watched.exited():
                     watched.close()

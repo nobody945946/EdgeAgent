@@ -13,7 +13,7 @@ import time
 import pytest
 from test_router_events import ARGS, counts, use_fake
 
-from edge_agent import core
+from edge_agent import core, processes
 
 WAITING = [sys.executable, "-c", "import sys; sys.stdin.read()"]
 
@@ -105,6 +105,25 @@ def test_a_handoff_holds_the_lease_past_the_grace(tmp_path, monkeypatch, owners)
     (_, _, at), = watched.switched_to(1)
     assert held_until - 0.05 <= at < held_until + 1
 
+
+
+def test_an_owner_not_ours_to_wait_on_keeps_its_lease(tmp_path, monkeypatch, owners):
+    """Another user's or an elevated owner: it runs, it just cannot be
+    opened for waiting; the lease is not taken from it."""
+    monkeypatch.setattr(core, "OWNER_GRACE_SECONDS", 0.1)
+
+    def refused(pid):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(core.ProcessExit, "open", staticmethod(refused))
+    monkeypatch.setattr(processes.ProcessExit, "open", staticmethod(refused))
+    manager = core.EdgeAgent(tmp_path)
+    owner = owners()
+    lease(manager, owner)
+    watched = Watched(manager, monkeypatch)
+    time.sleep(0.8)
+    assert watched.switches == [] and manager.owner_dead_since is None
+    assert processes.pid_alive(owner.pid)
 
 def test_a_new_lease_rearms_the_watch_on_its_owner(tmp_path, monkeypatch, owners):
     monkeypatch.setattr(core, "OWNER_GRACE_SECONDS", 0.2)
