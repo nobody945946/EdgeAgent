@@ -1,0 +1,84 @@
+{
+ "kind": "mcp",
+ "prompt": "花蓮現在的氣溫和相對濕度是多少？",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "permissions": {
+  "edit": "deny",
+  "shell": "deny",
+  "web": "deny"
+ },
+ "mcp_servers": {
+  "weather": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "weather"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "天氣：氣象測站即時觀測、縣市預報、雨量紀錄"
+  },
+  "transit": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "transit"
+   ],
+   "permission": "allow",
+   "read_only_tools": [
+    "find_rail_station",
+    "get_rail_timetable",
+    "get_train_delay",
+    "get_bus_arrival"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "交通：臺鐵時刻表與誤點、公車到站時間"
+  },
+  "stock": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "stock"
+   ],
+   "permission": "allow",
+   "tools": [
+    "get_stock_daily_trading",
+    "get_stock_history",
+    "get_twse_institutional_investors_summary",
+    "get_twse_institutional_investors_by_stock",
+    "get_company_monthly_revenue",
+    "get_company_dividend",
+    "get_company_income_statement",
+    "get_company_balance_sheet",
+    "get_company_cash_flow_statement",
+    "get_taiex_index_history",
+    "get_exchange_rates"
+   ],
+   "read_only_tools": [
+    "get_stock_daily_trading",
+    "get_stock_history",
+    "get_twse_institutional_investors_summary",
+    "get_twse_institutional_investors_by_stock",
+    "get_company_monthly_revenue",
+    "get_company_dividend",
+    "get_company_income_statement",
+    "get_company_balance_sheet",
+    "get_company_cash_flow_statement",
+    "get_taiex_index_history",
+    "get_exchange_rates"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "台股資料：股價、三大法人買賣超、月營收、股利、財報、加權指數、匯率"
+  }
+ }
+}

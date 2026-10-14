@@ -1,9 +1,15 @@
-# The Windows commands the sandbox's PowerShell 7 lacks, answering with the
-# laptop the product runs on (bench/laptop.py; facts in /tmp/.laptop/machine.json,
-# written per task by bench/agent_runner.py). PowerShell loads this module the
-# first time one of them is called. Only what PowerShell 7 has on Windows:
-# no Get-WmiObject (gone since PowerShell 6), no Get-Counter (its counter
-# names follow the Windows language).
+# The Windows commands the sandbox's PowerShell 7 lacks or answers as Linux,
+# answering with the laptop the product runs on (bench/laptop.py; facts in
+# /tmp/.laptop/machine.json, written per task by bench/agent_runner.py). Only
+# what PowerShell 7 has on Windows: no Get-WmiObject (gone since PowerShell 6),
+# no Get-Counter (its counter names follow the Windows language). Each command
+# comes from the module Windows ships it in, so the product's read proof
+# (edge_agent/permissions.py) sees the sandbox as it sees the laptop:
+# CimCmdlets and Storage are script modules here; Get-Process, Get-PSDrive and
+# Get-ComputerInfo are cmdlets of Microsoft.PowerShell.Management itself
+# (bench/pshome/Microsoft.PowerShell.Management/LaptopCore.cs, which calls the Get-Laptop*
+# functions below). $PSVersionTable (a constant) and [Environment] (.NET
+# itself) still answer as the container.
 
 $script:FactsPath = $env:LAPTOP_FACTS ?? '/tmp/.laptop/machine.json'
 
@@ -81,7 +87,7 @@ function Get-LaptopClass([string] $Class) {
         'win32_process' {
             foreach ($p in $m.processes) {
                 New-CimObject 'Win32_Process' ([ordered]@{
-                    ProcessId = $p.pid; Name = $p.name; WorkingSetSize = [uint64] $p.mb * 1MB; ThreadCount = 4 + $p.pid % 40
+                    ProcessId = $p.pid; Name = $p.name; WorkingSetSize = [uint64] (Get-LaptopWorkingSet $p); ThreadCount = 4 + $p.pid % 40
                     HandleCount = 100 + $p.pid % 900; CommandLine = $null })
             }
         }
@@ -150,7 +156,7 @@ function Get-CimInstance {
     $objects | Where-Object { Test-WqlCondition $_ $Filter }
 }
 
-function Get-ComputerInfo {
+function Get-LaptopComputerInfo {
     [CmdletBinding()] param([Parameter(Position = 0)] [string[]] $Property)
     $m = Get-LaptopFacts
     $info = [pscustomobject] [ordered]@{
@@ -165,6 +171,112 @@ function Get-ComputerInfo {
         OsFreePhysicalMemory = [uint64] $m.memory.free_kb; TimeZone = '(UTC+08:00) 台北'
     }
     if ($Property) { $info | Select-Object -Property $Property } else { $info }
+}
+
+# A process's working set in bytes: whole 4 KB pages, as Windows counts them.
+function Get-LaptopWorkingSet($p) { [long] $p.mb * 1MB + ($p.pid % 256) * 4KB }
+
+# Where the laptop's programs live (Path is empty for what a user may not open: system processes).
+function Get-LaptopPath($m, [string] $Name, [int] $Index) {
+    $user = "C:\Users\$($m.user)"
+    switch ($Name) {
+        'explorer' { 'C:\WINDOWS\explorer.exe' }
+        'SearchHost' { 'C:\WINDOWS\SystemApps\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\SearchHost.exe' }
+        'RuntimeBroker' { 'C:\Windows\System32\RuntimeBroker.exe' }
+        'Discord' { "$user\AppData\Local\Discord\app-1.0.9211\Discord.exe" }
+        'msedge' { 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' }
+        'python' { if ($Index -eq 0) { "$user\SilentTalk\.venv\Scripts\python.exe" } else { "$user\EdgeAgent\.venv\Scripts\python.exe" } }
+        'node' { "$user\EdgeAgent\.runtime\node\node-v22.23.3-win-x64\node.exe" }
+        'llama-server' { "$user\EdgeAgent\.runtime\llama-b11193-cuda\llama-server.exe" }
+        'pwsh' { 'C:\Program Files\PowerShell\7\pwsh.exe' }
+        default { $null }
+    }
+}
+
+# One of the laptop's processes as Get-Process returns it: typed as
+# System.Diagnostics.Process, so PowerShell's own type data adds Name, WS,
+# CPU, Handles... and picks the columns; the numbers agree with Win32_Process.
+function New-LaptopProcess($m, [string] $Name, [int] $Id, [long] $Bytes, [int] $Index) {
+    $boot = (Get-Date).AddHours(-$m.os.uptime_hours)
+    $system = $Name -in 'System', 'Registry', 'smss', 'csrss', 'wininit', 'services', 'lsass', 'svchost', 'MsMpEng', 'dwm'
+    $process = [pscustomobject] [ordered]@{
+        ProcessName = $Name; Id = $Id; SessionId = if ($system) { 0 } else { 1 }
+        WorkingSet64 = $Bytes; WorkingSet = [int] [math]::Min($Bytes, [int]::MaxValue)
+        PrivateMemorySize64 = [long] ($Bytes * 0.8); PagedMemorySize64 = [long] ($Bytes * 0.8)
+        NonpagedSystemMemorySize64 = [long] (8 + $Id % 40) * 1KB; VirtualMemorySize64 = 2TB + [long] ($Id % 97) * 1MB
+        HandleCount = 100 + $Id % 900; Threads = @(1..(4 + $Id % 40) | ForEach-Object { [pscustomobject] @{ Id = $Id + $_ } })
+        TotalProcessorTime = [timespan]::FromSeconds(($Id % 600) * $m.os.uptime_hours / 10)
+        StartTime = if ($system) { $boot.AddSeconds(5 + $Id % 60) } else { $boot.AddMinutes(1 + $Id % 300) }
+        Path = Get-LaptopPath $m $Name $Index; MainWindowTitle = ''; Responding = $true; PriorityClass = 'Normal'
+    }
+    $process.PSObject.TypeNames.Insert(0, 'System.Diagnostics.Process')
+    $process
+}
+
+# What a Get-Process error says on the laptop (PowerShell 7's own words).
+function New-LaptopError([string] $Message, [string] $Id, $Target) {
+    [System.Management.Automation.ErrorRecord]::new(
+        [System.Management.Automation.ItemNotFoundException]::new($Message), $Id, 'ObjectNotFound', $Target)
+}
+
+# Get-Process on the laptop: the facts' processes, the Agent's own PowerShell
+# (its real Id, so $PID finds it), and the real processes the Agent started
+# itself (after the bridge that runs it; real, so Stop-Process and
+# Wait-Process work on them). Errors are returned, for the cmdlet to write.
+function Get-LaptopProcess([string[]] $Name, [int[]] $Id) {
+    $real = [System.Management.Automation.CmdletInfo]::new('Get-Process', [Microsoft.PowerShell.Commands.GetProcessCommand])
+    $me = & $real -Id $PID
+    $m = Get-LaptopFacts
+    $seen = @{}
+    $all = @(foreach ($p in $m.processes) {
+            $short = $p.name -replace '\.exe$', ''
+            New-LaptopProcess $m $short $p.pid (Get-LaptopWorkingSet $p) $seen[$short]
+            $seen[$short] += 1
+        }
+        New-LaptopProcess $m 'pwsh' $PID $me.WorkingSet64 0
+        & $real | Where-Object { $_.Id -gt $me.Parent.Id -and $_.Id -ne $PID })
+    if ($Id) {
+        foreach ($wanted in $Id) {
+            $found = @($all | Where-Object Id -EQ $wanted)
+            if ($found) { $found } else { New-LaptopError "Cannot find a process with the process identifier $wanted." 'NoProcessFoundForGivenId' $wanted }
+        }
+        return
+    }
+    if (-not $Name) { return $all | Sort-Object ProcessName, Id }
+    foreach ($wanted in $Name) {
+        $found = @($all | Where-Object { $_.ProcessName -like $wanted } | Sort-Object ProcessName, Id)
+        if ($found) { $found }
+        elseif (-not [System.Management.Automation.WildcardPattern]::ContainsWildcardCharacters($wanted)) {
+            New-LaptopError "Cannot find a process with the name `"$wanted`". Verify the process name and call the cmdlet again." 'NoProcessFoundForGivenName' $wanted
+        }
+    }
+}
+
+# Get-PSDrive on the laptop: C: and the user's Temp as file system drives,
+# with the laptop's space, beside the container's drives that are not file
+# systems (Alias, Env, Function, Variable).
+function Get-LaptopDrive([string[]] $Name, [string[]] $PSProvider) {
+    $real = [System.Management.Automation.CmdletInfo]::new('Get-PSDrive', [Microsoft.PowerShell.Commands.GetPSDriveCommand])
+    $m = Get-LaptopFacts
+    $files = Get-PSProvider FileSystem
+    $drives = @(foreach ($drive in @(('C', 'C:\', 'Windows'), ('Temp', "C:\Users\$($m.user)\AppData\Local\Temp\", 'Drive that maps to the temporary directory path for the current user'))) {
+            $info = [pscustomobject] [ordered]@{
+                Name = $drive[0]; Used = [long] ($m.disk.c_bytes - $m.disk.c_free); Free = [long] $m.disk.c_free
+                Provider = $files; Root = $drive[1]; CurrentLocation = ''; Description = $drive[2]
+            }
+            $info.PSObject.TypeNames.Insert(0, 'System.Management.Automation.PSDriveInfo')
+            $info
+        }
+        & $real | Where-Object { $_.Provider.Name -ne 'FileSystem' })
+    $drives = @($drives | Where-Object { -not $PSProvider -or $(foreach ($p in $PSProvider) { if ($_.Provider.Name -like $p) { $true } }) } | Sort-Object Name)
+    if (-not $Name) { return $drives }
+    foreach ($wanted in $Name) {
+        $found = @($drives | Where-Object Name -Like $wanted)
+        if ($found) { $found }
+        elseif (-not [System.Management.Automation.WildcardPattern]::ContainsWildcardCharacters($wanted)) {
+            New-LaptopError "Cannot find drive. A drive with the name '$wanted' does not exist." 'GetDriveNoMatchingDrive' $wanted
+        }
+    }
 }
 
 function Get-PhysicalDisk {
@@ -211,4 +323,3 @@ function Get-Volume {
     }
 }
 
-Export-ModuleMember -Function Get-CimInstance, Get-ComputerInfo, Get-PhysicalDisk, Get-Disk, Get-Partition, Get-Volume

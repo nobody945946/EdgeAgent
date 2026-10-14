@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -110,6 +111,10 @@ def test_the_earlier_routine_shell_becomes_reversible_without_enabling_a_client(
         ("python -m pytest -q", False),
         ("Get-ChildItem -NotAParameter", False),
         ("Get-ChildItem HKLM:\\Software -File", False),
+        # A list of literals is literal; a path must still be one literal path.
+        ("Get-ChildItem . -File | Select-Object Name, Length", True),
+        ("Get-Content ./README.md, ../private.txt", False),
+        ("Get-ChildItem ., .. -File", False),
     ],
 )
 def test_routine_shell_uses_native_syntax_and_workspace_scope(
@@ -129,3 +134,98 @@ def test_a_task_scope_narrows_but_never_widens():
         "edit": "deny", "shell": "deny", "web": "ask"}
     with pytest.raises(ValueError):
         scope_rules(full, "everything")
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        ("Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory", True),
+        ("Get-CimInstance -ClassName Win32_LogicalDisk -Filter \"DeviceID='C:'\"", True),
+        ("Get-Volume C", True),
+        ("Get-PhysicalDisk | Select-Object FriendlyName, MediaType, HealthStatus", True),
+        ("Get-PSDrive -PSProvider FileSystem", True),
+        # Process command lines and environment variables carry keys and passwords.
+        ("Get-CimInstance Win32_Process", False),
+        ("Get-CimInstance Win32_StartupCommand", False),  # its default view is the command line
+        ("Get-CimInstance Win32_Environment", False),
+        ("Get-CimInstance -Query 'SELECT * FROM Win32_ComputerSystem'", False),
+        ("Get-CimInstance Win32_ComputerSystem -ComputerName server01", False),
+        ("Get-CimInstance Win32_ComputerSystem -Namespace root/subscription", False),
+        # Windows' own; PowerShell has none elsewhere (the bench sandbox's: tests/test_bench_laptop.py).
+        ("Get-ComputerInfo", sys.platform == "win32"),
+    ],
+)
+def test_a_read_only_task_reads_the_machine_from_windows_own_modules(tmp_path, monkeypatch, command, expected):
+    windows = Path(__file__).resolve().parents[1] / "bench" / "windows"
+    monkeypatch.setenv("PSModulePath", f"{windows}{os.pathsep}{os.environ.get('PSModulePath', '')}")
+    assert routine_shell(command, tmp_path) is expected
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        # Counting and shaping what was read: variables, operators, script blocks, if and foreach.
+        (("$lines = Get-Content -Path app.log; $lines | Where-Object { $_ -match 'ERROR' } | "
+          "ForEach-Object { $_ -replace '^\\S+ \\S+ ERROR ', '' } | Group-Object | "
+          "Sort-Object Count -Descending | Select-Object -First 3 Count, Name"), True),
+        (("$h = @{}; Get-Content -Path app.log | ForEach-Object { $h[$_]++ }; "
+          "$h.GetEnumerator() | Sort-Object Value -Descending"), True),
+        ("Get-ChildItem -Path . -File | Select-Object Name, @{n='KB'; e={[math]::Round($_.Length / 1KB, 1)}}", True),
+        ("foreach ($line in Get-Content -Path app.log) { if ($line.StartsWith('2025')) { $line.Split(' ')[2] } }",
+         True),
+        ("Get-Content -Path data.json -Raw | ConvertFrom-Json | Select-Object -ExpandProperty name", True),
+        ("(73600 + 6322) * 0.8 / 4", True),
+        ("$PSVersionTable.PSVersion.ToString()", True),
+        ("Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 5 Name, Id", True),
+        # Keys: other scopes' variables and ones the script did not set (a session's earlier command could have).
+        ('Write-Output "$env:OPENAI_API_KEY"', False),
+        ("${env:HOME}", False),
+        ("$secret", False),
+        ("$x = $x + 'a'; $x", False),
+        ("$PSDefaultParameterValues = @{}", False),
+        ("$a = @{Path = '/'}; Get-ChildItem @a", False),
+        # Command lines, and the views that show every property.
+        ("Get-Process | Select-Object Name, CommandLine", False),
+        ("Get-Process | Format-List *", False),
+        ("Get-Process | Select-Object C*", False),
+        ("Get-Process | ForEach-Object { $_.CommandLine }", False),
+        ("Get-Process | Select-Object -ExpandProperty StartInfo", False),
+        ("$p = 'Name'; Get-Process | Format-List -Property $p", False),
+        ("Get-Process | ForEach-Object { $_.PSObject.Properties }", False),
+        # A path passed along a pipeline: one the proof has seen, or none.
+        ("Get-ChildItem -Path . -File -Recurse | Get-FileHash -Algorithm SHA256 | Select-Object Hash, Path", True),
+        ("Get-Content -Path app.log | Select-String -Pattern ERROR | Measure-Object -Line", True),
+        ("Get-Item -Path app.log | Get-Content", True),
+        ("Write-Output / | Get-ChildItem", False),
+        ("Get-Content -Path paths.txt | Get-Item", False),
+        ("Get-Content -Path paths.txt | Get-FileHash", False),
+        ("Write-Output /etc/passwd | Get-FileHash", False),
+        ("Get-ChildItem -Path . | Select-String -Pattern key", False),
+        ("Get-ChildItem -Path . | ForEach-Object { Get-Content -Path $_.FullName }", False),
+        # Errors discarded or merged; nothing written.
+        ("Get-Content -Path app.log 2>$null | Out-Null", True),
+        ("Get-ChildItem -Path . 2>&1", True),
+        ("Get-ChildItem -Path . -Recurse -Filter '*.log' -ErrorAction SilentlyContinue", True),
+        ("Get-ChildItem -Path . -ErrorVariable PSDefaultParameterValues", False),
+        ("'x' > out.txt", False),
+        # Methods, properties and types that change things.
+        ("Get-ChildItem -Path . | ForEach-Object { $_.Delete() }", False),
+        ("Get-Item -Path app.log | ForEach-Object { $_.IsReadOnly = $true }", False),
+        ("(Get-Item -Path app.log).Replace('b.log', 'c.log')", False),
+        ("@(Get-Item -Path app.log).ForEach('Delete')", False),
+        ("'out.txt' -as 'IO.StreamWriter'", False),
+        ("[IO.StreamWriter]'out.txt'", False),
+        ("[IO.File]::ReadAllText('/etc/passwd')", False),
+        ("[string]::new('x')", False),
+        ("switch -File /etc/passwd { default { $_ } }", False),
+        ("Get-ChildItem -Path . &", False),
+    ],
+)
+def test_a_read_only_task_computes_on_what_it_read_but_never_reaches_further(tmp_path, command, expected):
+    assert routine_shell(command, tmp_path) is expected, command
+
+
+def test_a_function_named_like_a_system_read_is_not_one(tmp_path):
+    assert not routine_shell("function Get-CimInstance { Remove-Item x }; Get-CimInstance Win32_BIOS", tmp_path)
+    # The real one is a read where CimCmdlets is (Windows); elsewhere there is nothing to prove.
+    assert routine_shell("Get-CimInstance Win32_BIOS", tmp_path) is (sys.platform == "win32")

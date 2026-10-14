@@ -1,0 +1,1 @@
+{"answer": "記好了：以後報表一律存成 UTF-8 含 BOM。", "outcome": "done", "calls": [], "memory": "# 主人的長期交代\n- 報表一律存成 UTF-8 含 BOM（Excel 打開才不會亂碼）。\n"}

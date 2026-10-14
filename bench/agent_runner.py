@@ -146,6 +146,8 @@ def main() -> None:
     # server picks a free slot for each, as it did before the pinning.
     chat.slot_id = None
     chat.hardware = spec.get("hardware", "")  # the laptop's, for the runtime section (products that have it)
+    # The adapter's temperature per mode, as the product's load plan sets it (products that have it).
+    chat.sampling = dict(spec.get("sampling") or {})
     # A scenario's registered APIs, as edge_agent.apis.for_session gives them: listed without the key,
     # the key in the shell's environment (products that have it).
     chat.api_session = ([{k: api[k] for k in ("name", "purpose", "base_url", "docs", "key_in", "key_name")}
@@ -218,8 +220,13 @@ def main() -> None:
             if time.monotonic() >= deadline:
                 ended = "conversation timeout"
                 break
-            line = simulate(card, simulator_port, [t["user"] for t in dialogue],
-                            [t["answer"] for t in dialogue], card["max_turns"] - len(dialogue))
+            # A takeover (run.py --takeover) replays the student's own
+            # conversation up to where the teacher takes over: the user said
+            # then what the user said that time.
+            script = spec.get("script") or []
+            line = (script[len(dialogue)] if len(dialogue) < len(script) else
+                    simulate(card, simulator_port, [t["user"] for t in dialogue],
+                             [t["answer"] for t in dialogue], card["max_turns"] - len(dialogue)))
             if END in line:
                 ended = "end" if dialogue else "simulator ended before speaking"
                 break

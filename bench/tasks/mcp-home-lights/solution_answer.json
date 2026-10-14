@@ -1,0 +1,1 @@
+{"answer": "好了", "calls": [{"name": "mcp__home__set_light", "arguments": {"entity_id": "light.living_room_main", "on": false}}, {"name": "mcp__home__set_light", "arguments": {"entity_id": "light.tv_backlight", "on": false}}]}

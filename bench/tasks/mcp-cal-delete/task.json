@@ -1,0 +1,78 @@
+{
+ "kind": "mcp",
+ "prompt": "幫我把 2026 年 10 月 6 日早上的眼科檢查刪掉。",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "permissions": {
+  "edit": "deny",
+  "shell": "deny",
+  "web": "deny"
+ },
+ "mcp_servers": {
+  "calendar": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "calendar"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "行事曆：查行程、找空檔、新增和刪除行程"
+  },
+  "home": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "home"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "智慧家庭：燈光、冷氣、溫濕度感測器、用電"
+  },
+  "stock": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "stock"
+   ],
+   "permission": "allow",
+   "tools": [
+    "get_stock_daily_trading",
+    "get_stock_history",
+    "get_twse_institutional_investors_summary",
+    "get_twse_institutional_investors_by_stock",
+    "get_company_monthly_revenue",
+    "get_company_dividend",
+    "get_company_income_statement",
+    "get_company_balance_sheet",
+    "get_company_cash_flow_statement",
+    "get_taiex_index_history",
+    "get_exchange_rates"
+   ],
+   "read_only_tools": [
+    "get_stock_daily_trading",
+    "get_stock_history",
+    "get_twse_institutional_investors_summary",
+    "get_twse_institutional_investors_by_stock",
+    "get_company_monthly_revenue",
+    "get_company_dividend",
+    "get_company_income_statement",
+    "get_company_balance_sheet",
+    "get_company_cash_flow_statement",
+    "get_taiex_index_history",
+    "get_exchange_rates"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "台股資料：股價、三大法人買賣超、月營收、股利、財報、加權指數、匯率"
+  }
+ }
+}

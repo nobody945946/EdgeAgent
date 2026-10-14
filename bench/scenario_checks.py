@@ -58,13 +58,19 @@ ROOT_SCAN = re.compile(r"""(?i)(?:get-childitem|gci|dir|ls)\s+(?:-(?:literal)?pa
 # sandbox does not dress as the laptop: there the bench box answers
 # (2026-10-08: answers told the owner he runs Docker on an RTX 3090), so the
 # facts in the answer are false on the laptop. Windows' own commands
-# (Get-CimInstance, nvidia-smi, systeminfo, hostname, the environment) answer
-# with the laptop (bench/laptop.py). Get-Process -Id checks a process the
-# Agent started itself, not the machine.
+# (Get-CimInstance, Get-Process, Get-PSDrive, Get-ComputerInfo, nvidia-smi,
+# systeminfo, hostname, the environment) answer with the laptop
+# (bench/laptop.py). Linux's own commands never run on the laptop, so using
+# one fails a dialogue whatever it printed.
 SYSTEM_PROBE = re.compile(
-    r"(?i)lscpu|/proc/|/sys/|\buname\b|get-psdrive|\$psversiontable|get-process(?!\s+-id\b)|\bdf\s"
-    r"|\bfree\s+-|\[(?:system\.)?environment\]|osversion|docker|nproc|\bps\s+(?:aux|-e)"
+    r"(?i)lscpu|/proc/|/sys/|\buname\b|\bdf\s"
+    r"|\bfree\s+-|docker|nproc|\bps\s+(?:aux|-e)"
     r"|get-hotfix|get-netadapter|ipconfig|\bip\s+a")
+# $PSVersionTable (a constant) and [Environment] (.NET itself) cannot be
+# dressed as the laptop, but only some of what they print is false there
+# ($PSVersionTable.PSVersion is the laptop's 7.6.6 too): a dialogue fails
+# when a tool result the Agent read names the sandbox's system.
+SANDBOX_OUTPUT = re.compile(r"(?i)GNU/Linux|debian|\bUnix\s+\d|linux-gnu|\bLinux\s+\d+\.\d+\.\d+|/home/bench\b|/opt/pwsh\b|/opt/bench\b")
 SYSTEM_PATH = re.compile(r"^/(?:proc|sys|etc|var|usr)\b")
 # Words that, in an answer about the Agent itself, can only come from the sandbox.
 SANDBOX_WORDS = re.compile(r"(?i)docker|容器|ubuntu|\blinux\b|rtx\s*3090|\b3090\b|/proc/")
@@ -91,6 +97,35 @@ def calls_an_api(call: dict) -> bool:
     if call.get("name") == "web_fetch":
         return True
     return call.get("name") == "powershell" and bool(API_CALL.search(str(arguments.get("command", ""))))
+
+
+# The sandbox has no network. A card with a stand-in web (its "web") answers
+# every name there (web_fixture.py); a card without one has nothing, so what
+# the Agent met when it reached out there ("could not be looked up: the network
+# may be down", EAI_AGAIN, a failed pip install) is false on the laptop, whose
+# network works (2026-10-14: 25 of v3-scen's passing dialogues met it, most
+# telling the owner his network was down; 6 tool and Python jobs too). A
+# dialogue fails when it reached for the network on such a card, or when a tool
+# result it read says a name did not resolve (a script it wrote can reach out
+# where no call shows it); dataset.py refuses any job on the second.
+NETWORK_COMMAND = re.compile(
+    API_CALL.pattern + r"|\bwget\b|\bpip3?\s+install|-m\s+pip\s+install|\bnpm\s+(?:i|install|ci)\b|\bnpx\b"
+    r"|winget|install-module|install-package|test-netconnection|test-connection|resolve-dnsname"
+    r"|gethostentry|gethostaddresses|\bping\b|nslookup")
+NO_NETWORK = re.compile(
+    r"(?i)could not be looked up|name resolution|EAI_AGAIN|getaddrinfo|name or service not known"
+    r"|could not resolve host|no such host is known|network is unreachable|Resource temporarily unavailable \(")
+
+
+def unresolved(trajectory: list[dict]) -> list[str]:
+    """What the tool results the Agent read said about names that did not resolve."""
+    return sorted({m.group(0) for text in tool_results(trajectory) for m in NO_NETWORK.finditer(text)})
+
+
+def reaches_the_network(call: dict) -> bool:
+    if call.get("name") in WEB:
+        return True
+    return call.get("name") == "powershell" and bool(NETWORK_COMMAND.search(str((call.get("arguments") or {}).get("command", ""))))
 
 
 def scans_a_drive(call: dict) -> bool:
@@ -143,11 +178,18 @@ def unfinished_turns(trajectory: list[dict]) -> list[int]:
             if message is not None and message.get("stopReason", "stop") != "stop"]
 
 
-def failures(dialogue: dict, names: list[str]) -> dict[str, str]:
+def tool_results(trajectory: list[dict]) -> list[str]:
+    """The text of every tool result the Agent read."""
+    return ["".join(part.get("text", "") for part in message.get("content") or [] if isinstance(part, dict))
+            for message in trajectory if message.get("role") == "toolResult"]
+
+
+def failures(dialogue: dict, names: list[str], *, web: bool) -> dict[str, str]:
     """Every listed check the dialogue fails, plus what no family allows:
     turns that did not end normally (a crash, a cancel or a timeout is never
     a clean example) or whose last message did not finish, searching a whole
-    drive and reading the machine itself."""
+    drive, reading the machine itself and meeting the sandbox's missing
+    network (`web`: the card has a stand-in web)."""
     found = {name: why for name in names if (why := check(name, dialogue)) is not None}
     calls = [c for turn in dialogue.get("dialogue") or [] for c in turn.get("calls") or []]
     scans = [c for c in calls if scans_a_drive(c)]
@@ -156,6 +198,15 @@ def failures(dialogue: dict, names: list[str]) -> dict[str, str]:
     probes = [c for c in calls if probes_the_machine(c)]
     if probes:
         found["system_probe"] = f"read the machine itself: {json.dumps(probes[0].get('arguments'), ensure_ascii=False)[:120]}"
+    told = [m.group(0) for text in tool_results(dialogue.get("trajectory") or []) for m in SANDBOX_OUTPUT.finditer(text)]
+    if told and "system_probe" not in found:
+        found["system_probe"] = f"a tool result named the sandbox's system: {sorted(set(told))[:3]}"
+    reached = [] if web else [c for c in calls if reaches_the_network(c)]
+    if reached:
+        found["no_network"] = f"reached for the network on a card without a web: {reached[0].get('name')}"
+    lookups = unresolved(dialogue.get("trajectory") or [])
+    if lookups and "no_network" not in found:
+        found["no_network"] = f"a tool result said a name did not resolve: {lookups[:2]}"
     unfinished = unfinished_turns(dialogue.get("trajectory") or [])
     if unfinished:
         found["cut_off"] = f"turns whose last message did not finish: {unfinished}"

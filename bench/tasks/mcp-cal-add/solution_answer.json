@@ -1,0 +1,1 @@
+{"answer": "好了", "calls": [{"name": "mcp__calendar__create_event", "arguments": {"summary": "繳房租", "start": "2026-10-07T15:00:00+08:00", "duration_minutes": 45}}]}

@@ -1,0 +1,53 @@
+{
+ "kind": "mcp",
+ "prompt": "把書房的冷氣開成冷氣模式，設定 26 度。",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "permissions": {
+  "edit": "deny",
+  "shell": "deny",
+  "web": "deny"
+ },
+ "mcp_servers": {
+  "drone": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "drone"
+   ],
+   "permission": "ask",
+   "hardware": true,
+   "clients": [
+    "ui"
+   ],
+   "description": "無人機（MAVLink）：狀態、位置、解鎖、起飛、降落、返航、移動"
+  },
+  "home": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "home"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "智慧家庭：燈光、冷氣、溫濕度感測器、用電"
+  },
+  "weather": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "weather"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "天氣：氣象測站即時觀測、縣市預報、雨量紀錄"
+  }
+ }
+}

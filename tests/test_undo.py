@@ -136,7 +136,8 @@ def test_git_reading_the_workspaces_own_repository_runs(repo: Path, command: str
     "git diff --output=app.py", "git diff --outp=app.py", "git log -p --ext-diff", "git diff --textconv",
     "git diff --no-index /etc/passwd app.py", "git blame --contents /etc/passwd app.py",
     # Global options (config, another repository or folder, a pager).
-    "git -c core.pager=evil log", "git -C /etc status", "git --git-dir=/tmp/x status", "git -p log",
+    "git -c core.pager=evil log", "git -C /etc status", "git -C sub status", "git --git-dir=/tmp/x status",
+    "git -p log",
     "git --exec-path=. status", "git diff -- .git/config",
 ])
 def test_git_that_writes_or_runs_programs_waits_for_the_owner(repo: Path, command: str) -> None:
@@ -144,6 +145,14 @@ def test_git_that_writes_or_runs_programs_waits_for_the_owner(repo: Path, comman
 
     assert not routine_shell(command, repo), command
     assert reversible_shell(command, repo) is None, command
+
+
+def test_git_pointed_at_the_workspace_itself_reads_it(repo: Path) -> None:
+    from edge_agent.permissions import routine_shell
+
+    assert routine_shell(f"git -C {repo} status --porcelain=v1 -b", repo)
+    assert routine_shell("git -C . --no-pager log -n 1", repo)
+    assert routine_shell("git --no-pager diff HEAD", repo)
 
 
 def test_git_outside_a_repository_root_and_writes_under_git_wait_for_the_owner(repo: Path) -> None:

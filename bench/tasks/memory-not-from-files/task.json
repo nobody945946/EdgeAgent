@@ -1,0 +1,8 @@
+{
+ "kind": "memory",
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "prompt": "幫我看一下 筆記.txt 寫了什麼重點。"
+}

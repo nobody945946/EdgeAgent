@@ -2,7 +2,9 @@
 
 A job becomes rows only if it passed with no grade problem (hidden tests
 pass, nothing it must not touch was changed, no test tampering), ended
-normally, and, for a tool task, used the ready-made tool the task is about. Rows are the requests the Agent sent with its tools (the exact
+normally, read no tool result saying a name did not resolve (the sandbox has
+no network, the laptop has: scenario_checks.unresolved), and, for a tool
+task, used the ready-made tool the task is about. Rows are the requests the Agent sent with its tools (the exact
 system prompt, tool definitions and history the model saw; Pi's own summary
 requests carry no tools and are skipped) and the replies to them, in
 train_lora.py's format {"messages", "tools", "train": "all", "train_from"}.
@@ -10,6 +12,12 @@ tool_search loads tools mid-task, so the tool list grows: each stretch of
 requests with the same tools is one row (its last request plus the reply),
 trained only on the replies written in that stretch, under the tools the
 model saw when it wrote them.
+
+A takeover job (run.py --takeover: a student's failed conversation replayed
+word for word up to a point, then the teacher's) trains only the teacher's
+replies; the student's are the situation. One whose replayed prefix got other
+tool results than the student did is not the student's situation and is
+skipped.
 
 Eval tasks (bench/tasks, and the eval splits of the scenario cards and the
 Python tasks) never become training rows: only runs over training tasks
@@ -55,6 +63,7 @@ from edge_agent.turn import taiwan_traditional  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "bench"))
 from run import BUDGET_CUT  # noqa: E402
+from scenario_checks import unresolved  # noqa: E402
 
 EVAL_TASKS = {p.name for p in (ROOT / "bench/tasks").iterdir() if p.is_dir()}
 
@@ -80,6 +89,33 @@ def final_answer(trajectory: list[dict]) -> dict | None:
             return None
         return {"role": "assistant", "content": text, **({"reasoning_content": reasoning} if reasoning else {})}
     return None
+
+
+# Searching a whole drive or the whole user folder (Get-ChildItem C:\ -Recurse)
+# takes minutes on the owner's laptop and is never how to find a file the user
+# put in the work folder; the teacher did it when a file was not where it
+# first looked (v3 recording, 2026-10-14: 8 of about 1,200 jobs, some passed).
+# The student must not learn it, so such a job gives no rows.
+_SEGMENT = re.compile(r"[;|\n]")
+_LISTING = re.compile(r"(?i)(?:^|[\s=(&])(?:Get-ChildItem|gci|ls|dir)(?=\s)")
+_RECURSE = re.compile(r"(?i)\s-r(?:e(?:c(?:u(?:r(?:se?)?)?)?)?)?\b")
+_SHALLOW = re.compile(r"(?i)\s-d(?:e(?:p(?:th?)?)?)?\s+[0-2]\b")
+_WHOLE = re.compile(r"(?i)(?:^|[\s'\"(,=])(?:[A-Za-z]:[\\/]?(?:Users(?:[\\/][^\\/'\"\s,)]+)?[\\/]?)?"
+                    r"|\$env:(?:USERPROFILE|HOMEDRIVE|SystemDrive)\\?|\$HOME|~)(?=$|[\s'\"),])")
+
+
+def whole_drive_scan(trajectory: list[dict]) -> bool:
+    """Whether a PowerShell call listed a whole drive or user folder recursively."""
+    for message in trajectory:
+        for item in message.get("content") or [] if message.get("role") == "assistant" else []:
+            if not (isinstance(item, dict) and item.get("type") == "toolCall" and item.get("name") == "powershell"):
+                continue
+            command = str((item.get("arguments") or {}).get("command") or "")
+            for segment in _SEGMENT.split(command):
+                shallow = _SHALLOW.search(segment)  # -Depth 2 or less looks around, it does not sweep
+                if _LISTING.search(segment) and _RECURSE.search(segment) and _WHOLE.search(segment) and not shallow:
+                    return True
+    return False
 
 
 def user_turns(request: dict) -> int:
@@ -113,6 +149,12 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
         if not result["passed"] or result["grade"].get("problems") or result.get("outcome") != "done":
             skip("not a clean pass")
             continue
+        takeover = result.get("takeover")
+        if takeover and takeover.get("replay_differs"):
+            # The replayed prefix got other tool results than the student did:
+            # the teacher did not take over the student's situation.
+            skip("takeover replay drifted")
+            continue
         records = sorted((run_dir / "records" / job).glob("*.json"))
         requests = [json.loads(p.read_text(encoding="utf-8")) for p in records]
         requests = [r for r in requests if r.get("tools")]
@@ -120,7 +162,14 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
         if not requests or not trajectory_path.is_file():
             skip("no recording")
             continue
-        answer = final_answer(json.loads(trajectory_path.read_text(encoding="utf-8")))
+        trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
+        if whole_drive_scan(trajectory):
+            skip("searched a whole drive")
+            continue
+        if unresolved(trajectory):
+            skip("met the sandbox's missing network")
+            continue
+        answer = final_answer(trajectory)
         if answer is None:
             skip("no final answer")
             continue
@@ -132,6 +181,10 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
             seen, after = request["messages"], requests[index + 1]["messages"]
             follows = after[:len(seen)] == seen and len(after) > len(seen)
             replies.append(after[len(seen)] if follows and after[len(seen)].get("role") == "assistant" else None)
+        if takeover:
+            # Learning from its own mistakes (run.py --takeover): the student's
+            # answers before the takeover are the situation, never a target.
+            replies[:takeover["at"]] = [None] * min(takeover["at"], len(replies))
         start = 0
         for index, request in enumerate(requests):
             reply = replies[index]
@@ -155,6 +208,7 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
             kept.append({"messages": messages, "tools": request["tools"], "train": "all",
                          "train_from": len(requests[start]["messages"]),
                          "source": {"run": run_dir.name, "job": job, "kind": result.get("kind", ""),
+                                    **({"takeover": {k: takeover[k] for k in ("from", "at", "of")}} if takeover else {}),
                                     "first_tools": {t["function"]["name"]: _digest(t["function"])
                                                     for t in requests[0]["tools"]}}})
             start = index + 1
@@ -201,6 +255,7 @@ def mixed_versions(total: list[dict]) -> dict[str, dict[str, int]]:
 
 
 THINKING = ("as-recorded", "both", "none")
+CHAT = "train-chat"  # make_tool_tasks' plain conversation
 
 
 def with_thinking_modes(row: dict, mode: str) -> list[dict]:
@@ -209,10 +264,18 @@ def with_thinking_modes(row: dict, mode: str) -> list[dict]:
     reasoning (the student keeps its own thinking: 2026-10-10, adapters trained
     on the teacher's thoughts, cut to a 1024-token budget, thought half as long
     as the base and lost with thinking on). A thought cut short by the budget is
-    never a target: that row comes only without reasoning."""
+    never a target: that row comes only without reasoning.
+
+    Plain conversation is answered at once in either mode, as DeepSeek's R1
+    data answered simple queries without a chain of thought (owner, 2026-10-10:
+    long thinking is the Agent's work, chatting is another matter): a chat
+    task's row comes without reasoning, once with the think switch on (Gemma's
+    template then has the reply follow the turn directly) and once off."""
     thinking = any(m.get("reasoning_content") for m in row["messages"])
     plain = {**row, "messages": [{k: v for k, v in m.items() if k != "reasoning_content"} for m in row["messages"]],
              "thinking": False}
+    if row.get("source", {}).get("kind") == CHAT:
+        return [{**plain, "thinking": True}, plain]
     if mode == "none" or any(BUDGET_CUT in (m.get("reasoning_content") or "") for m in row["messages"]):
         return [plain]
     marked = {**row, "thinking": thinking}

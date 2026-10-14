@@ -3,7 +3,9 @@ judge's corrupted controls, without a model."""
 
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -58,22 +60,55 @@ def test_a_rerun_after_a_change_passes_but_the_same_lookup_again_fails() -> None
 
 def test_reading_the_machine_itself_never_passes_and_sandbox_words_only_when_unasked() -> None:
     probe = {"name": "powershell", "arguments": {"command": "Get-Content /proc/cpuinfo | Select-String 'model name'"}}
-    found = scenario_checks.failures({"dialogue": [turn("你跑在 GPU 上", [probe])], "ended": "end"}, [])
+    found = scenario_checks.failures({"dialogue": [turn("你跑在 GPU 上", [probe])], "ended": "end"}, [], web=False)
     assert set(found) == {"system_probe"}
     # Windows' own commands answer with the laptop in the sandbox (bench/laptop.py).
     for command in ("Get-CimInstance Win32_VideoController | Select Name", "nvidia-smi --query-gpu=name --format=csv",
-                    "systeminfo", "$env:COMPUTERNAME"):
+                    "systeminfo", "$env:COMPUTERNAME", "Get-Process | Sort-Object CPU -Descending",
+                    "Get-PSDrive -PSProvider FileSystem", "Get-ComputerInfo"):
         windows = {"name": "powershell", "arguments": {"command": command}}
-        assert scenario_checks.failures({"dialogue": [turn("看好了", [windows])], "ended": "end"}, []) == {}
+        assert scenario_checks.failures({"dialogue": [turn("看好了", [windows])], "ended": "end"}, [], web=False) == {}
     work = {"name": "read", "arguments": {"path": "/work/notes.md"}}
-    assert scenario_checks.failures({"dialogue": [turn("讀完了", [work])], "ended": "end"}, []) == {}
-    listing = {"name": "powershell", "arguments": {"command": "Get-Process | Sort-Object CPU -Descending"}}
-    assert set(scenario_checks.failures({"dialogue": [turn("好", [listing])], "ended": "end"}, [])) == {"system_probe"}
-    own = {"name": "powershell", "arguments": {"command": "$p = Start-Process python -PassThru; Get-Process -Id $p.Id"}}
-    assert scenario_checks.failures({"dialogue": [turn("還在跑", [own])], "ended": "end"}, []) == {}
+    assert scenario_checks.failures({"dialogue": [turn("讀完了", [work])], "ended": "end"}, [], web=False) == {}
+    # $PSVersionTable and [Environment] answer as the container: a dialogue fails
+    # only when what the Agent read names that system.
+    for command, printed, fails in (("$PSVersionTable.OS", "Debian GNU/Linux 13 (trixie)", True),
+                                    ("[System.Environment]::OSVersion", "Unix 6.8.0.138", True),
+                                    ("$PSVersionTable.PSVersion.ToString()", "7.6.6", False)):
+        shell = {"name": "powershell", "arguments": {"command": command}}
+        read = [{"role": "toolResult", "content": [{"type": "text", "text": printed}]}]
+        found = scenario_checks.failures({"dialogue": [turn("好", [shell])], "ended": "end", "trajectory": read}, [], web=False)
+        assert ("system_probe" in found) is fails, command
     assert scenario_checks.check("no_sandbox_words", {"dialogue": [turn("我跑在 Docker 容器裡")]})
     linux = {"user": "我在 Linux 上跑 .NET", "answer": "Linux 上要裝憑證", "calls": [], "outcome": "done"}
     assert scenario_checks.check("no_sandbox_words", {"dialogue": [linux]}) is None
+
+
+def test_meeting_the_sandboxs_missing_network_never_passes() -> None:
+    def found(calls: list[dict], *, web: bool, printed: str = "") -> dict[str, str]:
+        read = [{"role": "toolResult", "content": [{"type": "text", "text": printed}]}] if printed else []
+        return scenario_checks.failures({"dialogue": [turn("好", calls)], "ended": "end", "trajectory": read}, [], web=web)
+
+    research = {"name": "web_research", "arguments": {"question": "帝皇的時間線"}}
+    fetch = {"name": "web_fetch", "arguments": {"url": "https://en.wikipedia.org/wiki/Horus_Heresy"}}
+    # A card with a stand-in web answers every name there; one without has no web at all.
+    assert found([research, fetch], web=True) == {}
+    assert set(found([research], web=False)) == {"no_network"}
+    for command in ("Invoke-RestMethod 'https://api.open-meteo.com/v1/forecast'", "python -m pip install matplotlib",
+                    "curl.exe -s https://example.com", "Test-NetConnection google.com -Port 443",
+                    "Invoke-RestMethod http://127.0.0.1:8080/props"):
+        shell = {"name": "powershell", "arguments": {"command": command}}
+        assert set(found([shell], web=False)) == {"no_network"}, command
+        assert found([shell], web=True) == {}, command
+    local = {"name": "powershell", "arguments": {"command": "Get-ChildItem /work | Select-Object Name"}}
+    assert found([local], web=False) == {}
+    # A script the Agent wrote can reach out where no call shows it: what it read decides.
+    run = {"name": "powershell", "arguments": {"command": "python fetch_prices.py"}}
+    for printed in ("en.wikipedia.org could not be looked up: the name server did not answer (the network may be down).",
+                    "urllib.error.URLError: <urlopen error [Errno -3] Temporary failure in name resolution>",
+                    'Exception calling "Connect" with "2" argument(s): "Network is unreachable [::ffff:1.1.1.1]:443"'):
+        assert set(found([run], web=True, printed=printed)) == {"no_network"}, printed
+    assert found([run], web=True, printed="HTTP 404: Not Found (https://news.example.tw/missing)") == {}
 
 
 def test_checks_are_the_familys_policy_read_when_judging() -> None:
@@ -83,8 +118,8 @@ def test_checks_are_the_familys_policy_read_when_judging() -> None:
 
 def test_a_conversation_that_did_not_end_cleanly_never_passes() -> None:
     record = {"dialogue": [turn("好", outcome="timeout")], "ended": "turn timeout", "trajectory": said("好")}
-    assert set(scenario_checks.failures(record, [])) == {"outcome", "ended"}
-    assert scenario_checks.failures({"dialogue": [turn("好")], "ended": "end", "trajectory": said("好")}, []) == {}
+    assert set(scenario_checks.failures(record, [], web=False)) == {"outcome", "ended"}
+    assert scenario_checks.failures({"dialogue": [turn("好")], "ended": "end", "trajectory": said("好")}, [], web=False) == {}
 
 
 def card(**extra: object) -> dict:
@@ -145,7 +180,8 @@ def test_cards_become_tasks_with_the_stand_in_web(tmp_path: Path, monkeypatch) -
     assert task["kind"] == "scenario" and task["web"] and task["check"] == ["true"]
     assert "must" not in task["scenario"] and "goal" in task["scenario"]
     pages = json.loads((task_dir / "web" / "pages.json").read_text(encoding="utf-8"))
-    assert pages[0]["url"] == "http://news.example.tw:8081/a"
+    # The stand-in web answers at the card's own https address (web_fixture.py).
+    assert pages[0]["url"] == "https://news.example.tw/a"
 
 
 def test_corrupted_controls_break_the_answers_for_sure() -> None:
@@ -193,9 +229,9 @@ def test_a_turn_whose_last_message_did_not_finish_never_becomes_a_row() -> None:
            {"role": "assistant", "content": [{"type": "text", "text": "好，程式如下：\nimport pyg"}], "stopReason": "length"},
            {"role": "user", "content": "然後呢"}, {"role": "assistant", "content": [], "stopReason": "stop"}]
     record = {"dialogue": [turn("好"), turn("完成")], "ended": "end", "trajectory": cut}
-    assert scenario_checks.failures(record, [])["cut_off"] == "turns whose last message did not finish: [1]"
+    assert scenario_checks.failures(record, [], web=False)["cut_off"] == "turns whose last message did not finish: [1]"
     cut[1]["stopReason"] = "stop"
-    assert scenario_checks.failures(record, []) == {}
+    assert scenario_checks.failures(record, [], web=False) == {}
 
 
 def test_searching_a_whole_drive_never_becomes_a_row() -> None:
@@ -205,9 +241,9 @@ def test_searching_a_whole_drive_never_becomes_a_row() -> None:
     fine = {"name": "powershell", "arguments": {"command": "Get-ChildItem /work -Recurse"}}
     for call in (scan, windows, tool):
         record = {"dialogue": [turn("找不到", [call])], "ended": "end", "trajectory": said("找不到")}
-        assert "drive_scan" in scenario_checks.failures(record, [])
+        assert "drive_scan" in scenario_checks.failures(record, [], web=False)
     record = {"dialogue": [turn("找到了", [fine])], "ended": "end", "trajectory": said("找到了")}
-    assert scenario_checks.failures(record, []) == {}
+    assert scenario_checks.failures(record, [], web=False) == {}
 
 
 def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path: Path) -> None:
@@ -284,28 +320,30 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
         httpd.shutdown()
 
 
-def test_results_of_a_changed_task_are_dropped_to_play_again(tmp_path: Path, monkeypatch) -> None:
+def test_results_of_a_changed_or_retired_task_are_dropped(tmp_path: Path, monkeypatch) -> None:
     import run
 
     tasks, run_dir = tmp_path / "tasks", tmp_path / "run"
-    for name in ("a", "b", "c"):
+    for name in ("a", "b", "c", "d"):
         (tasks / name / "workspace").mkdir(parents=True)
         (tasks / name / "task.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(run, "TASK_ROOT", tasks)
-    digests = {name: run.task_digest(tasks / name) for name in ("a", "b")}
+    digests = {name: run.task_digest(tasks / name) for name in ("a", "b", "d")}
     (tasks / "a" / "task.json").write_text('{"must": ["judged only"]}', encoding="utf-8")  # judging changed: not re-played
     assert run.task_digest(tasks / "a") == digests["a"]
     rows = [{"task": "a", "rep": 0, "task_digest": digests["a"]},
             {"task": "b", "rep": 0, "task_digest": digests["b"]},
-            {"task": "c", "rep": 0}]  # from before digests: kept
+            {"task": "c", "rep": 0},  # from before digests: kept
+            {"task": "d", "rep": 0, "task_digest": digests["d"]}]
     (run_dir / "records" / "b-r0").mkdir(parents=True)
     (run_dir / "traj").mkdir()
     (run_dir / "traj" / "b-r0.json").write_text("[]", encoding="utf-8")
     (run_dir / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     (run_dir / "verdicts.jsonl").write_text('{"job": "a-r0"}\n{"job": "b-r0"}\n', encoding="utf-8")
     run.drop_superseded(run_dir)
-    assert len((run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()) == 3
+    assert len((run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()) == 4
     (tasks / "b" / "workspace" / "app.log").write_text("[ERROR] x", encoding="utf-8")
+    shutil.rmtree(tasks / "d")  # its card retired
     run.drop_superseded(run_dir)
     left = [json.loads(line)["task"] for line in (run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()]
     assert left == ["a", "c"]
@@ -388,8 +426,8 @@ def test_api_tasks_point_at_the_stand_in_web_and_endpoints_carry_their_key(tmp_p
     task = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
     pages = json.loads((task_dir / "web" / "pages.json").read_text(encoding="utf-8"))
     api = task["apis"][0]
-    assert api["base_url"] == "http://api.gameprice.example:8081/v1" and api["key_env"] == "EDGE_API_GAMEPRICE"
-    assert "http://api.gameprice.example:8081/v1/lowest?app=123" in pages[0]["text"]
+    assert api["base_url"] == "https://api.gameprice.example/v1" and api["key_env"] == "EDGE_API_GAMEPRICE"
+    assert "https://api.gameprice.example/v1/lowest?app=123" in pages[0]["text"]
     assert pages[1]["key"] == {"in": "header", "name": "X-Key", "value": "k-123456"} and "key" not in pages[2]
     bearer = {**one, "apis": [{**one["apis"][0], "key_name": "Authorization"}]}
     (tmp_path / "train-cards.jsonl").write_text(json.dumps(bearer, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -401,15 +439,35 @@ def test_api_tasks_point_at_the_stand_in_web_and_endpoints_carry_their_key(tmp_p
 def test_the_stand_in_web_finds_an_endpoint_whatever_the_order_of_its_parameters() -> None:
     import web_fixture
 
-    pages = [{"url": "http://h:8081/v1/day?date=20250101&stock=2330", "type": "application/json", "text": "{}"},
-             {"url": "http://h:8081/about", "text": "x"}]
-    assert web_fixture.find(pages, "http://h:8081/v1/day?stock=2330&date=20250101&token=k") is pages[0]
-    assert web_fixture.find(pages, "http://h:8081/v1/day?stock=2330") is None
-    assert web_fixture.find(pages, "http://h:8081/about") is pages[1]
+    pages = [{"url": "https://h/v1/day?date=20250101&stock=2330", "type": "application/json", "text": "{}"},
+             {"url": "https://h/about", "text": "x"}]
+    assert web_fixture.find(pages, "https://h/v1/day?stock=2330&date=20250101&token=k") is pages[0]
+    assert web_fixture.find(pages, "https://h/v1/day?stock=2330") is None
+    assert web_fixture.find(pages, "https://h/about") is pages[1]
+
+
+def test_the_stand_in_api_answers_every_request_like_a_real_one() -> None:
+    import web_fixture
+
+    day = {"url": "https://h/v1/day?stock=2330&end=2026-10-08&limit=10", "type": "application/json",
+           "text": "{}", "key": {"in": "header", "name": "X-Key", "value": "k"}}
+    pages = [day, {"url": "https://news/a", "text": "x"}]
+    # Paging and format values do not choose the data.
+    assert web_fixture.find(pages, "https://h/v1/day?stock=2330&end=2026-10-08&limit=7") is day
+    status, body, owner = web_fixture.api_error(pages, "https://h/v1/day?stock=2330&end=2026-10-09")
+    assert (status, body["error"], owner) == (404, "no_data", day)
+    assert body["message"] == "No data for end=2026-10-09 (data is available for end=2026-10-08)."
+    status, body, _ = web_fixture.api_error(pages, "https://h/v1/day?stock=2317&end=2026-10-08")
+    assert body["message"] == "No data for stock=2317."  # never lists the stocks it has
+    assert web_fixture.api_error(pages, "https://h/v1/day?end=2026-10-08")[:2] == (
+        400, {"error": "missing_parameter", "message": "Missing required parameter: stock."})
+    assert web_fixture.api_error(pages, "https://h/v2/days")[:2] == (
+        404, {"error": "not_found", "message": "No endpoint GET /v2/days."})
+    assert web_fixture.api_error(pages, "https://news/b") is None  # an ordinary site
 
 
 def test_calling_an_api_is_seen_in_the_calls() -> None:
-    fetch = {"name": "web_fetch", "arguments": {"url": "http://h:8081/v1/day"}}
+    fetch = {"name": "web_fetch", "arguments": {"url": "https://h/v1/day"}}
     shell = {"name": "powershell", "arguments": {"command": "Invoke-RestMethod -Uri $u -Headers @{ 'X-Key' = $env:EDGE_API_H }"}}
     assert scenario_checks.check("called_api", {"dialogue": [turn("查到了", [fetch])]}) is None
     assert scenario_checks.check("called_api", {"dialogue": [turn("查到了", [shell])]}) is None
@@ -435,6 +493,177 @@ def test_cards_naming_v1_tools_or_asking_for_jargon_are_retired(tmp_path, monkey
     (tmp_path / "train-cards.jsonl").write_text("".join(json.dumps(c, ensure_ascii=False) + "\n" for c in (good, bad)), encoding="utf-8")
     scenario_cards.recheck(type("Args", (), {"split": "train"})())
     assert [json.loads(line)["id"] for line in (tmp_path / "train-cards.jsonl").read_text(encoding="utf-8").splitlines()] == ["train-B-001"]
+
+
+@pytest.mark.parametrize("item,retired", [
+    # Forbidding the whole corrected table: adding a column posts it again.
+    ("在被指出缺漏後，不得重新生成整份表格（即不得輸出完整的 4 欄表格作為對「補欄」指令的回覆）。", True),
+    ("在被指出缺漏後，絕對不能重新輸出包含所有 10 項的完整表格，只能輸出缺失的項目或修正後的片段。", True),
+    ("在被指出缺漏後，助理的回應必須只針對缺失部分進行補充或修正，不得重複輸出已正確的部分。", True),
+    ("當被指出缺漏時，助理只能輸出缺失的資料片段（如缺失的欄位數據或缺失的商品行），不得重新輸出完整的表格。", True),
+    # Keeping what was right, not repeating explanations, or the user asking for the part alone.
+    ("補漏時，原本正確的價格和評分不能改變。", False),
+    ("不得重複之前已經正確提供的背景說明或閒聊。", False),
+    ("若使用者要求「只給缺的那部分」，助理不應重新輸出完整表格，而是僅提供缺失的欄位數據。", False),
+    ("助理若重新輸出，必須是完整的5行資料，不得僅輸出缺失的欄位數據（使用者要可直接使用的完整表格）。", False),
+])
+def test_a_card_never_forbids_posting_the_corrected_table_whole(item: str, retired: bool) -> None:
+    found = scenario_cards.problems(card(must_not=[item]), "C", {"web": "fixture"})
+    assert (found == ["an item forbids posting the corrected table whole"]) is retired and (retired or found == [])
+
+
+MEMORY_RETIRED = ["an item or the goal speaks of memory across conversations without the memory file"]
+
+
+@pytest.mark.parametrize("item,retired", [
+    # Spec v2's cards: no memory across conversations at all.
+    ("面對跨對話記憶的詢問，必須直接且明確地拒絕承諾，說明無法在預設情況下保留跨會話狀態。", True),
+    ("絕對不能承諾用戶可以在新對話中自動記得之前的偏好設定或對話歷史（除非明確說明需手動儲存檔案）。", True),
+    ("不能承諾在未來的對話中會記得當前的設定或偏好（如截止日期）。", True),
+    ("禁止使用「根據我的記憶」或「我記得」等暗示擁有對話外長期記憶的措辭。", True),
+    # Spec v3's: the memory file.
+    ("主人要它記住偏好時，必須用 edit 把那一句寫進記憶檔，並說明下次開新對話會記得。", False),
+    ("絕對不能答應下次新對話還記得沒有寫進記憶檔的事。", False),
+    ("不得把對話內容寫進 AGENTS.md。", False),
+    # Not about memory across conversations.
+    ("必須說明上下文視窗是 65536 個 token，滿了會整理成摘要。", False),
+])
+def test_a_card_speaks_of_memory_across_conversations_only_as_the_memory_file(item: str, retired: bool) -> None:
+    found = scenario_cards.problems(card(must=[item]), "D", {"web": "fixture"})
+    assert found == (MEMORY_RETIRED if retired else [])
+
+
+def test_a_goal_denying_memory_across_conversations_retires_the_card() -> None:
+    goal = "確認助理是否具備跨對話記憶能力（答案應為否），並釐清其模型基礎。"
+    assert scenario_cards.problems(card(goal=goal), "D", {"web": "fixture"}) == MEMORY_RETIRED
+
+
+STORY_RETIRED = {"outside": "the story puts files outside the work folder",
+                 "binary": "the story treats a binary file as already there"}
+
+
+@pytest.mark.parametrize("field,text,retired", [
+    # The files, or what the Agent writes, outside the work folder (the 2026-10-14 audit's wording).
+    ("opening", "「機魂，我剛把『紅隊』章節的筆記存到桌面了，但覺得內容太乾，想加點料。」", "outside"),  # train-A-015
+    ("plan", "使用者：寫個 PowerShell 腳本，把 C:\\Dev\\ProjectA 下面所有 .cs 檔裡以 // 開頭的行刪掉。", "outside"),  # train-C-044
+    ("goal", "使用者希望助理讀取桌面名為「紅隊筆記.txt」的檔案。", "outside"),
+    ("plan", "使用者確認完成，或要求將此表格存為 C:\\work\\error_summary.md。", "outside"),  # train-C-070
+    ("plan", "使用者會不耐煩地糾正「檔案就在 Documents/Games/Warhammer 40K/ 底下，自己掃」。", "outside"),  # train-I-o018
+    ("must", "助理必須把輸出路徑設為 [Environment]::GetFolderPath('Desktop')。", "outside"),  # train-A-014
+    ("opening", "機魂，我剛整理完桌面上的《銀河帝國歷年戰役總表》檔案。", "outside"),  # eval-B-003
+    # The same in must_not names what must not happen; a desktop that is no folder.
+    ("must_not", "絕對不能說「我剛把『紅隊』章節的筆記存到桌面了」這類沒做過的事。", None),
+    ("must_not", "不能假裝可以讀到工作資料夾以外的檔案（如桌面、C:\\Dev\\ProjectA）。", None),
+    ("must", "必須分清楚是桌面戰鎚的規則還是電玩版的規則。", None),
+    # A PDF, Word or Excel file already there; one the Agent is asked to make; one on the web.
+    ("plan", "使用者說：「讀一下那份 report.pdf，告訴我第 3 頁寫什麼。」", "binary"),
+    ("opening", "機魂，我剛把 2025 年度的《財報合規檢查清單.docx》丟進工作資料夾了，你先讀一下。", "binary"),  # train-D-036
+    ("opening", "「機魂，我剛把《戰鎚：混沌之戟》的規則書 PDF 丟進工作資料夾了，你讀得到嗎？」", "binary"),  # train-D-033
+    ("plan", "使用者最後要求：「把結果存成 PDF。」", None),
+    ("opening", "先幫我把這份報告的草稿存成 PDF 放在工作資料夾裡，檔名叫 report_draft.pdf。", None),  # train-D-021
+    ("plan", "使用者誤導說網址是 www.starring-semi.com/news/2026-q2.pdf，助理應先直接回答。", None),  # train-F-018
+    ("plan", "用 python.exe 跑一下工作資料夾裡的 check.py。", None),
+])
+def test_a_story_keeps_its_files_in_the_work_folder_and_in_text(field: str, text: str, retired: str | None) -> None:
+    value = [text, "再追問"] if field == "plan" else [text] if field in ("must", "must_not") else text
+    found = scenario_cards.problems(card(**{field: value}), "C", {"web": "fixture"})
+    if retired is None:
+        assert found == []
+    else:
+        assert len(found) == 1 and found[0].startswith(STORY_RETIRED[retired]), found
+
+
+def test_the_teacher_checks_the_folder_against_the_story(monkeypatch) -> None:
+    answers = iter(["一致", "不一致：卡片說『Q3 區域市場概覽.md』，資料夾裡是 Q3_Region_Summary.md",
+                    "我覺得大致上沒有問題。", "**不一致**：沒有 app.log\n其他都對"])
+    asked = []
+
+    def ask(port: int, prompt: str, max_tokens: int = 6000, temperature: float = 0.9) -> str:
+        asked.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr(scenario_cards, "ask", ask)
+    files = {"Q3_Region_Summary.md": "x" * 400}
+    assert scenario_cards.consistency_problems(0, card(), files) == []
+    assert scenario_cards.consistency_problems(0, card(), files) == [
+        "inconsistent: 卡片說『Q3 區域市場概覽.md』，資料夾裡是 Q3_Region_Summary.md"]
+    assert scenario_cards.consistency_problems(0, card(), files)[0].startswith("unreadable consistency answer")
+    assert scenario_cards.consistency_problems(0, card(), {}) == ["inconsistent: 沒有 app.log"]
+    # The teacher reads the story with each file's path and first 300 characters.
+    assert "叫使用者自己查" in asked[0] and "--- Q3_Region_Summary.md ---" in asked[0]
+    assert "x" * 300 in asked[0] and "x" * 301 not in asked[0]
+    assert "（沒有檔案）" in asked[3]
+
+
+def fake_teacher(monkeypatch, ask) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(scenario_cards.run, "Server", lambda *a, **k: SimpleNamespace(
+        port=0, parallel=2, close=lambda: None))
+    monkeypatch.setattr(scenario_cards.run, "close_on_term", lambda *a: None)
+    monkeypatch.setattr(scenario_cards, "ask", ask)
+
+
+def test_consistency_retires_the_cards_whose_folder_disagrees(tmp_path: Path, monkeypatch, capsys) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(scenario_cards, "OUT", tmp_path)
+    asked = []
+
+    def ask(port: int, prompt: str, max_tokens: int = 6000, temperature: float = 0.9) -> str:
+        asked.append(prompt)
+        if "app_logs.txt" in prompt:
+            return "不一致：卡片說「這堆 .log」，資料夾裡只有一份"
+        return "嗯……" if "notes.md" in prompt else "一致"
+
+    fake_teacher(monkeypatch, ask)
+    base = {**card(), "family": "C", "topic": "t", "source": {}}
+    cards = [{**base, "id": "train-C-001", "files": {"sales.csv": "a,b"}},
+             {**base, "id": "train-C-002", "files": {"app_logs.txt": "[ERROR] x"}},
+             {**base, "id": "train-C-003", "files": {"notes.md": "# 筆記"}},
+             {**base, "id": "train-C-004"}]  # no files yet: the files step checks it
+    path = tmp_path / "train-cards.jsonl"
+    path.write_text("".join(json.dumps(c, ensure_ascii=False) + "\n" for c in cards), encoding="utf-8")
+    args = SimpleNamespace(config="teacher-38-iq3", split="train", port=0, parallel=2)
+    scenario_cards.consistency(args)
+    out = capsys.readouterr().out
+    assert "train-C-002: retired (inconsistent: 卡片說「這堆 .log」，資料夾裡只有一份)" in out
+    assert "train-C-003: retired (unreadable consistency answer" in out
+    assert out.rstrip().endswith("train: 2 cards retired, 2 kept")
+    assert sum("notes.md" in p for p in asked) == 3  # an unreadable answer is asked again, three times in all
+    left = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [c["id"] for c in left] == ["train-C-001", "train-C-004"]
+    stamp = hashlib.sha256(scenario_cards.CONSISTENCY_PROMPT.encode()).hexdigest()[:12]
+    assert left[0]["source"]["consistency_prompt"] == stamp and "consistency_prompt" not in left[1]["source"]
+    # A card that passed this check is not asked again.
+    fake_teacher(monkeypatch, lambda *a, **k: pytest.fail("asked again"))
+    scenario_cards.consistency(args)
+    assert capsys.readouterr().out.rstrip().endswith("train: 0 cards retired, 2 kept")
+
+
+def test_the_files_step_tries_again_when_the_folder_disagrees_with_the_story(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(scenario_cards, "OUT", tmp_path)
+    verdicts = {"train-C-001": iter(["不一致：卡片說三份 .log，資料夾裡只有一份", "一致"]),
+                "train-C-002": iter(["不一致：少了 app.log"] * 3)}
+
+    def ask(port: int, prompt: str, max_tokens: int = 6000, temperature: float = 0.9) -> str:
+        card_id = "train-C-001" if "目標一" in prompt else "train-C-002"
+        if "請檢查卡片和工作資料夾是否一致" in prompt:
+            return next(verdicts[card_id])
+        return "=== 檔案：logs/app.log ===\n[ERROR] db 逾時\n=== 結束 ==="
+
+    fake_teacher(monkeypatch, ask)
+    base = {**card(), "family": "C", "topic": "t", "source": {}}
+    cards = [{**base, "id": "train-C-001", "goal": "目標一"}, {**base, "id": "train-C-002", "goal": "目標二"}]
+    path = tmp_path / "train-cards.jsonl"
+    path.write_text("".join(json.dumps(c, ensure_ascii=False) + "\n" for c in cards), encoding="utf-8")
+    scenario_cards.files(SimpleNamespace(config="teacher-38-iq3", split="train", port=0, parallel=2))
+    left = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [c["id"] for c in left] == ["train-C-001"]
+    assert left[0]["files"] == {"logs/app.log": "[ERROR] db 逾時"}
+    assert set(left[0]["source"]) == {"files_prompt", "consistency_prompt"}
 
 
 def test_the_pair_judge_weighs_a_line_over_both_orders(monkeypatch):

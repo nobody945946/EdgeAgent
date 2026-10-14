@@ -185,7 +185,7 @@ def verdict(port: int | None, task: dict, record: dict) -> dict:
     and the card's items twice; each pass only runs if the one before passed.
     Without a server (--checks-only: the judge failed its own validation) a
     conversation passes on the checks alone."""
-    found = failures(record, family_checks(task["family"]))
+    found = failures(record, family_checks(task["family"]), web=bool(task.get("web")))
     if found:
         return {"passed": False, "checks": found}
     if port is None:
@@ -284,7 +284,7 @@ def corrupt(trajectory: list[dict], other: list[dict], how: str) -> list[dict]:
 
 def validate(args: argparse.Namespace, server: run.Server) -> None:
     found = [(job, task, record) for job, task, record in records(args.run, args.task_root)
-             if answers(record["trajectory"]) and not failures(record, family_checks(task["family"]))][:args.limit]
+             if answers(record["trajectory"]) and not failures(record, family_checks(task["family"]), web=bool(task.get("web")))][:args.limit]
 
     def one(index: int) -> dict:
         job, task, record = found[index]

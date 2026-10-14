@@ -128,7 +128,7 @@
   "lora": "machine-spirit-v1.q8_0.gguf"
  },
  "teacher-38": {
-  "_note": "The one teacher (owner, 2026-10-07): Qwen3.8-27B (Apache 2.0) UD-Q4_K_XL, all on GPU, the Agent's 64K window, thinking high so its reasoning is recorded with its answers. Also plays the simulated user in scenario cards it records. Dev box only. Says it is the product's model (self_model) so its rows teach the student what it is. Thinking capped at 1,024 tokens a step (2026-10-07): uncapped it wrote 20-40K characters of thinking per conversation, ran into the 16K output cap 4 times in 29, and small students learn short reasoning better than long (2502.12143).",
+  "_note": "The one teacher (owner, 2026-10-07): Qwen3.8-27B (Apache 2.0) UD-Q4_K_XL, all on GPU, the Agent's 64K window, thinking high so its reasoning is recorded with its answers. Also plays the simulated user in scenario cards it records. Dev box only. Says it is the product's model (self_model) so its rows teach the student what it is. Thinking capped at 1,024 tokens a step (2026-10-07): uncapped it wrote 20-40K characters of thinking per conversation, ran into the 16K output cap 4 times in 29, and small students learn short reasoning better than long (2502.12143). Thinking budget 12288 (was 1024): 1024 cut 9-25% of the teacher's thoughts, the longest ones, and a cut thought is never a target, so students learned only short thinking and lost with thinking on (2026-10-10); 4096 still cut 7% of the Python thoughts.",
   "model": "../teacher/Qwen3.8-27B-UD-Q4_K_XL.gguf",
   "self_model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
   "vision": false,
@@ -142,7 +142,7 @@
   "search_tools": true,
   "extra_args": [
    "--reasoning-budget",
-   "1024"
+   "12288"
   ]
  },
  "judge-gemma": {
@@ -227,7 +227,7 @@
   "simulator": "teacher-38-sim"
  },
  "teacher-38-iq3": {
-  "_note": "teacher-38 at IQ3_XXS so four conversations run side by side (measured 2026-10-08: 12,720 MiB with one 64K slot, 15,302 with two; four fit an idle GPU, five do not) (2026-10-07: at Q4 two slots made 12-15 conversations an hour, one stuck conversation halved it). The 27B IQ3 ranked within the threshold of Q4 as a teacher before (dev box 2026-09-29: 1.54 vs 1.46). A turn gets the cards' own 30 minutes (time_scale 1): at 0.5 the 2026-10-09 pilot cut 7-8 of 40 conversations, mostly long work rather than loops (the owner's build cards write 8-15K-character files at about 14 tokens a second per conversation).",
+  "_note": "teacher-38 at IQ3_XXS so four conversations run side by side (measured 2026-10-08: 12,720 MiB with one 64K slot, 15,302 with two; four fit an idle GPU, five do not) (2026-10-07: at Q4 two slots made 12-15 conversations an hour, one stuck conversation halved it). The 27B IQ3 ranked within the threshold of Q4 as a teacher before (dev box 2026-09-29: 1.54 vs 1.46). A turn gets the cards' own 30 minutes (time_scale 1): at 0.5 the 2026-10-09 pilot cut 7-8 of 40 conversations, mostly long work rather than loops (the owner's build cards write 8-15K-character files at about 14 tokens a second per conversation). Thinking budget 12288 (was 1024): 1024 cut 9-25% of the teacher's thoughts, the longest ones, and a cut thought is never a target, so students learned only short thinking and lost with thinking on (2026-10-10); 4096 still cut 7% of the Python thoughts.",
   "model": "../teacher/Qwen3.8-27B-UD-IQ3_XXS.gguf",
   "self_model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
   "vision": false,
@@ -241,9 +241,28 @@
   "search_tools": true,
   "extra_args": [
    "--reasoning-budget",
-   "1024"
+   "12288"
   ],
   "time_scale": 1
+ },
+ "teacher-38-iq3-long": {
+  "_note": "teacher-38-iq3 with an hour a turn (time_scale 2), only for re-recording what the 30-minute turn cut: the v3 recording (2026-10-14) lost 10 of 118 conversations to it, the teacher thinking 36-48K characters a step at about 14 tokens a second each, four side by side; dropping them keeps only shorter thinking, the bias the thinking budget was raised to end.",
+  "model": "../teacher/Qwen3.8-27B-UD-IQ3_XXS.gguf",
+  "self_model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": false,
+  "context_size": 65536,
+  "max_output_tokens": 16384,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 10200,
+  "vram_slot_mib": 2600,
+  "search_tools": true,
+  "extra_args": [
+   "--reasoning-budget",
+   "12288"
+  ],
+  "time_scale": 2
  },
  "teacher-38-mini": {
   "_note": "The teacher (teacher-38-iq3) in the mini-swe-agent harness on SWE-bench Verified: is it a good enough Python teacher? (E4B: 4/60 in the same harness). Same sampling as e4b-mini.",
@@ -361,25 +380,6 @@
    "2048"
   ]
  },
- "teacher-38-iq3-think4096": {
-  "_note": "teacher-38-iq3 with four times the thinking budget: does a longer teacher trace make better demonstrations?",
-  "model": "../teacher/Qwen3.8-27B-UD-IQ3_XXS.gguf",
-  "self_model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
-  "vision": false,
-  "context_size": 65536,
-  "max_output_tokens": 16384,
-  "working_context_size": 65536,
-  "effort": "high",
-  "low_vram": true,
-  "vram_base_mib": 10200,
-  "vram_slot_mib": 2600,
-  "search_tools": true,
-  "extra_args": [
-   "--reasoning-budget",
-   "4096"
-  ],
-  "time_scale": 1
- },
  "e4b-laptop-ms3": {
   "_note": "e4b-laptop-fw3 with machine-spirit-fw3: one adapter for the Agent and the machine spirit, trained on agent-fw3's rows and the character's chats, so the character can speak while the Agent works (two slots, one adapter); it ships only if it loses nothing to agent-fw3 here.",
   "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
@@ -465,5 +465,134 @@
   "lora": "machine-spirit-fw3.q8_0.gguf",
   "_note": "e4b-laptop-fw3-scen with machine-spirit-fw3: one adapter for the Agent and the machine spirit, trained on agent-fw3's rows and the character's chats, so the character can speak while the Agent works (two slots, one adapter); it ships only if it loses nothing to agent-fw3 here.",
   "simulator": "teacher-38-sim"
+ },
+ "e4b-laptop-v3": {
+  "_note": "The v3 joint adapter (Agent and machine spirit): the v3 recording's rows with the teacher's whole thoughts and once more without (dataset.py --thinking both), with the v3 character rows.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "machine-spirit-v3.q8_0.gguf"
+ },
+ "e4b-laptop-v3-high": {
+  "_note": "The v3 joint adapter (Agent and machine spirit): the v3 recording's rows with the teacher's whole thoughts and once more without (dataset.py --thinking both), with the v3 character rows.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "machine-spirit-v3.q8_0.gguf"
+ },
+ "e4b-laptop-v3-scen": {
+  "_note": "The v3 joint adapter (Agent and machine spirit): the v3 recording's rows with the teacher's whole thoughts and once more without (dataset.py --thinking both), with the v3 character rows.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 5000,
+  "vram_slot_mib": 1200,
+  "search_tools": true,
+  "simulator": "teacher-38-sim",
+  "lora": "machine-spirit-v3.q8_0.gguf"
+ },
+ "e4b-laptop-v3n": {
+  "_note": "The v3 joint adapter trained on the same rows without any thought (dataset.py --thinking none), as ms3n was: which of the two keeps the base's thinking and wins.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "machine-spirit-v3n.q8_0.gguf"
+ },
+ "e4b-laptop-v3n-high": {
+  "_note": "The v3 joint adapter trained on the same rows without any thought (dataset.py --thinking none), as ms3n was: which of the two keeps the base's thinking and wins.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "machine-spirit-v3n.q8_0.gguf"
+ },
+ "e4b-laptop-v3n-scen": {
+  "_note": "The v3 joint adapter trained on the same rows without any thought (dataset.py --thinking none), as ms3n was: which of the two keeps the base's thinking and wins.",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 5000,
+  "vram_slot_mib": 1200,
+  "search_tools": true,
+  "simulator": "teacher-38-sim",
+  "lora": "machine-spirit-v3n.q8_0.gguf"
+ },
+ "e4b-laptop-ms3n": {
+  "_note": "The shipped joint adapter (ms3n), the v3 adapters' opponent at the gate: run on the product it shipped with (--product).",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "off",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "machine-spirit-fw3n.q8_0.gguf"
+ },
+ "e4b-laptop-ms3n-high": {
+  "_note": "The shipped joint adapter (ms3n), the v3 adapters' opponent at the gate: run on the product it shipped with (--product).",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 6000,
+  "vram_slot_mib": 2000,
+  "search_tools": true,
+  "lora": "machine-spirit-fw3n.q8_0.gguf"
+ },
+ "e4b-laptop-ms3n-scen": {
+  "_note": "The shipped joint adapter (ms3n), the v3 adapters' opponent at the gate: run on the product it shipped with (--product).",
+  "model": "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+  "vision": true,
+  "context_size": 65536,
+  "max_output_tokens": 8192,
+  "working_context_size": 65536,
+  "effort": "high",
+  "low_vram": true,
+  "vram_base_mib": 5000,
+  "vram_slot_mib": 1200,
+  "search_tools": true,
+  "simulator": "teacher-38-sim",
+  "lora": "machine-spirit-fw3n.q8_0.gguf"
  }
 }

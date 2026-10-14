@@ -1,0 +1,58 @@
+{
+ "kind": "mcp",
+ "prompt": "把客廳的燈全部關掉。",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "permissions": {
+  "edit": "deny",
+  "shell": "deny",
+  "web": "deny"
+ },
+ "mcp_servers": {
+  "calendar": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "calendar"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "行事曆：查行程、找空檔、新增和刪除行程"
+  },
+  "home": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "home"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "智慧家庭：燈光、冷氣、溫濕度感測器、用電"
+  },
+  "shop": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "shop"
+   ],
+   "permission": "ask",
+   "read_only_tools": [
+    "search_products",
+    "get_stock",
+    "list_orders",
+    "get_order"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "網路商店後台：商品、庫存、訂單、出貨"
+  }
+ }
+}

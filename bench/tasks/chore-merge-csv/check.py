@@ -15,9 +15,13 @@ else:
     if not raw.startswith(b"\xef\xbb\xbf"):
         errors.append("no UTF-8 BOM")
     rows = list(csv.reader(io.StringIO(raw.decode("utf-8-sig"))))
-    got = [(r[0].strip(), int(float(r[1].replace(",", "")))) for r in rows[1:] if r]
-    if [c.strip() for c in rows[0]] != ["類別", "總金額"]:
-        errors.append(f"header {rows[0]}")
+    # A short or non-numeric row is a wrong answer said plainly, not a grader crash.
+    try:
+        got = [(r[0].strip(), int(float(r[1].replace(",", "")))) for r in rows[1:] if r]
+    except (IndexError, ValueError) as exc:
+        got = f"malformed rows ({exc}): {rows[1:4]}"
+    if not rows or [c.strip() for c in rows[0]] != ["類別", "總金額"]:
+        errors.append(f"header {rows[:1]}")
     if got != want:
         errors.append(f"rows {got} want {want}")
 print("\n".join(errors) or "ok"); sys.exit(1 if errors else 0)

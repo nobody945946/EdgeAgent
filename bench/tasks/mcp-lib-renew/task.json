@@ -1,0 +1,62 @@
+{
+ "kind": "mcp",
+ "prompt": "幫我續借《給新手的理財課》，續借後哪天到期？",
+ "may_change": [],
+ "check": [
+  "python",
+  "/task/check.py"
+ ],
+ "permissions": {
+  "edit": "deny",
+  "shell": "deny",
+  "web": "deny"
+ },
+ "mcp_servers": {
+  "library": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "library"
+   ],
+   "permission": "allow",
+   "read_only_tools": [
+    "search_catalog",
+    "get_holdings",
+    "list_loans"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "市立圖書館：館藏查詢、我的借閱、續借、預約"
+  },
+  "calendar": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "calendar"
+   ],
+   "permission": "allow",
+   "clients": [
+    "ui"
+   ],
+   "description": "行事曆：查行程、找空檔、新增和刪除行程"
+  },
+  "parcel": {
+   "command": "node",
+   "args": [
+    "/opt/bench/mcp/servers.mjs",
+    "parcel"
+   ],
+   "permission": "allow",
+   "read_only_tools": [
+    "track",
+    "list_watched",
+    "estimate_fee"
+   ],
+   "clients": [
+    "ui"
+   ],
+   "description": "包裹追蹤：黑貓、新竹物流、郵局、超商取貨"
+  }
+ }
+}

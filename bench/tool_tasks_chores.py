@@ -12,6 +12,7 @@ import random
 import struct
 from datetime import datetime, timedelta
 
+import laptop
 from tool_tasks_writer import Task
 
 FOLDERS = ("下載", "Downloads", "桌面雜物", "收件夾", "暫放", "整理區")
@@ -45,6 +46,9 @@ TYPE_POOLS = {
     "文件": ("docx", "txt", "odt"), "試算表": ("xlsx", "csv"), "PDF": ("pdf",),
     "壓縮檔": ("zip", "7z", "rar"), "安裝程式": ("exe", "msi"),
 }
+# Kinds a person may reasonably keep together when the owner names no folders:
+# a PDF or a spreadsheet is a document too.
+KIND_FAMILIES = {"試算表": "文件", "PDF": "文件"}
 STEMS = ("報價單", "旅遊", "IMG_2231", "會議錄音", "成績", "說明書", "合約", "Setup", "期末報告", "家計簿",
          "screenshot", "演唱會", "履歷", "收據", "podcast", "壁紙", "課表", "驅動程式", "季報", "相簿")
 
@@ -93,8 +97,11 @@ def gen_organize(rng: random.Random) -> Task:
             where[kind].add(found[0].parent)
     need(all(len(v) == 1 for v in where.values()), "one kind spread over folders")
     if not home:
-        homes = [next(iter(v)) for v in where.values()]
-        need(len(set(homes)) == len(homes), "different kinds share a folder")
+        families = {json.dumps(KIND_FAMILIES, ensure_ascii=False)}
+        held = collections.defaultdict(set)
+        for kind, places in where.items():
+            held[next(iter(places))].add(families.get(kind, kind))
+        need(all(len(kinds) == 1 for kinds in held.values()), "different kinds share a folder")
     '''
     return t
 
@@ -103,13 +110,16 @@ def gen_rename_photos(rng: random.Random) -> Task:
     folder = rng.choice(("照片", "手機照片", "相機", "Photos", "旅行照片"))
     pattern = rng.choice((("2024-05-01_143000", r"\d{4}-\d{2}-\d{2}_\d{6}"),
                           ("20240501_143000", r"\d{8}_\d{6}")))
-    t = Task("tool", "change", f"「{folder}」資料夾裡的照片檔名是 IMG_xxxx、DSC_xxxx 這種亂碼，使用者想把每張照片改成拍攝的日期時間，"
-                               f"格式像「{pattern[0]}」，副檔名不變，照片內容不能動。", [folder, pattern[0]])
+    # Every photo, whatever its camera's prefix: a request that names only IMG_ asks for less than the check wants.
+    t = Task("tool", "change", f"「{folder}」資料夾裡的每一張照片都要改名（檔名是 IMG_、DSC_、PXL_ 開頭的亂碼，三種都有，"
+                               f"一張都不能漏），使用者想改成拍攝的日期時間，格式像「{pattern[0]}」，副檔名不變，照片內容不能動。",
+             [folder, pattern[0]])
     start = datetime(2023, 1, 1) + timedelta(days=rng.randint(0, 600))
     expected = {}
     for i in range(rng.randint(4, 8)):
         when = start + timedelta(hours=rng.randint(0, 2000), seconds=rng.randint(0, 3599))
-        name = f"{rng.choice(('IMG_', 'DSC_', 'PXL_'))}{rng.randint(1000, 9999)}{i}.jpg"
+        prefix = ('IMG_', 'DSC_', 'PXL_')[i] if i < 3 else rng.choice(('IMG_', 'DSC_', 'PXL_'))
+        name = f"{prefix}{rng.randint(1000, 9999)}{i}.jpg"
         t.files[f"{folder}/{name}"] = exif_jpeg(when, 2000, rng)
         expected[name] = when.strftime("%Y%m%d%H%M%S")
     t.check = f'''
@@ -371,11 +381,14 @@ def gen_calc(rng: random.Random) -> Task:
     a, b, c = rng.randint(1200, 98000), rng.randint(300, 9000), rng.choice((0.9, 0.85, 0.8, 0.75, 0.95))
     people = rng.randint(3, 9)
     value = round((a + b) * c / people, 2)
+    # Both amounts in the request (one left out made a task no one could
+    # answer), and the share counted by its value: a request need not ask for
+    # two decimals, so a right share may read 13,237.2 or 22,200.525 (2026-10-13).
     t = Task("tool", "read", f"使用者要算錢：兩筆費用 {a:,} 元和 {b:,} 元加起來，打 {int(c * 100)} 折，再由 {people} 個人平分，每人要付多少（算到小數點兩位）。",
-             [f"{a:,}".replace(",", ""), str(people)])
-    whole = f"{value:,.2f}"
+             [str(a), str(b), str(people)])
     t.check = f'''
-    need({whole!r} in ANSWER or {whole.replace(",", "")!r} in ANSWER, "value {whole}")
+    numbers = [float(n.replace(",", "")) for n in re.findall(r"\\d[\\d,]*(?:\\.\\d+)?", ANSWER)]
+    need(any(abs(n - {(a + b) * c / people!r}) < 0.01 for n in numbers), "value {value:,.2f}")
     '''
     t.extra["may_change"] = []
     return t
@@ -383,8 +396,10 @@ def gen_calc(rng: random.Random) -> Task:
 
 def gen_sysinfo(rng: random.Random) -> Task:
     t = Task("tool", "read", rng.choice(("使用者想知道他這台電腦的記憶體總共多大。", "使用者覺得電腦很慢，想知道記憶體總共多大。")), ["記憶體"])
-    t.check = '''
-    total_kb = int(next(l.split()[1] for l in open("/proc/meminfo") if l.startswith("MemTotal")))
+    # The stand-in laptop's memory (what its Get-CimInstance and the runtime
+    # section say), not the container's: the check runs on the dev box.
+    t.check = f'''
+    total_kb = {laptop.TOTAL_KB}
     gib = total_kb / 1024 / 1024
     found = [float(x.replace(",", "")) for x in re.findall(r"([\\d,]+(?:\\.\\d+)?)\\s*(?:GB|GiB|G)", ANSWER)]
     found += [float(x.replace(",", "")) / 1024 for x in re.findall(r"([\\d,]+(?:\\.\\d+)?)\\s*(?:MB|MiB)", ANSWER)]
