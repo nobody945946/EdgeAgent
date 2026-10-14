@@ -38,6 +38,15 @@ def test_each_thought_once_and_the_cut_ones(tmp_path: Path) -> None:
     assert (row["steps"], row["cut"], row["cut_share"], row["median_minutes"]) == (2, 1, 0.5, 2.0)
 
 
+def test_a_crash_rerun_under_the_same_name_counts_once(tmp_path: Path) -> None:
+    run_dir = _recording(tmp_path, cut=True)
+    crash = {"task": "train-A-001", "rep": 0, "kind": "scenario", "wall": 0.4, "outcome": "crash"}
+    rerun = (run_dir / "results.jsonl").read_text(encoding="utf-8")
+    (run_dir / "results.jsonl").write_text(json.dumps(crash) + "\n" + rerun, encoding="utf-8")
+    row = thought_stats.stats(run_dir)["scenario"]
+    assert (row["jobs"], row["steps"], row["median_minutes"]) == (1, 2, 2.0)
+
+
 def test_too_many_cut_stops_the_queue(tmp_path: Path, monkeypatch) -> None:
     run_dir = _recording(tmp_path, cut=True)
     monkeypatch.setattr(sys, "argv", ["thought_stats", str(run_dir)])

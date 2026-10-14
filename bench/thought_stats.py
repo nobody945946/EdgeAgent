@@ -64,6 +64,10 @@ def stats(run_dir: Path) -> dict[str, dict]:
     kinds: dict[str, dict] = {}
     for line in (run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines():
         result = json.loads(line)
+        # A crash is the sandbox failing to report, rerun under the same job
+        # name: its row would count the rerun's thoughts twice.
+        if result.get("outcome") == "crash":
+            continue
         kind = kinds.setdefault(result.get("kind") or "task", {"jobs": 0, "minutes": [], "thoughts": []})
         kind["jobs"] += 1
         kind["minutes"].append(result.get("wall", 0) / 60)
