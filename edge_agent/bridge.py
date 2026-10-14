@@ -19,6 +19,10 @@ from uuid import uuid4
 from edge_agent.chat_session import ChatSession
 from edge_agent.runtime import NODE_VERSION, tool_paths
 
+# An event of the host's own, never Pi's: wakes a reader waiting on Pi's
+# events (wake()), which then looks again at why it waits.
+WAKE = "edge_wake"
+
 
 class PiBridge:
     """The running Pi process, the session it serves, and its event stream."""
@@ -90,7 +94,10 @@ class PiBridge:
             process.stdin.write((json.dumps(record, ensure_ascii=True) + "\n").encode())
             process.stdin.flush()
 
-    def receive(self, timeout: float = 120) -> dict[str, object]:
+    def wake(self) -> None:
+        self._events.put({"type": WAKE})
+
+    def receive(self, timeout: float | None = 120) -> dict[str, object]:
         if self._buffer:
             return self._buffer.popleft()
         try:

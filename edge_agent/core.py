@@ -4,9 +4,10 @@ the status stream pushes each time it changes)."""
 
 from __future__ import annotations
 
+import os
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -33,16 +34,26 @@ from edge_agent.runtime import (
     MODEL_DIR,
 )
 from edge_agent.terminal import NativeTerminal
+from edge_agent.waits import ProcessExit, Wake
+
+# A lease whose application exited goes back to base this long after it
+# exited, and not before a handoff it asked for (POST /handoff) has run out.
+OWNER_GRACE_SECONDS = 3.0
+# A reload after a crash, or a return to base, that failed is shown in the
+# status and tried again this much later.
+RETRY_SECONDS = 30.0
 
 
 class StatusChanges:
-    """Wakes the status streams (GET /status/events) whenever something the
-    status shows may have changed. Driven by the places that change it (a
-    load, a lease, a task, the inference lanes): no timer."""
+    """Wakes the status streams (GET /status/events), and `on_publish` (the
+    core's monitor), whenever something the status shows may have changed.
+    Driven by the places that change it (a load, a lease, a task, the
+    inference lanes): no timer."""
 
-    def __init__(self) -> None:
+    def __init__(self, on_publish: Callable[[], None] = lambda: None) -> None:
         self._condition = threading.Condition()
         self._count = 0
+        self._on_publish = on_publish
 
     @property
     def count(self) -> int:
@@ -53,6 +64,7 @@ class StatusChanges:
         with self._condition:
             self._count += 1
             self._condition.notify_all()
+        self._on_publish()
 
     def wait(self, seen: int, gone: threading.Event) -> None:
         """Until a change after `seen` (a count), or `gone` is set."""
@@ -76,7 +88,11 @@ class EdgeAgent:
             else (self.core_dir / "models").resolve()
         )
         self.lock = threading.RLock()
-        self.router = ModelRouter(self.core_dir)
+        # What the monitor sleeps on besides the lease owner's exit.
+        self.wake = Wake()
+        # Set by the router's events: the monitor looks at the model's state.
+        self.model_check = False
+        self.router = ModelRouter(self.core_dir, self._router_event)
         self.mode = "starting"
         self.owner_pid: int | None = None
         self.owner_dead_since: float | None = None
@@ -87,7 +103,7 @@ class EdgeAgent:
         self.loading = False
         self.config_path = self.core_dir / "config.json"
         self.config = load_config(self.config_path)
-        self.changes = StatusChanges()
+        self.changes = StatusChanges(self.wake.set)
         self.inference = InferenceGateway(self.router.port, self.changes.publish)
         self.chat = NativeChat(model_port=CONTROL_PORT, core_dir=self.core_dir)
         self.chat.api_key = self.inference.access.agent_key
@@ -238,6 +254,9 @@ class EdgeAgent:
         admitted, refused = self.inference.access.character_admission()
         return {
             "service": "edge-agent",
+            # The service's process, for a client that waits for its exit
+            # (api.shutdown_service).
+            "pid": os.getpid(),
             "mode": self.mode,
             "ready": ready,
             "port": CONTROL_PORT,
@@ -375,35 +394,77 @@ class EdgeAgent:
         self.agent_slot = None
         self.router.stop()
 
+    def _router_event(self) -> None:
+        """The router said its model's state changed, or it exited."""
+        self.model_check = True
+        self.wake.set()
+
     def monitor(self) -> None:
-        """Once a second: a character lease whose application died goes back
-        to base, and a model process that died on its own is loaded again."""
+        """Answers for two things, woken by each, never by a timer of its own:
+        - the lease owner's process exits (waits.ProcessExit, opened when a
+          lease names it): OWNER_GRACE_SECONDS later, and not before a
+          handoff the owner asked for has run out, the lease goes back to
+          base;
+        - the model process ends on its own, or the router does (the router's
+          events, router.ModelRouter): the same mode, lease and adapters are
+          loaded again.
+        It blocks in the kernel on the owner's exit and its Wake together;
+        the Wake is given by the router's events and every status change (a
+        new lease re-arms the owner's watch; an Agent task that held up the
+        return to base has ended). Its one timeout is the next deadline it
+        knows: the grace, a handoff, or a retry after a failed load."""
+        watched: ProcessExit | None = None  # the owner's exit, while it lives
+        watched_pid: int | None = None
+        held = False  # the return to base waits for an Agent task to end
+        retry_base = 0.0
         while True:
-            time.sleep(1)
-            if self._model_died():
-                self._reload_after_crash()
+            if self.model_check and time.monotonic() >= self.recover_after:
+                self.model_check = False
+                if self._model_died():
+                    self._reload_after_crash()
             with self.lock:
-                dead = (
-                    self.mode == "character"
-                    and self.owner_pid is not None
-                    and not pid_alive(self.owner_pid)
+                pid = self.owner_pid if self.mode == "character" else None
+                if pid != watched_pid:  # another lease, or none
+                    if watched is not None:
+                        watched.close()
+                        watched = None
+                    watched_pid, retry_base = pid, 0.0
+                if pid is not None and watched is None and self.owner_dead_since is None:
+                    try:
+                        watched = ProcessExit.open(pid)
+                    except OSError:
+                        watched = None  # cannot be watched: as gone as pid_alive says
+                    if watched is None:
+                        self.owner_dead_since = time.monotonic()
+                if watched is not None and watched.exited():
+                    watched.close()
+                    watched = None
+                    if self.owner_dead_since is None:
+                        self.owner_dead_since = time.monotonic()
+                due = (
+                    max(self.owner_dead_since + OWNER_GRACE_SECONDS, self.handoff_until,
+                        retry_base)
+                    if pid is not None and self.owner_dead_since is not None
+                    else None
                 )
-                if dead and self.owner_dead_since is None:
-                    self.owner_dead_since = time.monotonic()
-                elif not dead:
-                    self.owner_dead_since = None
-                stale = (
-                    dead
-                    and self.owner_dead_since is not None
-                    and time.monotonic() - self.owner_dead_since >= 3
-                    and time.monotonic() >= self.handoff_until
-                )
-                owner_pid = self.owner_pid
-            if stale:
+            now = time.monotonic()
+            if due is not None and now >= due and not held:
                 try:
-                    self.switch("base", owner_pid)
-                except (OSError, RuntimeError, ValueError):
-                    time.sleep(2)
+                    self.switch("base", pid)
+                    continue
+                except PermissionError:
+                    held = True  # an Agent task is running: its end is a status change
+                except Exception:  # noqa: BLE001 - switch() shows it in the status
+                    retry_base = time.monotonic() + RETRY_SECONDS
+                    continue
+            deadlines = [due] if due is not None and not held else []
+            if self.model_check:
+                deadlines.append(self.recover_after)
+            self.wake.wait(
+                watched,
+                max(0.0, min(deadlines) - time.monotonic()) if deadlines else None,
+            )
+            held = False
 
     def _model_died(self) -> bool:
         """The loaded model's process ended on its own: the router reports it
@@ -423,14 +484,15 @@ class EdgeAgent:
 
     def _reload_after_crash(self) -> None:
         """The same mode, lease and adapters as before the crash; a failed
-        reload is kept in the status and tried again 30 seconds later."""
+        reload is kept in the status and tried again RETRY_SECONDS later."""
         with self.lock, self._loading("模型程序意外結束，重新載入中"):
             try:
                 self._start_child(self.mode, self.owner_pid, self.character)
                 self.error = ""
             except Exception as exc:  # noqa: BLE001 - shown in the status, tried again
                 self.error = f"模型程序意外結束，重新載入失敗：{exc}"
-                self.recover_after = time.monotonic() + 30
+                self.recover_after = time.monotonic() + RETRY_SECONDS
+                self.model_check = True  # the monitor looks again then
 
     def hold_handoff(self, seconds: float = 30.0) -> dict[str, object]:
         with self.lock:

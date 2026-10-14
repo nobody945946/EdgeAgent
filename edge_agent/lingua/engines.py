@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import warnings
+from collections.abc import Callable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -214,12 +215,44 @@ def run_calc(cells: dict[str, object], formulas: list[str]) -> list[str] | None:
 PG_IMAGE = "postgres:16"
 MSSQL_IMAGE = "mcr.microsoft.com/mssql/server:2022-latest"
 MSSQL_PASSWORD = "Lingua!Check2026"  # a throwaway server with no network, removed after the checks
+SERVER_START_SECONDS = 180
+
+
+def ready_line(dialect: str) -> Callable[[bytes], bool]:
+    """Whether a line of the container's log says its server takes our
+    queries now.
+
+    PostgreSQL's image first runs a server of its own to set the database up,
+    and that one says "database system is ready to accept connections" too;
+    it stops it, says "PostgreSQL init process complete; ready for start up."
+    ("Skipping initialization" for a database already set up) and starts the
+    real one, whose "ready" is the one that counts.
+
+    SQL Server says "now ready for client connections" while it is still
+    upgrading its system databases, and refuses the sa login until then
+    (measured 2026-10-14, 2022-latest: "Login failed for user 'sa'. Reason:
+    An error occurred while evaluating the password." for 2 s after it);
+    "Recovery is complete." comes once they are done, and sa logs in."""
+    if dialect == "postgres":
+        initialised = False
+
+        def postgres(line: bytes) -> bool:
+            nonlocal initialised
+            if b"PostgreSQL init process complete" in line or b"Skipping initialization" in line:
+                initialised = True
+                return False
+            return initialised and b"database system is ready to accept connections" in line
+
+        return postgres
+    return lambda line: b"Recovery is complete." in line
 
 
 class Databases:
     """SQLite in process, PostgreSQL and SQL Server in containers with no
     network, for checking the SQL translator. Use as a context manager; the
-    containers are removed on exit. A missing image leaves that one out."""
+    containers are removed on exit. A missing image leaves that one out.
+    A server is ready when its own log says so (`docker logs -f`, read as it
+    comes); nothing asks it at an interval."""
 
     def __init__(self) -> None:
         self.names: dict[str, str] = {}
@@ -227,6 +260,8 @@ class Databases:
     def __enter__(self) -> Databases:  # noqa: PYI034
         import time
         import uuid
+
+        from edge_agent.waits import OutputLines
 
         docker = shutil.which("docker")
         if docker is None:
@@ -241,20 +276,29 @@ class Databases:
             subprocess.run([docker, "run", "-d", "--rm", "--name", name, "--network", "none", *env, image],
                            capture_output=True, check=True)
             self.names[dialect] = name
-        deadline = time.monotonic() + 180
+        deadline = time.monotonic() + SERVER_START_SECONDS
+        logs: list[subprocess.Popen[bytes]] = []
         try:
-            for dialect in list(self.names):
-                while True:
-                    try:
-                        self.run(dialect, "SELECT 1")
-                        break
-                    except (RuntimeError, subprocess.SubprocessError):
-                        if time.monotonic() > deadline:
-                            raise
-                        time.sleep(2)
+            waits = {}
+            for dialect, name in self.names.items():
+                # From the container's start: no line is missed.
+                follow = subprocess.Popen([docker, "logs", "-f", name], stdin=subprocess.DEVNULL,
+                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                logs.append(follow)
+                waits[dialect] = OutputLines(follow.stdout, ready_line(dialect),
+                                             name=f"lingua-{dialect}-log")
+            for dialect, lines in waits.items():
+                if not lines.wait(max(deadline - time.monotonic(), 0)):
+                    raise RuntimeError(
+                        f"{dialect} server {'exited' if lines.ended else 'was not ready'}"
+                        f" within {SERVER_START_SECONDS} s")
         except BaseException:
             self.__exit__()  # never leave a server running
             raise
+        finally:
+            for follow in logs:
+                follow.kill()
+                follow.wait()
         return self
 
     def __exit__(self, *_: object) -> None:  # also called on a failed start

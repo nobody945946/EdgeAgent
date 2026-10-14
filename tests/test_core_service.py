@@ -3,6 +3,8 @@ a lease loads, and the router loading it."""
 
 from __future__ import annotations
 
+import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +12,36 @@ import pytest
 
 from edge_agent import api, core, load_plan
 from edge_agent.runtime import DEFAULT_MODEL
+
+
+def stopped_process():
+    """A router process stand-in whose exit stop() waits for."""
+    exited = threading.Event()
+    return SimpleNamespace(
+        poll=lambda: 0 if exited.is_set() else None,
+        terminate=exited.set,
+        kill=exited.set,
+        exited=exited,
+        pid=0,
+    )
+
+
+@pytest.fixture
+def fake_routers(monkeypatch):
+    """Point a manager's router at the fake router; stopped after the test."""
+    from test_router_events import use_fake
+
+    managers = []
+
+    def use(manager, **options):
+        managers.append(manager)
+        use_fake(manager.router, monkeypatch, **options)
+        monkeypatch.setattr(load_plan, "find_llama_server", lambda: "llama-server")
+        return manager
+
+    yield use
+    for manager in managers:
+        manager.router.stop()
 
 
 def test_live_character_lease_cannot_be_stolen_or_stopped(tmp_path, monkeypatch):
@@ -41,14 +73,27 @@ def test_character_takeover_reuses_running_server(tmp_path, monkeypatch):
 
 
 def test_slow_status_does_not_spawn_duplicate_manager(monkeypatch):
-    statuses = iter([None, {"ready": True}])
-    monkeypatch.setattr(api, "service_status", lambda: next(statuses))
+    """A service holding its port that has not answered yet is waited for on
+    its status stream, not started again."""
+    monkeypatch.setattr(api, "service_status", lambda: None)
     monkeypatch.setattr(api, "control_service_present", lambda: True)
 
     def unexpected_spawn(*args, **kwargs):
         pytest.fail("existing manager must not be spawned again")
 
+    class Stream:
+        def __init__(self, port, path, timeout):
+            assert path == "/status/events"
+
+        def events(self, deadline=None):
+            yield json.dumps({"ready": False, "mode": "starting"}).encode()
+            yield json.dumps({"ready": True, "mode": "base"}).encode()
+
+        def close(self):
+            pass
+
     monkeypatch.setattr(api.subprocess, "Popen", unexpected_spawn)
+    monkeypatch.setattr(api, "EventStream", Stream)
     assert api.ensure_service()["ready"] is True
 
 
@@ -62,14 +107,13 @@ def test_restart_handoff_suspends_crash_restore(tmp_path):
 def test_stop_releases_base_server(tmp_path, monkeypatch):
     manager = core.EdgeAgent(tmp_path)
     manager.mode = "base"
-    manager.router.process = SimpleNamespace(
-        poll=lambda: None, terminate=lambda: None, wait=lambda *args, **kwargs: 0
-    )
+    process = manager.router.process = stopped_process()
     monkeypatch.setattr(
         manager.router, "request", lambda *args, **kwargs: {"success": True}
     )
     status = manager.stop_service()
     assert manager.router.process is None
+    assert process.exited.is_set()
     assert status["mode"] == "stopped"
     assert status["ready"] is False
 
@@ -227,26 +271,15 @@ def test_stop_cancels_approval_waits_before_waiting_for_core_lock(
     assert session.approvals == {}
 
 
-def test_router_acceptance_is_not_model_readiness(tmp_path, monkeypatch):
+def test_router_acceptance_is_not_model_readiness(tmp_path, fake_routers):
+    """The router took the load; the worker then exited: the load fails with
+    the worker's exit, and nothing is taken as loaded."""
     from test_models import gguf
 
-    manager = core.EdgeAgent(tmp_path)
+    manager = fake_routers(core.EdgeAgent(tmp_path), mode="fails")
     manager.model_dir.mkdir()
     (manager.model_dir / DEFAULT_MODEL).write_bytes(gguf())
-    manager.router.process = SimpleNamespace(poll=lambda: None)
-    monkeypatch.setattr(load_plan, "find_llama_server", lambda: "llama-server")
-    states = iter(
-        [
-            {"value": "unloaded"},
-            {"value": "loading"},
-            {"value": "unloaded", "failed": True, "exit_code": 1},
-        ]
-    )
-    monkeypatch.setattr(manager.router, "state", lambda: next(states))
-    monkeypatch.setattr(
-        manager.router, "request", lambda *args, **kwargs: {"success": True}
-    )
-    with pytest.raises(RuntimeError, match="failed to load"):
+    with pytest.raises(RuntimeError, match=r"failed to load \(exit 1\)"):
         manager._start_child("base", None, None)
     assert manager.active_model == ""
     assert manager.mode != "base"
@@ -255,33 +288,22 @@ def test_router_acceptance_is_not_model_readiness(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("reported_context", [8192, 4096])
 def test_router_keeps_parent_and_verifies_loaded_context(
-    tmp_path, monkeypatch, reported_context
+    tmp_path, fake_routers, monkeypatch, reported_context
 ):
     from test_models import gguf
 
-    manager = core.EdgeAgent(tmp_path)
+    manager = fake_routers(core.EdgeAgent(tmp_path))
     manager.model_dir.mkdir()
     (manager.model_dir / DEFAULT_MODEL).write_bytes(gguf())
-    parent = SimpleNamespace(poll=lambda: None)
-    manager.router.process = parent
-    monkeypatch.setattr(load_plan, "find_llama_server", lambda: "llama-server")
-    states = iter([{"value": "unloaded"}, {"value": "loading"}, {"value": "loaded"}])
-    monkeypatch.setattr(manager.router, "state", lambda: next(states))
-    monkeypatch.setattr(
-        manager.router,
-        "request",
-        lambda path, *args, **kwargs: (
-            {"default_generation_settings": {"n_ctx": reported_context}}
-            if path.startswith("/props")
-            else {"success": True}
-        ),
-    )
     if reported_context != 8192:
+        monkeypatch.setenv("FAKE_CONTEXT", str(reported_context))
         with pytest.raises(RuntimeError, match="context"):
             manager._start_child("base", None, None)
         assert manager.active_model == ""
         return
     manager._start_child("base", None, None)
+    parent = manager.router.process
+    manager._start_child("base", None, None)  # loaded again: the same router
     assert manager.router.process is parent
     assert manager.active_model == DEFAULT_MODEL
     assert manager.chat.model == DEFAULT_MODEL

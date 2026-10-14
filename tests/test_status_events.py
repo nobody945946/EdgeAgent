@@ -73,8 +73,10 @@ def manager(tmp_path, monkeypatch):
     value.mode = "character"
     value.owner_pid = os.getpid()
     value.active_model = "fixture.gguf"
+    exited = threading.Event()
     value.router.process = SimpleNamespace(
-        poll=lambda: None, terminate=lambda: None, wait=lambda *args, **kwargs: 0
+        poll=lambda: 0 if exited.is_set() else None, terminate=exited.set,
+        kill=exited.set, exited=exited, pid=0,
     )
     monkeypatch.setattr(value, "_model_ready", lambda: True)
     monkeypatch.setattr(value.router, "request", lambda *args, **kwargs: {"success": True})

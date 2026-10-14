@@ -338,3 +338,37 @@ def test_ram_retrieval_contract():
     if node is None:
         pytest.skip("requires Node")
     subprocess.run([node, str(CORE_ROOT / "tests/memory_check.mjs")], check=True)
+
+
+def test_a_cancel_wakes_a_turn_waiting_on_a_silent_agent(tmp_path, monkeypatch):
+    """A turn waits on Pi's next event with no timer; cancel() wakes it, and a
+    Pi that stays silent then has CANCEL_GRACE_SECONDS to settle."""
+    import threading
+    import time
+
+    from edge_agent import chat as chat_module
+
+    monkeypatch.setattr(chat_module, "CANCEL_GRACE_SECONDS", 0.5)
+    chat = RPCFixture([])  # Pi says nothing after the prompt
+    timeouts = []
+    receive = chat.bridge.receive
+
+    def counted(timeout=120):
+        timeouts.append(timeout)
+        return receive(timeout)
+
+    monkeypatch.setattr(chat.bridge, "receive", counted)
+    events = []
+    worker = threading.Thread(
+        target=lambda: events.extend(chat.stream_reply("fixture", "fixture", working_dir=tmp_path))
+    )
+    worker.start()
+    time.sleep(0.5)
+    cancelled = time.monotonic()
+    chat.cancel("fixture")
+    worker.join(10)
+    assert events[-1] == ("cancelled", {})
+    assert 0.4 <= time.monotonic() - cancelled < 3
+    # Waited without a timeout until the cancel, then for the grace: asking
+    # every second would be a timeout of 1 each time.
+    assert timeouts[0] is None and len(timeouts) <= 3

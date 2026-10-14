@@ -10,6 +10,9 @@ from collections.abc import Iterator
 from pathlib import Path
 from uuid import uuid4
 
+# Put in the output queue by close(): wakes a command waiting for its output.
+_CANCELLED = object()
+
 
 class TerminalSession:
     """A persistent, RAM-only PowerShell session belonging to one conversation."""
@@ -19,7 +22,8 @@ class TerminalSession:
         if not self.cwd.is_dir():
             raise ValueError("terminal workspace must be an existing directory")
         self.lock = threading.Lock()
-        self.lines: queue.Queue[str | None] = queue.Queue()
+        # Output lines; None once the output ended; _CANCELLED from close().
+        self.lines: queue.Queue[str | object | None] = queue.Queue()
         self.cancelled = threading.Event()
         environment = os.environ.copy()
         scripts = Path(__file__).resolve().parents[1] / ".venv" / "Scripts"
@@ -61,6 +65,7 @@ class TerminalSession:
 
     def close(self) -> None:
         self.cancelled.set()
+        self.lines.put(_CANCELLED)
         if self.process.poll() is None:
             if os.name == "nt":
                 subprocess.run(
@@ -100,16 +105,21 @@ class TerminalSession:
             self.process.stdin.flush()
             deadline = time.monotonic() + timeout
             while True:
+                # Woken by the next line, the output's end, or close(); the
+                # one timeout is the command's deadline.
                 if self.cancelled.is_set():
                     yield "cancelled", {"cwd": str(self.cwd)}
                     return
-                if time.monotonic() >= deadline:
+                left = deadline - time.monotonic()
+                try:
+                    if left <= 0:
+                        raise queue.Empty
+                    line = self.lines.get(timeout=left)
+                except queue.Empty:
                     self.close()
                     yield "error", {"message": f"terminal timed out after {timeout}s"}
                     return
-                try:
-                    line = self.lines.get(timeout=0.1)
-                except queue.Empty:
+                if line is _CANCELLED:
                     continue
                 if line is None:
                     yield (

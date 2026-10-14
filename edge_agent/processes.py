@@ -8,21 +8,20 @@ import re
 import subprocess
 from pathlib import Path
 
+from edge_agent.waits import ProcessExit
+
 
 def pid_alive(pid: int) -> bool:
-    if os.name == "nt":
-        import ctypes
-
-        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
-        if not handle:
-            return False
-        ctypes.windll.kernel32.CloseHandle(handle)
-        return True
+    """The process has not exited: the same kernel object the core's monitor
+    waits on (waits.ProcessExit), looked at once."""
     try:
-        os.kill(pid, 0)
+        process = ProcessExit.open(pid)
     except OSError:
         return False
-    return True
+    if process is None:
+        return False
+    with process:
+        return not process.exited()
 
 
 def listening_pid(port: int) -> int | None:
