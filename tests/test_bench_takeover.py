@@ -71,6 +71,16 @@ def test_passed_jobs_unjudged_scenarios_and_rewritten_histories_are_not_taken_ov
     assert [rep for _, rep, _ in plans] == ["0t1"]
 
 
+def test_a_crash_rerun_that_passed_is_not_taken_over(tmp_path):
+    """run.py reruns a crashed job under the same name: the crash's row stays in
+    results.jsonl, but the sandbox failed there, not the student."""
+    student = _student(tmp_path, passed=True)
+    rerun = (student / "results.jsonl").read_text()
+    crash = {"task": "archive-00", "rep": 0, "kind": "", "passed": False, "outcome": "crash", "grade": {}}
+    (student / "results.jsonl").write_text(json.dumps(crash) + "\n" + rerun)
+    assert run.takeover_plans(student, [0.5], "*") == []
+
+
 def test_a_replay_that_drifted_is_counted(tmp_path):
     folder = tmp_path / "live"
     folder.mkdir()

@@ -622,6 +622,10 @@ def takeover_plans(student: Path, at: list[float], patterns: str) -> list[tuple[
     plans = []
     for row in rows:
         job = f"{row['task']}-r{row['rep']}"
+        # A crash is the sandbox failing to report, not the student failing:
+        # run.py reran it under the same name, and that row decides.
+        if row.get("outcome") == "crash":
+            continue
         failed = (not row.get("passed") or row.get("outcome") != "done" or (row.get("grade") or {}).get("problems")
                   or (row.get("kind") == "scenario" and not judged.get(job)))
         if row["task"] not in tasks or not failed or row.get("takeover"):
