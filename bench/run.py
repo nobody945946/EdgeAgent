@@ -60,6 +60,8 @@ SERVER = Path(os.environ.get(
 MODELS = Path(os.environ.get("BENCH_MODELS", "/home/clawd/SilentTalk/.runtime/models/llm"))
 DOWNLOADS = Path(os.environ.get("BENCH_DOWNLOADS", STATE / "downloads"))
 DECOY = Path.home() / "edgeagent-bench-decoy"
+# Where the product's public folder (chat.PUBLIC_DIR) is in the sandbox.
+PUBLIC_MOUNT = "/opt/edgeagent/.runtime/public"
 
 
 def sandbox(name: str, mounts: list[tuple[Path, str, str]], env: dict[str, str],
@@ -495,6 +497,12 @@ def run_job(task_dir: Path, rep: int | str, config_name: str, config: dict, run_
     memory.mkdir(parents=True)
     if (task_dir / "memory" / "AGENTS.md").is_file():
         shutil.copyfile(task_dir / "memory" / "AGENTS.md", memory / "AGENTS.md")
+    # A public conversation works in the product's own empty folder under its
+    # .runtime (chat.PUBLIC_DIR), which it creates as it can on the laptop:
+    # this job's own, fresh like the memory.
+    public = run_dir / "public" / job
+    shutil.rmtree(public, ignore_errors=True)
+    public.mkdir(parents=True)
     # time_scale: a config that is slower on the bench GPU only for reasons the
     # comparison is not about (e.g. unquantized weights) gets a longer budget,
     # so the score measures quality, not speed.
@@ -531,7 +539,8 @@ def run_job(task_dir: Path, rep: int | str, config_name: str, config: dict, run_
         mounts = [*mounts, (simulator_sock, "/simsock", "ro")]
     command = sandbox(name, [(workspace, "/work", "rw"), (sock_dir, "/sock", "ro"),
                              *code_mounts(bridge, product), *mounts,
-                             (memory, "/opt/edgeagent/.runtime/pi-state", "rw")],
+                             (memory, "/opt/edgeagent/.runtime/pi-state", "rw"),
+                             (public, PUBLIC_MOUNT, "rw")],
                       {"BENCH_SPEC": json.dumps(spec, ensure_ascii=False), **env},
                       ["sh", "-c", "python /opt/bench/web_fixture.py /web > /tmp/web.log 2>&1 & "
                        "sleep 1; exec python /opt/bench/agent_runner.py"] if web
@@ -562,6 +571,7 @@ def run_job(task_dir: Path, rep: int | str, config_name: str, config: dict, run_
         shutil.rmtree(workspace, ignore_errors=True)
         shutil.rmtree(original, ignore_errors=True)
         shutil.rmtree(memory, ignore_errors=True)
+        shutil.rmtree(public, ignore_errors=True)
     row = {"task": task_dir.name, "kind": task.get("kind", ""), "rep": rep,
            "config": config_name, "wall": wall, **result, "grade": grade,
            "passed": bool(grade.get("passed"))}
@@ -793,6 +803,7 @@ def main() -> None:
     # for every job: the handler closes the servers and exits at once.
     close_on_term(server, simulator)
     lock = threading.Lock()
+    crashed: list[str] = []
     try:
         print(f"server ready, {server.parallel} slots, {server.speed()} tok/s single stream", flush=True)
 
@@ -818,6 +829,8 @@ def main() -> None:
                                      f"{row['task']} r{row['rep']} not recorded, rerun to resume")
             with lock, results.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                if row.get("outcome") == "crash":
+                    crashed.append(f"{row['task']} r{row['rep']}")
             print(f"{row['task']} r{row['rep']}: {'PASS' if row['passed'] else 'fail'} "
                   f"{row.get('outcome')} {row['wall']}s {row['grade'].get('problems', [])}",
                   flush=True)
@@ -828,6 +841,12 @@ def main() -> None:
             print(f"ran {REFIT_MIN} minutes on {server.parallel} of {args.parallel} slots; "
                   "start again to resume with what fits then", flush=True)
             raise SystemExit(VRAM_EXIT)
+        # A crash is the sandbox failing to report: no result, rerun at the
+        # next start. A run that had one has not finished (2026-10-15: every
+        # public job crashed in half a second and the queue went on).
+        if crashed:
+            raise SystemExit(f"{len(crashed)} job(s) crashed ({', '.join(sorted(crashed)[:5])}): "
+                             "no results; fix the cause and run again to rerun them")
     finally:
         server.close()
         if simulator is not None:
