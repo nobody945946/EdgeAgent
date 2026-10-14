@@ -2,7 +2,9 @@
 
 A job becomes rows only if it passed with no grade problem (hidden tests
 pass, nothing it must not touch was changed, no test tampering), ended
-normally, and, for a tool task, used the ready-made tool the task is about. Rows are the requests the Agent sent with its tools (the exact
+normally, read no tool result saying a name did not resolve (the sandbox has
+no network, the laptop has: scenario_checks.unresolved), and, for a tool
+task, used the ready-made tool the task is about. Rows are the requests the Agent sent with its tools (the exact
 system prompt, tool definitions and history the model saw; Pi's own summary
 requests carry no tools and are skipped) and the replies to them, in
 train_lora.py's format {"messages", "tools", "train": "all", "train_from"}.
@@ -61,6 +63,7 @@ from edge_agent.turn import taiwan_traditional  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "bench"))
 from run import BUDGET_CUT  # noqa: E402
+from scenario_checks import unresolved  # noqa: E402
 
 EVAL_TASKS = {p.name for p in (ROOT / "bench/tasks").iterdir() if p.is_dir()}
 
@@ -162,6 +165,9 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
         trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
         if whole_drive_scan(trajectory):
             skip("searched a whole drive")
+            continue
+        if unresolved(trajectory):
+            skip("met the sandbox's missing network")
             continue
         answer = final_answer(trajectory)
         if answer is None:

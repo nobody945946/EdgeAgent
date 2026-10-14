@@ -130,6 +130,18 @@ def test_a_takeover_whose_replay_drifted_is_not_used(tmp_path: Path) -> None:
     assert rows == [] and why == {"takeover replay drifted": 1}
 
 
+def test_a_job_that_met_the_sandboxs_missing_network_gives_no_rows(tmp_path: Path) -> None:
+    """pip install Pillow and an exchange-rate API in the v3 recording
+    (2026-10-14): the laptop's network works, so the job is not its situation."""
+    run_dir = _takeover_run(tmp_path, 0)
+    failed = "Failed to establish a new connection: [Errno -3] Temporary failure in name resolution"
+    (run_dir / "traj" / "archive-00-r1t2.json").write_text(json.dumps(
+        [{"role": "toolResult", "content": [{"type": "text", "text": failed}]},
+         {"role": "assistant", "content": [{"type": "text", "text": "整理好了"}]}]), encoding="utf-8")
+    rows, why = dataset.rows(run_dir)
+    assert rows == [] and why == {"met the sandbox's missing network": 1}
+
+
 def _calls(*commands: str) -> list[dict]:
     return [{"role": "assistant", "content": [{"type": "toolCall", "name": "powershell", "arguments": {"command": c}}
                                               for c in commands]}]

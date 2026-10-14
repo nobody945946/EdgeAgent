@@ -103,11 +103,11 @@ def calls_an_api(call: dict) -> bool:
 # every name there (web_fixture.py); a card without one has nothing, so what
 # the Agent met when it reached out there ("could not be looked up: the network
 # may be down", EAI_AGAIN, a failed pip install) is false on the laptop, whose
-# network works (2026-10-14: 24 of v3-scen's passing dialogues reached the web
-# on a card without one, most telling the owner his network was down). A
+# network works (2026-10-14: 25 of v3-scen's passing dialogues met it, most
+# telling the owner his network was down; 6 tool and Python jobs too). A
 # dialogue fails when it reached for the network on such a card, or when a tool
 # result it read says a name did not resolve (a script it wrote can reach out
-# where no call shows it).
+# where no call shows it); dataset.py refuses any job on the second.
 NETWORK_COMMAND = re.compile(
     API_CALL.pattern + r"|\bwget\b|\bpip3?\s+install|-m\s+pip\s+install|\bnpm\s+(?:i|install|ci)\b|\bnpx\b"
     r"|winget|install-module|install-package|test-netconnection|test-connection|resolve-dnsname"
@@ -115,6 +115,11 @@ NETWORK_COMMAND = re.compile(
 NO_NETWORK = re.compile(
     r"(?i)could not be looked up|name resolution|EAI_AGAIN|getaddrinfo|name or service not known"
     r"|could not resolve host|no such host is known|network is unreachable|Resource temporarily unavailable \(")
+
+
+def unresolved(trajectory: list[dict]) -> list[str]:
+    """What the tool results the Agent read said about names that did not resolve."""
+    return sorted({m.group(0) for text in tool_results(trajectory) for m in NO_NETWORK.finditer(text)})
 
 
 def reaches_the_network(call: dict) -> bool:
@@ -199,9 +204,9 @@ def failures(dialogue: dict, names: list[str], *, web: bool) -> dict[str, str]:
     reached = [] if web else [c for c in calls if reaches_the_network(c)]
     if reached:
         found["no_network"] = f"reached for the network on a card without a web: {reached[0].get('name')}"
-    unresolved = [m.group(0) for text in tool_results(dialogue.get("trajectory") or []) for m in NO_NETWORK.finditer(text)]
-    if unresolved and "no_network" not in found:
-        found["no_network"] = f"a tool result said a name did not resolve: {sorted(set(unresolved))[:2]}"
+    lookups = unresolved(dialogue.get("trajectory") or [])
+    if lookups and "no_network" not in found:
+        found["no_network"] = f"a tool result said a name did not resolve: {lookups[:2]}"
     unfinished = unfinished_turns(dialogue.get("trajectory") or [])
     if unfinished:
         found["cut_off"] = f"turns whose last message did not finish: {unfinished}"
