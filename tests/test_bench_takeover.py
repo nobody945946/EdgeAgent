@@ -16,7 +16,7 @@ TOOLS = [{"type": "function", "function": {"name": "read", "parameters": {"type"
 
 
 def _student(tmp_path: Path, *, passed: bool, kind: str = "", verdict: bool | None = None,
-             rewritten: bool = False) -> Path:
+             rewritten: bool = False, reason: str = "") -> Path:
     """A student's recorded run of one job: four model calls (and one
     simulated-user request without tools between them)."""
     (tmp_path / "tasks" / "archive-00").mkdir(parents=True)
@@ -38,7 +38,8 @@ def _student(tmp_path: Path, *, passed: bool, kind: str = "", verdict: bool | No
         if rewritten and index == 2:
             messages[2] = {"role": "assistant", "content": "（摘要）"}
     (student / "results.jsonl").write_text(json.dumps({
-        "task": "archive-00", "rep": 0, "kind": kind, "passed": passed, "outcome": "done", "grade": {},
+        "task": "archive-00", "rep": 0, "kind": kind, "passed": passed, "outcome": "error" if reason else "done",
+        "reason": reason, "grade": {},
         "dialogue": [{"user": "一"}, {"user": "二"}]}) + "\n")
     if verdict is not None:
         (student / "verdicts.jsonl").write_text(json.dumps({"job": "archive-00-r0", "passed": verdict}) + "\n")
@@ -59,6 +60,20 @@ def test_a_failed_job_is_taken_over_with_the_students_own_answers_and_lines(tmp_
     assert [r.get("content") for r in late["replies"]] == [None, "答一", None]
     assert late["script"] == ["一", "二"]  # the user had spoken twice by then
     assert late["seen"] == ['"結果0"', '"結果2"']  # what the teacher's first request shows
+
+
+def test_where_a_guard_stopped_the_student_the_teacher_answers_what_its_mistake_answered(tmp_path):
+    """A runaway reply answered the last request; a repeated call (read {} in
+    the replies to requests 0 and 2) was first repeated in the reply to 2."""
+    plans = run.takeover_plans(_student(tmp_path, passed=False, reason="runaway"), [], "*")
+    assert [rep for _, rep, _ in plans] == ["0t3"]
+    plans = run.takeover_plans(_student(tmp_path / "b", passed=False, reason="repeat_limit"), [0.25], "*")
+    assert [rep for _, rep, _ in plans] == ["0t1", "0t2"]
+    _, _, plan = plans[1]
+    assert plan["seen"] == ['"結果0"']  # the teacher has seen the call's one result
+    # Other failures keep the fractions only.
+    plans = run.takeover_plans(_student(tmp_path / "c", passed=False, reason="tool_limit"), [0.25], "*")
+    assert [rep for _, rep, _ in plans] == ["0t1"]
 
 
 def test_passed_jobs_unjudged_runs_and_rewritten_histories_are_not_taken_over(tmp_path):

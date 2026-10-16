@@ -611,11 +611,37 @@ def clean(result: dict) -> bool:
     return bool(result.get("passed")) and not (result.get("grade") or {}).get("problems") and result.get("outcome") == "done"
 
 
+def mistake_points(row: dict, requests: list[dict]) -> set[int]:
+    """Where a guard stopped the student, the request its mistake answered,
+    so the teacher answers it instead: a runaway reply (a loop, or a thought
+    circling round a few sentences) answered the last request; a call the
+    repeat guard stopped was first repeated in the reply to the request
+    returned here (the teacher has seen one result of it, and goes on some
+    other way). The call the guard counted is the one the replies repeat most."""
+    if row.get("reason") == "runaway":
+        return {len(requests) - 1}
+    if row.get("reason") != "repeat_limit":
+        return set()
+    calls: dict[str, list[int]] = {}
+    for index, (before, after) in enumerate(itertools.pairwise(requests)):
+        seen = before["messages"]
+        reply = after["messages"][len(seen)] if len(after["messages"]) > len(seen) else {}
+        for call in reply.get("tool_calls") or []:
+            function = call.get("function") or {}
+            arguments = function.get("arguments")
+            if not isinstance(arguments, str):
+                arguments = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+            calls.setdefault(f"{function.get('name')} {arguments}", []).append(index)
+    repeated = max(calls.values(), key=lambda indexes: (len(indexes), indexes[-1]), default=[])
+    return {repeated[1]} if len(repeated) > 1 else set()
+
+
 def takeover_plans(student: Path, at: list[float], patterns: str) -> list[tuple[Path, str, dict]]:
     """Learning from its own mistakes: every job a student failed in its
     recorded run (not passed, not done, or its judge failed it),
     taken over by this run's model at the fractions `at` of the student's
-    model calls. Its answers before that point are given back word for word
+    model calls, and where a guard stopped it, at the request its mistake
+    answered (mistake_points). Its answers before that point are given back word for word
     (relay.py --replay), so the sandbox really runs what the student did and
     the teacher continues from where the student went. (task dir, rep label
     "<rep>t<point>", plan)."""
@@ -640,7 +666,8 @@ def takeover_plans(student: Path, at: list[float], patterns: str) -> list[tuple[
         if row["task"] not in tasks or not failed or row.get("takeover"):
             continue
         requests = model_requests(student / "records" / job)
-        for point in sorted({min(len(requests) - 1, max(1, round(f * len(requests)))) for f in at}):
+        fractions = {min(len(requests) - 1, max(1, round(f * len(requests)))) for f in at}
+        for point in sorted(fractions | mistake_points(row, requests)):
             if point < 1:
                 continue
             replies = []
