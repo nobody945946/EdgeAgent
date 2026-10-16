@@ -17,7 +17,11 @@ A takeover job (run.py --takeover: a student's failed conversation replayed
 word for word up to a point, then the teacher's) trains only the teacher's
 replies; the student's are the situation. One whose replayed prefix got other
 tool results than the student did is not the student's situation and is
-skipped.
+skipped. Where the takeover is at the student's mistake (run.mistake_points:
+a runaway reply, a repeated call, a wrong last answer), the student's reply
+and the teacher's to the same request are a wrong/right pair (--pairs, in
+train_lora.py --pairs' format {"messages", "tools", "chosen", "rejected"}),
+from a job that passed like any other.
 
 Eval tasks (bench/tasks, and the eval splits of the scenario cards and the
 Python tasks) never become training rows: only runs over training tasks
@@ -132,7 +136,9 @@ def verdicts(run_dir: Path) -> dict[str, bool]:
     return {row["job"]: bool(row["passed"]) for row in map(json.loads, path.read_text(encoding="utf-8").splitlines())}
 
 
-def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
+def rows(run_dir: Path, pairs: list[dict] | None = None) -> tuple[list[dict], dict[str, int]]:
+    """A run's rows and why the rest were skipped; its wrong/right pairs go
+    into `pairs` when one is given."""
     kept, why = [], {}
     judged = verdicts(run_dir)
 
@@ -190,6 +196,19 @@ def rows(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
             # Learning from its own mistakes (run.py --takeover): the student's
             # answers before the takeover are the situation, never a target.
             replies[:takeover["at"]] = [None] * min(takeover["at"], len(replies))
+            at = takeover["at"]
+            if pairs is not None and takeover.get("rejected") and at < len(replies) and replies[at] is not None:
+                pair = {"messages": [dict(m) for m in requests[at]["messages"]], "tools": requests[at]["tools"],
+                        "chosen": dict(replies[at]), "rejected": dict(takeover["rejected"])}
+                for message in [*pair["messages"], pair["chosen"], pair["rejected"]]:
+                    if message.get("role") in ("user", "assistant"):
+                        for key in ("content", "reasoning_content"):
+                            if isinstance(message.get(key), str):
+                                message[key] = taiwan_traditional(message[key])
+                pairs.append({**pair, "source": {"run": run_dir.name, "job": job, "kind": result.get("kind", ""),
+                                                 "takeover": {k: takeover[k] for k in ("from", "at", "of")},
+                                                 "first_tools": {t["function"]["name"]: _digest(t["function"])
+                                                                 for t in requests[0]["tools"]}}})
         start = 0
         for index, request in enumerate(requests):
             reply = replies[index]
@@ -289,29 +308,58 @@ def with_thinking_modes(row: dict, mode: str) -> list[dict]:
     return [marked, plain]
 
 
+def pair_modes(pair: dict, mode: str) -> list[dict]:
+    """A pair marked for train_lora.py as with_thinking_modes marks a row:
+    `both`, as recorded and once without reasoning; `none`, never with it.
+    Without reasoning a pair whose side said nothing else (a runaway thought)
+    or whose sides become the same is no pair; a chosen thought the budget cut
+    short comes only without."""
+    def plain(message: dict) -> dict:
+        return {k: v for k, v in message.items() if k != "reasoning_content"}
+
+    def said(message: dict) -> bool:
+        return bool((message.get("content") or "").strip() or message.get("tool_calls"))
+
+    stripped = {**pair, "messages": [plain(m) for m in pair["messages"]], "chosen": plain(pair["chosen"]),
+                "rejected": plain(pair["rejected"]), "thinking": False}
+    stripped = [stripped] if said(stripped["chosen"]) and said(stripped["rejected"]) \
+        and stripped["chosen"] != stripped["rejected"] else []
+    thinking = any(m.get("reasoning_content") for m in [*pair["messages"], pair["chosen"], pair["rejected"]])
+    if mode == "none" or BUDGET_CUT in (pair["chosen"].get("reasoning_content") or ""):
+        return stripped
+    marked = [{**pair, "thinking": thinking}]
+    return marked + stripped if thinking and mode == "both" else marked
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("runs", nargs="+", type=Path)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--pairs", type=Path,
+                        help="also write the takeovers' wrong/right pairs here (train_lora.py --pairs), "
+                             "stamped like --out")
     parser.add_argument("--thinking", choices=THINKING, default="as-recorded",
                         help="both: every row with reasoning also without it (thinking on and off); "
                              "none: no reasoning in any row")
     args = parser.parse_args()
     total: list[dict] = []
+    paired: list[dict] = []
     for run_dir in args.runs:
-        kept, why = rows(run_dir)
-        print(f"{run_dir.name}: {len(kept)} rows; skipped {why}")
+        found: list[dict] = []
+        kept, why = rows(run_dir, found)
+        print(f"{run_dir.name}: {len(kept)} rows, {len(found)} pairs; skipped {why}")
         total += [marked for row in kept for marked in with_thinking_modes(row, args.thinking)]
-    stale = [row["source"]["job"] for row in total if scope_of(row) is None]
+        paired += [marked for pair in found for marked in pair_modes(pair, args.thinking)]
+    stale = [row["source"]["job"] for row in total + paired if scope_of(row) is None]
     if stale:
         print(f"REFUSED: {len(stale)} rows were made under another system prompt: {stale[:5]}")
         return 3
-    mixed = mixed_versions(total)
+    mixed = mixed_versions(total + paired)
     if mixed:
         print(f"REFUSED: rows from more than one product version would mix: {mixed}")
         return 3
-    versions = sorted({(scope_of(row), product_system(row)) for row in total}
-                      | {(name, digest) for row in total for name, digest in row["source"]["first_tools"].items()})
+    versions = sorted({(scope_of(row), product_system(row)) for row in total + paired}
+                      | {(name, digest) for row in total + paired for name, digest in row["source"]["first_tools"].items()})
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", encoding="utf-8") as handle:
         for row in total:
@@ -324,6 +372,14 @@ def main() -> int:
              "rows_with_project_agents_md": with_project}
     args.out.with_name(args.out.name + ".version").write_text(json.dumps(stamp), encoding="utf-8")
     print(f"{len(total)} rows -> {args.out} (product version {stamp['version']})")
+    if args.pairs:
+        args.pairs.parent.mkdir(parents=True, exist_ok=True)
+        with args.pairs.open("w", encoding="utf-8") as handle:
+            for pair in paired:
+                handle.write(json.dumps(pair, ensure_ascii=False) + "\n")
+        args.pairs.with_name(args.pairs.name + ".version").write_text(
+            json.dumps({**stamp, "kind": "pairs"}), encoding="utf-8")
+        print(f"{len(paired)} pairs -> {args.pairs}")
     return 0
 
 

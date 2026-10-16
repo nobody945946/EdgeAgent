@@ -16,7 +16,7 @@ TOOLS = [{"type": "function", "function": {"name": "read", "parameters": {"type"
 
 
 def _student(tmp_path: Path, *, passed: bool, kind: str = "", verdict: bool | None = None,
-             rewritten: bool = False, reason: str = "") -> Path:
+             rewritten: bool = False, reason: str = "", trajectory: list | None = None) -> Path:
     """A student's recorded run of one job: four model calls (and one
     simulated-user request without tools between them)."""
     (tmp_path / "tasks" / "archive-00").mkdir(parents=True)
@@ -41,6 +41,9 @@ def _student(tmp_path: Path, *, passed: bool, kind: str = "", verdict: bool | No
         "task": "archive-00", "rep": 0, "kind": kind, "passed": passed, "outcome": "error" if reason else "done",
         "reason": reason, "grade": {},
         "dialogue": [{"user": "一"}, {"user": "二"}]}) + "\n")
+    if trajectory is not None:
+        (student / "traj").mkdir()
+        (student / "traj" / "archive-00-r0.json").write_text(json.dumps(trajectory, ensure_ascii=False))
     if verdict is not None:
         (student / "verdicts.jsonl").write_text(json.dumps({"job": "archive-00-r0", "passed": verdict}) + "\n")
     return student
@@ -74,6 +77,32 @@ def test_where_a_guard_stopped_the_student_the_teacher_answers_what_its_mistake_
     # Other failures keep the fractions only.
     plans = run.takeover_plans(_student(tmp_path / "c", passed=False, reason="tool_limit"), [0.25], "*")
     assert [rep for _, rep, _ in plans] == ["0t1"]
+
+
+def test_the_students_reply_at_its_mistake_is_kept_as_the_wrong_side_of_a_pair(tmp_path):
+    """The repeated call (the reply to request 2, which request 3 shows); a
+    finished job's wrong answer and a runaway thought from its trajectory, the
+    runaway one even at the first request; fractions keep no pair."""
+    plans = run.takeover_plans(_student(tmp_path, passed=False, reason="repeat_limit"), [0.25], "*")
+    assert "rejected" not in plans[0][2]
+    assert plans[1][2]["rejected"] == {"role": "assistant", "content": None, "tool_calls": [
+        {"id": "c2", "type": "function", "function": {"name": "read", "arguments": "{}"}}]}
+    answer = [{"role": "assistant", "content": [{"type": "thinking", "thinking": "想"}, {"type": "text", "text": "錯的答案"}]}]
+    plans = run.takeover_plans(_student(tmp_path / "d", passed=False, trajectory=answer), [], "*")
+    assert [(rep, plan["rejected"]) for _, rep, plan in plans] == [
+        ("0t3", {"role": "assistant", "content": "錯的答案", "reasoning_content": "想"})]
+    student = tmp_path / "first"
+    (student / "records" / "archive-00-r1").mkdir(parents=True)
+    (student / "records" / "archive-00-r1" / "0000.json").write_text(json.dumps(
+        {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "你覺得呢"}], "tools": TOOLS}))
+    (student / "traj").mkdir()
+    (student / "traj" / "archive-00-r1.json").write_text(json.dumps([{"role": "assistant", "stopReason": "aborted",
+                                                                    "content": [{"type": "thinking", "thinking": "繞"}]}]))
+    (student / "results.jsonl").write_text(json.dumps({"task": "archive-00", "rep": 1, "kind": "", "passed": False,
+                                                       "outcome": "error", "reason": "runaway", "grade": {}}) + "\n")
+    plans = run.takeover_plans(student, [0.4, 0.75], "*")
+    assert [(rep, plan["at"], plan["replies"], plan["rejected"]) for _, rep, plan in plans] == [
+        ("1t0", 0, [], {"role": "assistant", "content": None, "reasoning_content": "繞"})]
 
 
 def test_passed_jobs_unjudged_runs_and_rewritten_histories_are_not_taken_over(tmp_path):

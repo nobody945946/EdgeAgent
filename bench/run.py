@@ -577,7 +577,8 @@ def run_job(task_dir: Path, rep: int | str, config_name: str, config: dict, run_
            "passed": bool(grade.get("passed"))}
     if takeover is not None:
         row["takeover"] = {"from": takeover["from"], "at": takeover["at"], "of": takeover["of"],
-                           "replay_differs": replay_differs(run_dir / "records" / job, takeover["at"], takeover["seen"])}
+                           "replay_differs": replay_differs(run_dir / "records" / job, takeover["at"], takeover["seen"]),
+                           **({"rejected": takeover["rejected"]} if "rejected" in takeover else {})}
     return row
 
 
@@ -612,13 +613,15 @@ def clean(result: dict) -> bool:
 
 
 def mistake_points(row: dict, requests: list[dict]) -> set[int]:
-    """Where a guard stopped the student, the request its mistake answered,
-    so the teacher answers it instead: a runaway reply (a loop, or a thought
-    circling round a few sentences) answered the last request; a call the
-    repeat guard stopped was first repeated in the reply to the request
-    returned here (the teacher has seen one result of it, and goes on some
-    other way). The call the guard counted is the one the replies repeat most."""
-    if row.get("reason") == "runaway":
+    """In a failed job, the request its mistake answered, so the teacher
+    answers it instead: a runaway reply (a loop, or a thought circling round a
+    few sentences) and a finished job's wrong last answer answered the last
+    request; a call the repeat guard stopped was first repeated in the reply
+    to the request returned here (the teacher has seen one result of it, and
+    goes on some other way). The call the guard counted is the one the
+    replies repeat most. The student's reply there and the teacher's are a
+    wrong/right pair (dataset.py --pairs)."""
+    if row.get("reason") == "runaway" or row.get("outcome") == "done":
         return {len(requests) - 1}
     if row.get("reason") != "repeat_limit":
         return set()
@@ -634,6 +637,27 @@ def mistake_points(row: dict, requests: list[dict]) -> set[int]:
             calls.setdefault(f"{function.get('name')} {arguments}", []).append(index)
     repeated = max(calls.values(), key=lambda indexes: (len(indexes), indexes[-1]), default=[])
     return {repeated[1]} if len(repeated) > 1 else set()
+
+
+def student_reply(requests: list[dict], point: int, trajectory: list[dict]) -> dict | None:
+    """The student's reply to request `point` in wire form: what the next
+    request shows, or for the last request the trajectory's last assistant
+    message (a runaway one as far as it got before the guard stopped it)."""
+    if point + 1 < len(requests):
+        seen, after = requests[point]["messages"], requests[point + 1]["messages"]
+        follows = after[:len(seen)] == seen and len(after) > len(seen) and after[len(seen)].get("role") == "assistant"
+        return after[len(seen)] if follows else None
+    message = next((m for m in reversed(trajectory) if m.get("role") == "assistant"), None)
+    items = [i for i in (message or {}).get("content") or [] if isinstance(i, dict)]
+    text = "".join(i.get("text", "") for i in items if i.get("type") == "text")
+    reasoning = "\n".join(i["thinking"] for i in items if i.get("type") == "thinking" and (i.get("thinking") or "").strip())
+    calls = [{"id": i.get("id", ""), "type": "function",
+              "function": {"name": i.get("name", ""), "arguments": json.dumps(i.get("arguments") or {}, ensure_ascii=False)}}
+             for i in items if i.get("type") == "toolCall"]
+    if not (text.strip() or reasoning or calls):
+        return None
+    return {"role": "assistant", "content": text or None, **({"reasoning_content": reasoning} if reasoning else {}),
+            **({"tool_calls": calls} if calls else {})}
 
 
 def takeover_plans(student: Path, at: list[float], patterns: str) -> list[tuple[Path, str, dict]]:
@@ -666,10 +690,13 @@ def takeover_plans(student: Path, at: list[float], patterns: str) -> list[tuple[
         if row["task"] not in tasks or not failed or row.get("takeover"):
             continue
         requests = model_requests(student / "records" / job)
-        fractions = {min(len(requests) - 1, max(1, round(f * len(requests)))) for f in at}
-        for point in sorted(fractions | mistake_points(row, requests)):
-            if point < 1:
-                continue
+        trajectory_path = student / "traj" / f"{job}.json"
+        trajectory = json.loads(trajectory_path.read_text(encoding="utf-8")) if trajectory_path.is_file() else []
+        mistakes = mistake_points(row, requests)
+        # At 0 a fraction is the teacher's own recording of the task; a
+        # mistake at the first request (a chat thought that ran away) is not.
+        fractions = {point for f in at if (point := min(len(requests) - 1, max(1, round(f * len(requests))))) >= 1}
+        for point in sorted(fractions | mistakes):
             replies = []
             for before, after in itertools.pairwise(requests[:point + 1]):
                 seen = before["messages"]
@@ -679,10 +706,11 @@ def takeover_plans(student: Path, at: list[float], patterns: str) -> list[tuple[
             if len(replies) < point:
                 continue
             users = sum(1 for message in requests[point]["messages"] if message.get("role") == "user")
+            rejected = student_reply(requests, point, trajectory) if point in mistakes else None
             plans.append((tasks[row["task"]], f"{row['rep']}t{point}", {
                 "from": job, "at": point, "of": len(requests), "replies": replies,
                 "script": [turn["user"] for turn in (row.get("dialogue") or [])[:users]],
-                "seen": tool_results(requests[point])}))
+                "seen": tool_results(requests[point]), **({"rejected": rejected} if rejected else {})}))
     return plans
 
 

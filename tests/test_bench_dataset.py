@@ -126,6 +126,37 @@ def test_a_takeover_trains_only_what_the_teacher_wrote(tmp_path: Path) -> None:
     assert row["source"]["takeover"] == {"from": "archive-00-r1", "at": 2, "of": 4}
 
 
+def test_a_takeover_at_the_students_mistake_gives_a_wrong_right_pair(tmp_path: Path) -> None:
+    """The student repeated a call where the teacher, in the same situation,
+    called read again with c2: that request, the teacher's reply as chosen and
+    the student's as rejected; a takeover kept no rejected reply at a fraction."""
+    run_dir = _takeover_run(tmp_path, 0)
+    wrong = {"role": "assistant", "content": None, "reasoning_content": "再讀一次", "tool_calls": [
+        {"id": "x", "type": "function", "function": {"name": "read", "arguments": "{\"path\": \"a\"}"}}]}
+    result = json.loads((run_dir / "results.jsonl").read_text(encoding="utf-8"))
+    result["takeover"]["rejected"] = wrong
+    (run_dir / "results.jsonl").write_text(json.dumps(result, ensure_ascii=False) + "\n", encoding="utf-8")
+    found: list[dict] = []
+    rows, _ = dataset.rows(run_dir, found)
+    assert len(rows) == 1 and len(found) == 1
+    (pair,) = found
+    assert len(pair["messages"]) == 2 + 2 * 2  # request 2: what the student had seen
+    assert pair["chosen"]["tool_calls"][0]["id"] == "c2" and pair["rejected"] == wrong
+    assert pair["source"]["takeover"] == {"from": "archive-00-r1", "at": 2, "of": 4}
+    # With thinking both: as recorded, and once without the reasoning (the call stays).
+    marked, plain = dataset.pair_modes(pair, "both")
+    assert marked["thinking"] and not plain["thinking"] and "reasoning_content" not in plain["rejected"]
+    # A runaway thought says nothing without its reasoning: no pair then.
+    runaway = {**pair, "rejected": {"role": "assistant", "content": None, "reasoning_content": "繞"}}
+    assert [p["thinking"] for p in dataset.pair_modes(runaway, "both")] == [True]
+    assert dataset.pair_modes(runaway, "none") == []
+    result["takeover"].pop("rejected")
+    (run_dir / "results.jsonl").write_text(json.dumps(result, ensure_ascii=False) + "\n", encoding="utf-8")
+    found = []
+    dataset.rows(run_dir, found)
+    assert found == []
+
+
 def test_a_takeover_whose_replay_drifted_is_not_used(tmp_path: Path) -> None:
     rows, why = dataset.rows(_takeover_run(tmp_path, 1))
     assert rows == [] and why == {"takeover replay drifted": 1}
