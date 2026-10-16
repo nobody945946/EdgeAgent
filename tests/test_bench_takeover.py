@@ -43,7 +43,7 @@ def _student(tmp_path: Path, *, passed: bool, kind: str = "", verdict: bool | No
         "dialogue": [{"user": "一"}, {"user": "二"}]}) + "\n")
     if trajectory is not None:
         (student / "traj").mkdir()
-        (student / "traj" / "archive-00-r0.json").write_text(json.dumps(trajectory, ensure_ascii=False))
+        (student / "traj" / "archive-00-r0.json").write_text(json.dumps(trajectory, ensure_ascii=False), encoding="utf-8")
     if verdict is not None:
         (student / "verdicts.jsonl").write_text(json.dumps({"job": "archive-00-r0", "passed": verdict}) + "\n")
     return student
