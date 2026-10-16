@@ -12,7 +12,7 @@ from pathlib import Path
 from edge_agent import apis, undo
 from edge_agent.attachments import decode_attachments
 from edge_agent.core import EdgeAgent
-from edge_agent.inference import InferenceGateway
+from edge_agent.inference import InferenceBusy, InferenceGateway
 from edge_agent.mcp import servers_for
 from edge_agent.models import hub_catalog
 from edge_agent.modes import MODES
@@ -21,6 +21,15 @@ from edge_agent.processes import pid_alive
 from edge_agent.records import prepare_record_folder, recording_status
 from edge_agent.web import NATIVE_CHAT_HTML
 from edge_agent.workspace import create_worktree, list_directories, workspace_info
+
+
+class Refused(Exception):
+    """A chat the Agent cannot take now. `code` is the stable name its error
+    event carries (a client such as SilentTalk keeps codes, never the text)."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -327,9 +336,9 @@ class Handler(BaseHTTPRequestHandler):
             with self.core.lock:
                 status = self.core.status()
                 if status["ready"] is not True or self.core.agent_slot is None:
-                    raise RuntimeError("EdgeAgent is currently leased by SilentTalk")
+                    raise Refused("agent_unavailable", "EdgeAgent is currently leased by SilentTalk")
                 if self.core.chat_in_progress:
-                    raise PermissionError("Agent 工作正在進行；完成或停止後再派工")
+                    raise Refused("agent_busy", "Agent 工作正在進行；完成或停止後再派工")
                 for item in media:
                     capability = (
                         "audio"
@@ -337,7 +346,7 @@ class Handler(BaseHTTPRequestHandler):
                         else "vision"
                     )
                     if not self.core.capabilities[capability]:
-                        raise ValueError("目前模型不支援此附件，請更換模型")
+                        raise Refused("attachment_unsupported", "目前模型不支援此附件，請更換模型")
                 self.core.chat_in_progress = True
             self.core.changes.publish()
             try:
@@ -365,7 +374,14 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.core.chat.cancel(session_id)
         except Exception as exc:  # noqa: BLE001 - stream errors must reach the browser
-            self._event("error", {"message": str(exc)})
+            reason = (
+                exc.code
+                if isinstance(exc, Refused)
+                else "inference_busy"
+                if isinstance(exc, InferenceBusy)
+                else "agent_error"
+            )
+            self._event("error", {"message": str(exc), "reason": reason})
 
     def _event(self, event: str, payload: dict[str, object]) -> None:
         data = json.dumps(payload, ensure_ascii=False)
