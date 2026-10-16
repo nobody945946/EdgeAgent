@@ -11,7 +11,7 @@ import threading
 import time
 
 import pytest
-from test_router_events import ARGS, counts, use_fake
+from test_router_events import ARGS, Events, counts, use_fake
 
 from edge_agent import core, processes
 
@@ -182,6 +182,14 @@ def routed(tmp_path, monkeypatch):
     reloads are recorded."""
     manager = core.EdgeAgent(tmp_path)
     use_fake(manager.router, monkeypatch)
+    handled = Events()
+    publish = manager.router.on_event
+
+    def on_event():
+        publish()
+        handled()
+
+    manager.router.on_event = on_event
     manager.router.load(ARGS)
     manager.mode, manager.active_model = "base", "fixture.gguf"
     reloads = []
@@ -196,6 +204,14 @@ def routed(tmp_path, monkeypatch):
         reloaded.set()
 
     monkeypatch.setattr(manager, "_start_child", start_child)
+    # The load's events reach the core on the router's stream thread, the
+    # last maybe after load returned: once each has been handled, the monitor
+    # starts with them known, or its one look at the router lands whenever
+    # its thread first runs (CI, 2026-10-16: inside a test's "asks nothing"
+    # window).
+    with handled.changed:
+        assert handled.changed.wait_for(lambda: handled.count == manager.router._seen(), 5)
+    manager.model_check = False
     threading.Thread(target=manager.monitor, name="test-monitor", daemon=True).start()
     yield manager, reloads, reloaded, failures
     # As the service stops: nothing loaded on purpose, so the monitor does
