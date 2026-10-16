@@ -87,8 +87,9 @@ class Turn:
         other message."""
         if isinstance(notice, str) and notice.startswith("edge-budget:"):
             budget = json.loads(notice.removeprefix("edge-budget:"))
-            if type(budget.get("max_output_tokens")) is int:
-                self.request_budget = budget["max_output_tokens"]
+            # No number: the request went without a cap (the Agent's do).
+            cap = budget.get("max_output_tokens")
+            self.request_budget = cap if type(cap) is int else None
             return []
         if isinstance(notice, str) and notice.startswith("edge-unverified:"):
             self.unverified = json.loads(notice.removeprefix("edge-unverified:"))
@@ -209,21 +210,24 @@ class Turn:
                 if isinstance(output, int)
                 else ""
             )
-            limit = (
-                f"；本次請求上限 {self.last_assistant_budget} token"
-                if self.last_assistant_budget is not None
-                else ""
+            # The Agent's requests carry no output cap (agent_bridge.mjs):
+            # only the context ends them, and the setting would not help.
+            message = (
+                "模型這一步的輸出用完了 context"
+                f"（{context_size} token{usage}）；"
+                "已完成的修改仍然保留。可把工作拆小，或繼續本輪工作。"
+                if self.last_assistant_budget is None
+                else "模型生成被截斷"
+                f"（context {context_size} token，"
+                f"單次輸出額度 {max_output_tokens} token；"
+                f"本次請求上限 {self.last_assistant_budget} token{usage}）；"
+                "已完成的修改仍然保留。可在模型模組調整單次輸出上限，"
+                "或繼續本輪工作。"
             )
             yield (
                 "error",
                 {
-                    "message": (
-                        "模型生成被截斷"
-                        f"（context {context_size} token，"
-                        f"單次輸出額度 {max_output_tokens} token{limit}{usage}）；"
-                        "已完成的修改仍然保留。可在模型模組調整單次輸出上限，"
-                        "或繼續本輪工作。"
-                    ),
+                    "message": message,
                     "reason": "generation_truncated",
                     "context_size": context_size,
                     "max_output_tokens": max_output_tokens,

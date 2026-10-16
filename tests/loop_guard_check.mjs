@@ -2,7 +2,7 @@
 // output is not. Run by tests/test_prompt.py.
 import assert from 'node:assert/strict';
 
-const { looping, LoopWatch } = await import('../edge_agent/loop_guard.mjs');
+const { looping, circling, LoopWatch } = await import('../edge_agent/loop_guard.mjs');
 // The loops seen in the bench.
 assert.ok(looping('$exts=@(' + "'ts',".repeat(600)) === 5);
 assert.ok(looping('"cur",'.repeat(400)) > 0);
@@ -36,4 +36,39 @@ for (let i = 0; i < 29 && caught < 0; i++) if (plan.match(/.{1,50}/gs).some(piec
 assert.ok(caught > 0 && caught < 8, `caught in copy ${caught}`);
 watch.reset();
 assert.equal((report + report).match(/.{1,50}/gs).some(piece => watch.add(piece)), false);
+// A thought circling round a few sentences in a shuffled order (v3,
+// 2026-10-16, until the context was full): never periodic, still a loop.
+const said = [
+  "Hmm, maybe they're referring to something else. Let me try to ask for clarification.",
+  'Maybe they mean the Battle of Stalingrad, which started in 1942? That is a famous siege.',
+  'Actually, let me think about what they might mean by "the 1942 thing you just understood".',
+  'I think it is best to ask for clarification, but first let me think about what they mean.',
+  'The Siege of Leningrad is 1941 to 1944, and 1942 was a particularly brutal winter there.',
+];
+let seed = 7;
+const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648);
+const circle = Array.from({ length: 300 }, () => said[next() % said.length] + '\n\n').join('');
+assert.equal(looping(circle), 0);
+assert.ok(circling(circle));
+watch.reset();
+const pieces = circle.match(/.{1,50}/gs);
+caught = pieces.findIndex(piece => watch.add(piece));
+assert.ok(caught > 0 && caught * 50 < 8000, `caught at ${caught * 50} characters`);
+// Thinking that comes back to a point now and then, a compose file whose
+// services share lines, a test file of similar asserts: not circling.
+const thought = Array.from({ length: 120 }, (_, i) => i % 6 === 5
+  ? 'Let me re-check the requirement before going on.'
+  : `Step ${i}: file part_${i}.csv has ${i * 13 % 97} rows, so the total so far is ${i * 41}.`).join('\n');
+assert.equal(circling(thought), false);
+const compose = 'services:\n' + Array.from({ length: 30 }, (_, i) =>
+  `  worker-${i}:\n    image: registry.local/worker:${i}\n    restart: unless-stopped\n` +
+  '    env_file: ./config/shared.env\n    logging:\n      driver: json-file\n').join('');
+assert.equal(circling(compose), false);
+const asserts = Array.from({ length: 80 }, (_, i) =>
+  `    assert parse_duration("${i}m${i % 60}s") == ${i * 60 + i % 60}\n    assert parse_duration("") is None\n`).join('');
+assert.equal(circling(asserts), false);
+assert.equal([thought, compose, asserts].some(text => {
+  watch.reset();
+  return text.match(/.{1,50}/gs).some(piece => watch.add(piece));
+}), false);
 console.log('loop guard ok');

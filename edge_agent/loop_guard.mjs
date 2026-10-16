@@ -10,6 +10,13 @@
 // characters and at least LONG_TIMES times. Real long output (a file, a
 // table, a report) varies within such a stretch, and quotes a block again
 // once or twice, not four times running.
+// A thought also circles without repeating exactly: v3 (2026-10-16) went
+// round the same few sentences in a shuffled order until the 65,536-token
+// context was full (53,721 to 61,733 tokens in one step, 12 to 44 different
+// lines in over a thousand). That is CIRCLE_LINES lines of at least LINE_MIN
+// characters, the last of the stream, holding at most CIRCLE_DISTINCT
+// different ones; a file, a table or a teacher's thought (none of 342,651
+// recorded training messages) varies more.
 const MAX_UNIT = 8000;
 const SPAN = 2000;
 const TIMES = 20;
@@ -39,8 +46,20 @@ export function looping(text) {
   return 0;
 }
 
-// Keeps the tail of one streamed message and says when it loops; checked
-// every CHECK_EVERY new characters, the tail long enough for the largest unit.
+const LINE_MIN = 20;
+const CIRCLE_LINES = 40;
+const CIRCLE_DISTINCT = 10;
+
+// True when the finished lines ending `text` circle round a few sentences.
+export function circling(text) {
+  const lines = text.slice(0, text.lastIndexOf('\n') + 1).split('\n')
+    .map(line => line.trim()).filter(line => line.length >= LINE_MIN);
+  return lines.length >= CIRCLE_LINES && new Set(lines.slice(-CIRCLE_LINES)).size <= CIRCLE_DISTINCT;
+}
+
+// Keeps the tail of one streamed message and says when it loops or circles;
+// checked every CHECK_EVERY new characters, the tail long enough for the
+// largest unit.
 const CHECK_EVERY = 200;
 const KEEP = spanOf(MAX_UNIT) + MAX_UNIT;
 
@@ -55,6 +74,6 @@ export class LoopWatch {
     this.fresh += delta.length;
     if (this.fresh < CHECK_EVERY) return false;
     this.fresh = 0;
-    return looping(this.tail) > 0;
+    return looping(this.tail) > 0 || circling(this.tail);
   }
 }

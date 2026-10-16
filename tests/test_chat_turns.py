@@ -59,6 +59,25 @@ def test_truncation_reports_actual_usage_and_keeps_it_distinct_from_context(tmp_
     assert "8192" in result[1]["message"]
 
 
+def test_an_uncapped_agent_step_that_fills_the_context_says_so(tmp_path):
+    # The Agent's requests go without a cap (agent_bridge.mjs drops it): the
+    # context ended the step, and the output setting is not the advice.
+    events = ending("length")
+    events[0]["message"]["usage"] = {"input": 3534, "output": 61733}
+    events.insert(
+        0, {"type": "extension_ui_request", "method": "notify", "message": "edge-budget:{}"}
+    )
+    chat = RPCFixture(events)
+    chat.configure_context(65536, max_output_tokens=8192)
+    result = list(chat.stream_reply("fixture", "fixture", working_dir=tmp_path))[-1]
+    assert result[0] == "error"
+    assert result[1]["reason"] == "generation_truncated"
+    assert result[1]["request_max_output_tokens"] is None
+    assert "65536" in result[1]["message"] and "61733" in result[1]["message"]
+    assert "8192" not in result[1]["message"]
+    assert "單次輸出" not in result[1]["message"]
+
+
 def test_mutating_tool_diff_is_retained_when_model_runs_out_of_tokens(tmp_path):
     path = tmp_path / "code.py"
     path.write_text("value=1\n")
