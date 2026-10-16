@@ -304,6 +304,56 @@ def test_real_sdk_the_agent_speaks_as_itself_per_scope(tmp_path, repeating_model
         chat.close()
 
 
+@pytest.fixture
+def owner_memory():
+    """The owner's memory (AGENTS.md in Pi's agentDir) holding only its
+    heading, put back as it was afterwards."""
+    from edge_agent.runtime import CORE_ROOT
+
+    path = CORE_ROOT / ".runtime/pi-state/AGENTS.md"
+    before = path.read_bytes() if path.exists() else None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# 主人的長期交代\n", encoding="utf-8")
+    yield path
+    if before is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_bytes(before)
+
+
+@pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
+def test_real_sdk_adds_to_the_owners_memory_as_the_owner_allows_each_time(
+    tmp_path, repeating_model, owner_memory  # noqa: F811
+):
+    """The prompt tells the Agent to add what the owner asks it to remember
+    to its memory with edit, the owner confirming; v3's teacher had that edit
+    refused as outside the workspace and wrote the file through PowerShell
+    (2026-10-16). Read and edit reach that one file, an edit asks the owner
+    even where edits are otherwise reversible, it is never rewritten whole,
+    and the rest of agentDir stays outside."""
+    port, state = repeating_model
+    state["sequence"] = [
+        ("read", {"path": str(owner_memory)}),
+        ("edit", {"path": str(owner_memory), "edits": [
+            {"oldText": "# 主人的長期交代\n", "newText": "# 主人的長期交代\n- 報表一律存成 UTF-8 含 BOM\n"}]}),
+        ("write", {"path": str(owner_memory), "content": "replaced\n"}),
+        ("read", {"path": str(owner_memory.parent / "settings.json")}),
+    ]
+    chat = NativeChat(model_port=port)
+    try:
+        events = permission_run(chat, tmp_path, {"edit": "reversible", "shell": "ask", "web": "allow"},
+                                approve=True, prompt="記住：報表一律存成 UTF-8 含 BOM")
+        approvals = [data for name, data in events if name == "approval"]
+        assert [(a["tool"], a["explicit"]) for a in approvals] == [("edit", "memory")]
+        assert owner_memory.read_text(encoding="utf-8") == "# 主人的長期交代\n- 報表一律存成 UTF-8 含 BOM\n"
+        results = [str(m["content"]) for r in state["requests"] for m in r["messages"] if m["role"] == "tool"]
+        assert any("# 主人的長期交代" in r for r in results)  # read
+        assert any("never rewritten whole" in r for r in results)  # write
+        assert any("must stay inside the opened workspace" in r for r in results)  # the rest of agentDir
+    finally:
+        chat.close()
+
+
 @pytest.mark.skipif(not installed_pi(), reason="requires installed pinned Pi runtime")
 def test_real_sdk_a_public_task_sees_nothing_of_the_owners(tmp_path, repeating_model):  # noqa: F811
     """Anyone in a chat may ask for a public task, and ask the Agent what its

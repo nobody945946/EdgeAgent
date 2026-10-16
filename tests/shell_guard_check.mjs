@@ -11,5 +11,11 @@ const ordinary = ['python -m pytest -q', 'Get-ChildItem -Recurse', 'git status',
   'python manage.py remove_user', 'Select-String -Pattern delete src/*.py'];
 for (const command of destructive) assert.equal(explicitApproval(command), 'destructive', command);
 for (const command of protectedFiles) assert.equal(explicitApproval(command), 'protected', command);
+// The owner's memory, as v3's teacher reached it when edit was refused (2026-10-16).
+const memory = ["[System.IO.File]::AppendAllBytes('/opt/edgeagent/.runtime/pi-state/AGENTS.md', $bom)",
+  "Get-Content -Path 'C:\\EdgeAgent\\.runtime\\pi-state\\AGENTS.md' -Raw",
+  'Add-Content -Path .runtime/Pi-State/AGENTS.md -Value "- 報表存 UTF-8 含 BOM"'];
+for (const command of memory) assert.equal(explicitApproval(command), 'memory', command);
+assert.equal(explicitApproval('Remove-Item .runtime/pi-state/AGENTS.md'), 'destructive');
 for (const command of ordinary) assert.equal(explicitApproval(command), '', command);
 console.log('shell guard ok');

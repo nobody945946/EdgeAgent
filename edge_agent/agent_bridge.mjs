@@ -55,6 +55,12 @@ if (init.agent && !init.public && !existsSync(memoryFile)) {
   mkdirSync(agentDir, { recursive: true });
   writeFileSync(memoryFile, '# 主人的長期交代\n', 'utf8');
 }
+// It is the one file outside the workspace the file tools reach: read, or
+// added to with edit once the owner allows it, as the prompt tells the Agent
+// (v3's teacher, 2026-10-16: its edits refused as outside the workspace, it
+// wrote the file through PowerShell instead, 108 times in the kept rows).
+const memoryReal = init.agent && !init.public ? realpathSync(memoryFile) : '';
+const samePath = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 // Pi's exported ModelRuntime supports a CredentialStore. No provider secrets
 // or sessions are written by this host.
 const { AuthStorage } = await import(new URL('core/auth-storage.js', packageURL));
@@ -354,6 +360,7 @@ function policy(pi) {
       }
     }
     let resolvedPath = '';
+    let memory = false;
     if (typeof input.path === 'string') {
       const path = resolveToCwd(input.path, root);
       resolvedPath = path;
@@ -361,7 +368,11 @@ function policy(pi) {
       while (!existsSync(parent) && dirname(parent) !== parent) parent = dirname(parent);
       const actual = resolve(realpathSync(parent), relative(parent, path));
       const inside = relative(root, actual);
-      if (inside === '..' || inside.startsWith('..' + (process.platform === 'win32' ? '\\' : '/')) || isAbsolute(inside)) {
+      memory = memoryReal !== '' && samePath(actual, memoryReal);
+      if (memory && !['read', 'edit'].includes(toolName)) {
+        return { block: true, reason: "The owner's memory is added to with edit, a line at the end; it is never rewritten whole." };
+      }
+      if (!memory && (inside === '..' || inside.startsWith('..' + (process.platform === 'win32' ? '\\' : '/')) || isAbsolute(inside))) {
         return { block: true, reason: 'File access must stay inside the opened workspace.' };
       }
       if (['edit', 'write'].includes(toolName) && /(?:^|[\\/])(?:\.env(?:\..*)?|settings\.json|personas\.json|character_state\.json)$/i.test(path)) {
@@ -380,7 +391,9 @@ function policy(pi) {
     let rule = rules[category];
     if (rule === 'deny') return { block: true, reason: `The owner's permission settings do not allow ${category} operations.` };
     if (rule === 'allow' && tainted && category !== 'web') rule = 'ask';
-    const explicit = CATEGORY[toolName] === 'shell' ? explicitApproval(input?.command)
+    // What goes into the owner's memory, the owner allows each time.
+    const explicit = memory && toolName === 'edit' ? 'memory'
+      : CATEGORY[toolName] === 'shell' ? explicitApproval(input?.command)
       : toolName === 'web_fetch' && !seenURLs.has(normalURL(input?.url)) ? 'new_url' : '';
     // Nobody is asked during a public lookup: what the owner's settings do
     // not allow outright is refused, and so is any address the model built.

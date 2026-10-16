@@ -37,7 +37,8 @@ def host_answer(details: dict, rules: dict[str, str], cwd: Path) -> bool | None:
     "reversible" an edit, or a command proven to read and write only files it
     names in the workspace, runs once those files are copied (edge_agent.undo);
     anything else (programs, the network, ...) asks, unless the owner already
-    allowed this turn. Deleting and protected settings ("explicit") always ask."""
+    allowed this turn. Deleting, protected settings and the owner's memory
+    ("explicit") always ask."""
     tool, arguments = details.get("tool"), details.get("arguments")
     if not isinstance(arguments, dict):
         return None
@@ -45,7 +46,7 @@ def host_answer(details: dict, rules: dict[str, str], cwd: Path) -> bool | None:
         # "read" never asks the owner: a provable read runs, anything else is refused.
         return (not details.get("after_web") and details.get("explicit", "") in {"", "destructive"}
                 and isinstance(arguments.get("command"), str) and routine_shell(arguments["command"], cwd))
-    if details.get("explicit"):  # deleting, protected settings, an address the model built
+    if details.get("explicit"):  # deleting, protected settings, the owner's memory, an address the model built
         return None
     paths: list[Path] | None = None
     if tool in ("edit", "write") and rules.get("edit") == REVERSIBLE:
