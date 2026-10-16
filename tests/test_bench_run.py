@@ -3,6 +3,7 @@ laptop, and a run whose sandbox failed to report does not pass for finished."""
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -63,3 +64,13 @@ def test_a_run_with_a_crashed_job_does_not_finish_and_the_next_start_reruns_it(t
     ran.clear()
     run.main()  # finishes: the crash was no result, so only it runs again
     assert ran == ["t-01"]
+
+
+def test_every_config_is_named_once():
+    # json keeps the last of two same-named keys and drops the first without a word.
+    def unique(pairs):
+        names = [k for k, _ in pairs]
+        assert len(names) == len(set(names)), sorted({k for k in names if names.count(k) > 1})
+        return dict(pairs)
+
+    json.loads((run.BENCH / "configs.json").read_text(encoding="utf-8"), object_pairs_hook=unique)
