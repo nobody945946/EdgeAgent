@@ -250,7 +250,7 @@ def test_searching_a_whole_drive_never_becomes_a_row() -> None:
 def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path: Path, kind: str) -> None:
     """judge and validate against a stand-in judge model whose answer check
     accepts an answer only if it is that task's full answer, and whose
-    GROUNDED item accepts it only if it states the count the tool gave:
+    number check accepts it only if it states the count the tool gave:
     originals pass, cut, swapped and misstated answers fail, a conversation
     without an answer is left out, and a tool job that failed its own check
     is never judged."""
@@ -271,14 +271,15 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
                 answer = re.search(r"助理最後的回答：(.*)", prompt).group(1)
                 ok = not Judge.strict and answer.startswith(f"答{task}：") and answer.endswith(f"完整的結尾{task}。")
                 verdict = {"turns": [{"turn": 1, "ending": "結尾", "complete": ok, "responds": ok}]}
+            elif "找不到：" in prompt:  # the number check: only numbers the record does not hold
+                listed = re.findall(r"^(\d+)\. (.*)\n   找不到：(.*)$", prompt, re.MULTILINE)
+                verdict = {"figures": [{"id": int(n), "n": f.split("（")[0], "source": "", "kind": "不符" if Judge.strict or (
+                    not Judge.blind and "個檔案" in text) else "推算"} for n, text, found in listed for f in found.split("、")]}
             else:
                 assert "使用者的目標（使用者沒有原句說出來）：目標" in prompt and "助理：" in prompt
                 items = dict(re.findall(r"^([MN]\d+)\. (.*)$", prompt, re.MULTILINE))
                 assert len(items) == (4 if kind == "scenario" else 2)
-                given = re.search(r"工具（結果）：共 (\d+) 個檔案", prompt).group(1)
-                stated = re.search(r"助理：答\d+：共 (\d+) 個檔案", prompt).group(1)
-                verdict = {"items": [{"id": key, "evidence": "無", "pass": not Judge.strict and (
-                    Judge.blind or stated == given or scenario_judge.GROUNDED[0] not in text)} for key, text in items.items()]}
+                verdict = {"items": [{"id": key, "evidence": "無", "pass": not Judge.strict} for key in items]}
             body = json.dumps({"choices": [{"message": {"content": json.dumps(verdict)}}]}).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
@@ -298,10 +299,10 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
         task = ({"family": "C", "must": ["做完"], "must_not": ["反問"], "scenario": {"goal": f"目標{n}"}}
                 if kind == "scenario" else {"kind": kind, "prompt": f"問{n}", "spec": {"situation": f"目標{n}"}})
         (task_root / name / "task.json").write_text(json.dumps(task, ensure_ascii=False), encoding="utf-8")
-        answer = f"答{n}：共 {30 + n} 個檔案。完整的結尾{n}。" if n < count - 1 else None
+        answer = f"答{n}：共 {300 + n} 個檔案。完整的結尾{n}。" if n < count - 1 else None
         trajectory = [{"role": "user", "content": f"問{n}"},
                       {"role": "assistant", "content": [{"type": "toolCall", "name": "ls", "arguments": {}}]},
-                      {"role": "toolResult", "content": [{"type": "text", "text": f"共 {30 + n} 個檔案"}]},
+                      {"role": "toolResult", "content": [{"type": "text", "text": f"共 {300 + n} 個檔案"}]},
                       *(said(answer) if answer else [])]
         (run_dir / "traj" / f"{name}-r0.json").write_text(json.dumps(trajectory, ensure_ascii=False), encoding="utf-8")
         rows.append({"task": name, "rep": 0, "kind": kind, "outcome": "done", "ended": "end", "passed": n < count,
@@ -334,11 +335,32 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
         verdicts = {v["job"]: v for v in map(json.loads, (run_dir / "verdicts.jsonl").read_text(encoding="utf-8").splitlines())}
         assert len(verdicts) == count  # the tool job that failed its check is not judged
         assert all(verdicts[f"train-C-{n:03d}-r0"]["passed"] for n in range(accepted))
-        assert len(verdicts["train-C-000-r0"]["judge"]) == 3  # the answer check, then the items twice
+        assert len(verdicts["train-C-000-r0"]["judge"]) == 4  # the answer check, the numbers, then the items twice
         last = verdicts[f"train-C-{accepted:03d}-r0"]
         assert not last["passed"] and len(last["judge"]) == 1 and "turn 1" in last["judge"][0]["failed"]
     finally:
         httpd.shutdown()
+
+
+def test_the_number_check_asks_about_numbers_as_written_and_the_judge_knows_the_date() -> None:
+    assert scenario_judge.figures("NeoCore 3.2.1（2026-09-15 發布）修好了 [5]") == ["3.2.1", "2026-09-15"]
+    assert scenario_judge.figures("到 2026\u201111\u201114 止，費用 5,000 元，期限 10/1 [1][2]") == [
+        "2026\u201111\u201114", "5,000", "10/1"]
+    # Citation marks are the host's to check, and a one-digit number is too often the answer's own.
+    assert scenario_judge.figures("1. 6 吋內 [10]") == []
+    # A number the record holds is the same number written whole, or a date without its year;
+    # the same digits inside another number (a 10-bit video, a 2026-10-12 date) are not.
+    numbers = {"2026-10-15", "5000", "3.99"}
+    assert all(scenario_judge.taken(f, numbers) for f in ("10-15", "10/15", "5,000", "3.99", "2026\u201110\u201115"))
+    assert not any(scenario_judge.taken(f, numbers) for f in ("10", "15", "3.90", "10-16"))
+    assert scenario_judge.close("3.90", numbers) == ["3.99"] and scenario_judge.close("10-16", numbers) == []
+    trajectory = [{"role": "system", "content": "", "sections": {
+                      "today": "<today>\nToday is 2026-10-13 (Tuesday), time zone UTC (UTC+00:00).\n</today>"}},
+                  {"role": "user", "content": "牌照到什麼時候？"},
+                  *said("今天是 2026-10-13，牌照有效到 2026-11-14。\n費用 5,000 元。"),
+                  {"role": "user", "content": "好"}, *said("不客氣。")]
+    assert scenario_judge.transcript(trajectory).startswith("（助理知道的日期：今天是 2026-10-13 (Tuesday)）\n使用者：")
+    assert scenario_judge.claims(trajectory) == ["今天是 2026-10-13，牌照有效到 2026-11-14。", "費用 5,000 元。"]
 
 
 def test_a_misstated_number_is_one_the_transcript_gave_and_never_a_list_number() -> None:
@@ -349,6 +371,7 @@ def test_a_misstated_number_is_one_the_transcript_gave_and_never_a_list_number()
         {"role": "toolResult", "content": [{"type": "text", "text": "共 35 個檔案，12.5 MB"}]}])
     # The assistant's own words give nothing; the user's, the calls' and the results' do.
     assert {"22310", "2024", "35", "12.5"} <= numbers and "99" not in numbers
+    # The first number that could only come from the record: 35 matches a long record by chance.
     assert scenario_judge.misstate("1. 共 35 個檔案\n2. 12.5 MB", numbers) == "1. 共 35 個檔案\n2. 12.6 MB"
     assert scenario_judge.misstate("IMG_22310 已改名", numbers) == "IMG_22311 已改名"
     # A list's own numbers, a number the transcript never gave: nothing to misstate.

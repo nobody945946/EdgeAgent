@@ -5,14 +5,17 @@ A scenario conversation passes when every programmatic check of its family
 passes (bench/scenario_checks.py) and the judge model, a different family
 from the teacher (owner, 2026-10-07: Gemma 4 31B), finds that each turn's
 last answer answers its own message in full (one call that sees only the
-messages and those answers), then every must / must_not item of the card
-and GROUNDED (what the answers state is right) met, twice, with the items in
-a different order each time. Any other task is judged once it passed its own
-check: the same answer check, then GROUNDED twice, since a task's check
-grades only what it asked for. The
-judge sees what the asker saw plus the tool calls and results, never the
-thinking. Writes <run>/verdicts.jsonl; bench/dataset.py turns only passing
-conversations into rows.
+messages and those answers), that every number those answers state and
+the record does not hold is a sum, a conversion or the assistant's own
+choice, not a mistake (one call over those numbers), then every must /
+must_not item of the card and GROUNDED (what the answers state is right)
+met, twice, with the items in a different order each time. Any other task
+is judged once it passed its own check: the same answer and number checks,
+then GROUNDED twice, since a task's check grades only what it asked for.
+The judge sees what the asker saw plus the tool calls and results and the
+date the assistant was told, never the thinking. Writes
+<run>/verdicts.jsonl; bench/dataset.py turns only passing conversations
+into rows.
 
 `validate` first proves the judge worth trusting: for the conversations it
 accepts, it must reject corrupted copies (the last answer stopped
@@ -79,6 +82,35 @@ ANSWER_PROMPT = """你是嚴格的評審。下面是一段對話裡使用者說�
 
 只輸出一個 JSON 物件：{{"turns": [{{"turn": 輪次, "ending": "回答最後 15 個字（照抄）", "complete": true 或 false, "responds": true 或 false}}]}}，每一輪都要有。"""
 
+# The numbers an answer states that the record does not hold (code finds
+# them: most numbers an answer states are copied whole), each with the
+# record's numbers one digit away. As GROUNDED alone, one item among a card's,
+# the judge passed 15 of 20 answers with a number the record gave changed
+# (v4c-scen, 2026-10-17); asked about every number at once, quoting each
+# one's source, it caught 16 and took 30 minutes for 43 conversations. Asked
+# only about these, it caught 16 of 17 and failed 1 of 23 originals in 9
+# minutes; told of each number one digit away, it still read "next day" into
+# a date the record gave, and wrote sums from dates no record held.
+NUMBERS_PROMPT = """你是嚴格的核對員。下面是一段對話紀錄：使用者的訊息、AI 助理呼叫的工具和工具結果、助理的回答。
+
+{transcript}
+
+助理的回答裡，下面每一句標出的數字，在紀錄（使用者的訊息、工具的呼叫和結果、助理知道的日期）裡找不到一模一樣的寫法；紀錄裡和它只差一位的數字也列出來。逐個判斷它是哪一種：
+- 換寫法：紀錄裡有同一個數，只是寫法不同（10/1 和 10 月 1 日、125 萬和 1250000、1.5 倍和 150%）。照抄紀錄原文。
+- 推算：用紀錄裡的數算出來的（加總、相減、換算、日期加減），算出來正好是這個數，而且那句話本身看得出是算出來的（寫了隔天、前七天、合計、換算、約……）。寫出算式。紀錄裡同一件事寫著別的數、那句話又沒說是推算的，就是不符。
+- 自己決定：助理自己選的設定、門檻、建議、範例，或和紀錄無關的一般常識。紀錄裡寫著同一件事的數字時，就不是自己決定。
+- 不符：紀錄裡同一件事寫的是別的數（抄錯、記錯、日期錯）、算錯，或不可能的數（例如 13 月）。照抄紀錄裡那件事的原文。
+
+{claims}
+
+只輸出一個 JSON 物件：{{"figures": [{{"id": 句子編號, "n": "數字", "kind": "換寫法、推算、自己決定或不符", "source": "原文或算式"}}]}}，每個標出的數字都要有。"""
+# A number as written (a date, a version, a price with its commas, a ratio),
+# not the citation marks [n] the host checks itself; a one-digit number is
+# too often the answer's own (a list's 1., 2.) to ask about.
+FIGURE = re.compile(r"\d+(?:[.,:/\-\u2011]\d+)*")
+CITATION = re.compile(r"\[\d+\]")
+SENTENCE = re.compile(r"(?<=[。！？!?\n])")
+
 JUDGE_PROMPT = """你是嚴格的評審，要判斷一個 AI 助理在一段對話裡有沒有做到規定。只根據下面的對話紀錄判斷，不要猜測紀錄以外的事。
 
 使用者的目標（使用者沒有原句說出來）：{goal}
@@ -104,7 +136,13 @@ def transcript(trajectory: list[dict]) -> str:
     for message in trajectory:
         role = message.get("role")
         content = message.get("content")
-        if role == "user":
+        if role == "system":
+            # The date the product told the assistant (agent_bridge.mjs today()):
+            # an answer's "today is" is grounded in it, not made up.
+            day = re.search(r"Today is (\S+ \(\w+\))", (message.get("sections") or {}).get("today") or "")
+            if day:
+                lines.append(f"（助理知道的日期：今天是 {day.group(1)}）")
+        elif role == "user":
             text = content if isinstance(content, str) else "".join(
                 i.get("text", "") for i in content or [] if isinstance(i, dict))
             lines.append(f"使用者：{text}")
@@ -140,12 +178,12 @@ def items_for(task: dict, rng: random.Random) -> list[tuple[str, str]]:
     return found
 
 
-def ask(port: int, prompt: str) -> str:
+def ask(port: int, prompt: str, max_tokens: int = 3000) -> str:
     # Without thinking: two passes over hundreds of conversations with thinking
     # would take most of a night; validate() proves the judge still rejects
     # corrupted conversations this way before its verdicts are used.
     body = json.dumps({"messages": [{"role": "user", "content": prompt}], "temperature": 0,
-                       "max_tokens": 3000, "chat_template_kwargs": {"enable_thinking": False}}).encode()
+                       "max_tokens": max_tokens, "chat_template_kwargs": {"enable_thinking": False}}).encode()
     request = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", body,
                                      {"Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=1800) as response:
@@ -202,6 +240,57 @@ def answered(port: int, trajectory: list[dict]) -> dict:
             "passed": not missing and all(verdicts.values()) and all(answer for _, answer in pairs)}
 
 
+def figures(sentence: str) -> list[str]:
+    return [f for f in FIGURE.findall(CITATION.sub("", sentence)) if len(f) >= 2]
+
+
+def claims(trajectory: list[dict]) -> list[str]:
+    """The sentences of each turn's last answer that state a number."""
+    return [s for _, answer in turns(trajectory) for s in map(str.strip, SENTENCE.split(answer)) if figures(s)]
+
+
+def close(figure: str, numbers: set[str]) -> list[str]:
+    """The record's numbers written like `figure` but for one digit."""
+    figure = plain(figure)
+    return sorted(n for n in numbers if len(n) == len(figure) and sum(a != b for a, b in zip(n, figure)) == 1
+                  and all(a == b or a.isdigit() and b.isdigit() for a, b in zip(n, figure)))[:4]
+
+
+def numbered(port: int, trajectory: list[dict]) -> dict:
+    """The number check: every number a turn's last answer states that the
+    record does not hold must be the same number written another way, a sum
+    or the assistant's own choice, not a mistake; each one answered."""
+    numbers = given(trajectory)
+    found = [(s, unheld) for s in claims(trajectory) if (unheld := [f for f in figures(s) if not taken(f, numbers)])]
+    if not found:
+        return {"claims": 0, "failed": {}, "missing": [], "passed": True}
+    listed = "\n".join(f"{n}. {s}\n   找不到：" + "、".join(
+        f + (f"（紀錄裡只差一位的：{'、'.join(near)}）" if (near := close(f, numbers)) else "") for f in unheld)
+        for n, (s, unheld) in enumerate(found, 1))
+    match = re.search(r"\{.*\}", ask(port, NUMBERS_PROMPT.format(transcript=transcript(trajectory), claims=listed), 4000),
+                      re.DOTALL)
+    try:
+        # The judge may write a number its own way (40% for 40): its first number as written.
+        kinds = {(str(g.get("id")), plain(next(iter(FIGURE.findall(str(g.get("n", "")))), ""))): g
+                 for g in json.loads(match.group(0))["figures"] if isinstance(g, dict)} if match else {}
+    except (ValueError, KeyError, TypeError):
+        kinds = {}
+    failed, missing = {}, []
+    for n, (s, unheld) in enumerate(found, 1):
+        for f in unheld:
+            kind = kinds.get((str(n), plain(f)))
+            source = str((kind or {}).get("source", ""))
+            # A sum from a date or version the record never gave is no sum
+            # ("2023-10-26 + 1 day" for a 10/24 the record gave as 10/24).
+            made_up = [d for d in FIGURE.findall(source) if not plain(d).replace(".", "").isdigit()
+                       and not taken(d, numbers) and plain(d) not in map(plain, figures(s))]
+            if kind is None:
+                missing.append(f"claim {n} {f}")
+            elif kind.get("kind") == "不符" or kind.get("kind") == "推算" and made_up:
+                failed[f"claim {n} {f}"] = f"{s[:40]} / {source[:60]}"
+    return {"claims": len(found), "failed": failed, "missing": missing, "passed": not failed and not missing}
+
+
 def checks(task: dict, record: dict) -> dict:
     """A scenario family's programmatic checks that failed; any other task
     comes here only after passing its own check (records)."""
@@ -211,8 +300,9 @@ def checks(task: dict, record: dict) -> dict:
 
 
 def verdict(port: int | None, task: dict, record: dict) -> dict:
-    """The programmatic checks, then (with a judge server) the answer check
-    and the items twice; each pass only runs if the one before passed.
+    """The programmatic checks, then (with a judge server) the answer check,
+    the number check and the items twice; each pass only runs if the one
+    before passed.
     Without a server (--checks-only: the judge failed its own validation) a
     conversation passes on the checks alone."""
     found = checks(task, record)
@@ -221,6 +311,8 @@ def verdict(port: int | None, task: dict, record: dict) -> dict:
     if port is None:
         return {"passed": True, "checks": {}, "judge": "checks-only"}
     passes = [answered(port, record["trajectory"])]
+    if passes[-1]["passed"]:
+        passes.append(numbered(port, record["trajectory"]))
     for seed in (1, 2):  # the second pass only confirms a first pass
         if not passes[-1]["passed"]:
             break
@@ -295,29 +387,46 @@ def cut_short(text: str) -> str:
     return text[:start + (end - start) // 2].rstrip("，、：；,;: ")
 
 
-NUMBER = re.compile(r"\d+(?:\.\d+)?")
-
-
 def given(trajectory: list[dict]) -> set[str]:
-    """Every number the judge is shown outside the assistant's answers: the
-    user's messages and the tool calls and results, as transcript shows them."""
+    """Every number the judge is shown outside the assistant's answers, as
+    written (a whole date, version, price): the user's messages, the tool
+    calls and results and the date the assistant was told."""
     silent = [{**m, "content": [x for x in m.get("content") or [] if not (isinstance(x, dict) and x.get("type") == "text")]}
               if m.get("role") == "assistant" else m for m in trajectory]
-    return set(NUMBER.findall(transcript(silent)))
+    return {plain(f) for f in FIGURE.findall(transcript(silent))}
+
+
+def plain(figure: str) -> str:
+    """A number as compared: no thousands commas, a date's / or ‑ as -."""
+    return figure.replace(",", "").replace("\u2011", "-").replace("/", "-")
+
+
+def taken(figure: str, numbers: set[str]) -> bool:
+    """`figure` is one the record gave, whole: the same number as written, or
+    a date's month and day without its year (10-15 of 2026-10-15). Its digits
+    inside another number (the 10 of 2026-10-12 for a 10-bit video) are not."""
+    figure = plain(figure)
+    return figure in numbers or (not figure.isdigit() and any(
+        n.endswith(sep + figure) for n in numbers for sep in "-."))
 
 
 def misstate(text: str, numbers: set[str]) -> str | None:
-    """`text` with its last number of two characters or more that the
-    transcript gave (a count, a size, a price, the digits of a name) changed
-    to one it never gave; None when it states none. A one-digit number is too
-    often the answer's own (a list's 1., 2.) to make it wrong."""
-    for match in reversed(list(NUMBER.finditer(text))):
-        number = match.group(0)
-        if len(number) < 2 or number not in numbers:
+    """`text` with its first number that the record gave, written so that it
+    could only come from there (three characters or more: a price, a date, a
+    version, a decimal), changed to one the record never gave; None when it
+    states none. The first is the answer's own fact; a last one is often an
+    aside that stays true changed ("no patch 3.2.2 or newer found" as 3.2.3, a
+    threshold "below 3.99" as 3.90), and a two-digit number matches a long
+    record by chance (a general 50 km/h: v4c-scen, 2026-10-17). A citation
+    mark [n] is the host's to check."""
+    for match in FIGURE.finditer(text):
+        figure = match.group(0)
+        cited = text[match.start() - 1:match.start()] == "[" and text[match.end():match.end() + 1] == "]"
+        if len(plain(figure)) < 3 or cited or not taken(figure, numbers):
             continue
         for step in range(1, 10):
-            changed = number[:-1] + str((int(number[-1]) + step) % 10)
-            if changed not in numbers:
+            changed = figure[:-1] + str((int(figure[-1]) + step) % 10)
+            if not taken(changed, numbers):
                 return text[:match.start()] + changed + text[match.end():]
     return None
 
