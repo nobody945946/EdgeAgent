@@ -40,6 +40,7 @@ from edge_agent.runtime import build_server_args  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import laptop  # noqa: E402
 from mine_repo import REPOS  # noqa: E402
+from scenario_checks import family_checks, first_offence  # noqa: E402
 from serve_wait import LlamaServer, NotListening  # noqa: E402
 
 BENCH = ROOT / "bench"
@@ -639,6 +640,34 @@ def mistake_points(row: dict, requests: list[dict]) -> set[int]:
     return {repeated[1]} if len(repeated) > 1 else set()
 
 
+def offence_point(row: dict, requests: list[dict], task: dict) -> int | None:
+    """In a scenario, the request whose reply made the dialogue's first call
+    that fails a check by itself (scenario_checks.first_offence): a takeover
+    past it keeps the call and fails the same check, as all 10 of the pilot's
+    did (2026-10-17: the network on a card without a web at the student's
+    first or second request, a whole-drive search at its second, a test run
+    again unchanged); the teacher answers this request instead, the first
+    one too, and the student's reply to it is the pair's wrong side.
+    None when there is no such call or the history was rewritten before it."""
+    if "scenario" not in task:
+        return None
+    found = first_offence(row, family_checks(task["family"]), web=bool(task.get("web")))
+    if found is None:
+        return None
+    turn, call = found
+    made = 0  # the calls the turn's replies made before this request's
+    for index, (before, after) in enumerate(itertools.pairwise(requests)):
+        seen = before["messages"]
+        if after["messages"][:len(seen)] != seen or after["messages"][len(seen)].get("role") != "assistant":
+            return None
+        if sum(1 for message in seen if message.get("role") == "user") - 1 != turn:
+            continue
+        made += len(after["messages"][len(seen)].get("tool_calls") or [])
+        if call < made:
+            return index
+    return len(requests) - 1  # the last reply, as far as it got (student_reply)
+
+
 def student_reply(requests: list[dict], point: int, trajectory: list[dict]) -> dict | None:
     """The student's reply to request `point` in wire form: what the next
     request shows, or for the last request the trajectory's last assistant
@@ -665,7 +694,8 @@ def takeover_plans(student: Path, at: list[float], patterns: str) -> list[tuple[
     recorded run (not passed, not done, or its judge failed it),
     taken over by this run's model at the fractions `at` of the student's
     model calls, and where a guard stopped it, at the request its mistake
-    answered (mistake_points). Its answers before that point are given back word for word
+    answered (mistake_points); in a scenario, never past the request whose
+    reply first broke a check by itself, and at it (offence_point). Its answers before that point are given back word for word
     (relay.py --replay), so the sandbox really runs what the student did and
     the teacher continues from where the student went. (task dir, rep label
     "<rep>t<point>", plan)."""
@@ -696,6 +726,10 @@ def takeover_plans(student: Path, at: list[float], patterns: str) -> list[tuple[
         # At 0 a fraction is the teacher's own recording of the task; a
         # mistake at the first request (a chat thought that ran away) is not.
         fractions = {point for f in at if (point := min(len(requests) - 1, max(1, round(f * len(requests))))) >= 1}
+        offence = offence_point(row, requests, json.loads((tasks[row["task"]] / "task.json").read_text(encoding="utf-8")))
+        if offence is not None:
+            fractions = {point for point in fractions if point < offence}
+            mistakes = {point for point in mistakes if point < offence} | {offence}
         for point in sorted(fractions | mistakes):
             replies = []
             for before, after in itertools.pairwise(requests[:point + 1]):

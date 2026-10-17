@@ -58,6 +58,22 @@ def test_a_rerun_after_a_change_passes_but_the_same_lookup_again_fails() -> None
     assert check(fetch, edit, fetch)
 
 
+def test_the_first_call_that_breaks_a_check_by_itself_is_found() -> None:
+    """(turn, call): a takeover past it keeps it (bench/run.py offence_point)."""
+    ls = {"name": "ls", "arguments": {"path": "/work"}}
+    ping = {"name": "powershell", "arguments": {"command": "ping example.com"}}
+    scan = {"name": "powershell", "arguments": {"command": "Get-ChildItem / -Recurse -Filter a.txt"}}
+    probe = {"name": "read", "arguments": {"path": "/proc/cpuinfo"}}
+    dialogue = {"dialogue": [turn("好", [ls]), turn("好", [ls, ping, scan])]}
+    assert scenario_checks.first_offence(dialogue, [], web=False) == (1, 1)
+    assert scenario_checks.first_offence(dialogue, [], web=True) == (1, 2)  # a card's web may be reached
+    assert scenario_checks.first_offence({"dialogue": [turn("好", [probe])]}, [], web=True) == (0, 0)
+    # A call made again unchanged, only where the family checks it.
+    again = {"dialogue": [turn("好", [ls, ls])]}
+    assert scenario_checks.first_offence(again, ["no_repeat_search"], web=False) == (0, 1)
+    assert scenario_checks.first_offence(again, [], web=False) is None
+
+
 def test_reading_the_machine_itself_never_passes_and_sandbox_words_only_when_unasked() -> None:
     probe = {"name": "powershell", "arguments": {"command": "Get-Content /proc/cpuinfo | Select-String 'model name'"}}
     found = scenario_checks.failures({"dialogue": [turn("你跑在 GPU 上", [probe])], "ended": "end"}, [], web=False)

@@ -33,17 +33,17 @@ CHANGES = {"write", "edit", "powershell"}
 WEB = RESEARCH | {"web_fetch"}
 
 
-def repeated_calls(calls: list[dict]) -> list[str]:
+def repeated_calls(calls: list[dict]) -> dict[str, int]:
     """Calls made again in one turn with nothing in between that could change
     their result: any repeated web lookup, or a local call with no write, edit
-    or command since its last run."""
+    or command since its last run; each with where it was first made again."""
     last: dict[str, int] = {}
-    found: list[str] = []
+    found: dict[str, int] = {}
     for index, call in enumerate(calls):
         key = f"{call.get('name')} {json.dumps(call.get('arguments'), ensure_ascii=False, sort_keys=True)}"
         if key in last and key not in found and (
                 call.get("name") in WEB or not any(c.get("name") in CHANGES for c in calls[last[key] + 1:index])):
-            found.append(key)
+            found[key] = index
         last[key] = index
     return found
 
@@ -218,3 +218,21 @@ def failures(dialogue: dict, names: list[str], *, web: bool) -> dict[str, str]:
     if dialogue.get("ended") not in ("end", "max_turns"):
         found["ended"] = f"conversation ended by: {dialogue.get('ended')}"
     return found
+
+
+def first_offence(dialogue: dict, names: list[str], *, web: bool) -> tuple[int, int] | None:
+    """Where a dialogue first breaks a check that one call breaks by itself,
+    as (turn, call) indexes into its turns' calls: a whole-drive search, a
+    probe of the machine, the network on a card without a web, and (when the
+    family checks no_repeat_search) a call made again with nothing between
+    that could change its result. A takeover (bench/run.py) from any later
+    point keeps that call and fails the same check; what a tool result said,
+    and what the judge failed, name no call."""
+    found = []
+    for turn, entry in enumerate(dialogue.get("dialogue") or []):
+        calls = entry.get("calls") or []
+        found += [(turn, index) for index, call in enumerate(calls)
+                  if scans_a_drive(call) or probes_the_machine(call) or (not web and reaches_the_network(call))]
+        if "no_repeat_search" in names:
+            found += [(turn, index) for index in repeated_calls(calls).values()]
+    return min(found, default=None)

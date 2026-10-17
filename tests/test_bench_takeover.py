@@ -16,11 +16,16 @@ TOOLS = [{"type": "function", "function": {"name": "read", "parameters": {"type"
 
 
 def _student(tmp_path: Path, *, passed: bool, kind: str = "", verdict: bool | None = None,
-             rewritten: bool = False, reason: str = "", trajectory: list | None = None) -> Path:
+             rewritten: bool = False, reason: str = "", trajectory: list | None = None,
+             task: dict | None = None, calls: dict | None = None) -> Path:
     """A student's recorded run of one job: four model calls (and one
-    simulated-user request without tools between them)."""
+    simulated-user request without tools between them); the replies to
+    requests 0, 2 and 3 each make a call (`calls`: index -> name, arguments;
+    read {} otherwise), the reply to 1 answers the first turn."""
     (tmp_path / "tasks" / "archive-00").mkdir(parents=True)
-    (tmp_path / "tasks" / "archive-00" / "task.json").write_text("{}")
+    (tmp_path / "tasks" / "archive-00" / "task.json").write_text(json.dumps(task or {}))
+    made = {index: dict(zip(("name", "arguments"), (calls or {}).get(index, ("read", {})), strict=True))
+            for index in (0, 2, 3)}
     student = tmp_path / "student"
     records = student / "records" / "archive-00-r0"
     records.mkdir(parents=True)
@@ -33,14 +38,15 @@ def _student(tmp_path: Path, *, passed: bool, kind: str = "", verdict: bool | No
             messages = [*messages, {"role": "assistant", "content": "答一"}, {"role": "user", "content": "二"}]
             continue
         messages = [*messages, {"role": "assistant", "content": None, "tool_calls": [
-            {"id": f"c{index}", "type": "function", "function": {"name": "read", "arguments": "{}"}}]},
+            {"id": f"c{index}", "type": "function", "function": {
+                "name": made[index]["name"], "arguments": json.dumps(made[index]["arguments"])}}]},
             {"role": "tool", "tool_call_id": f"c{index}", "content": f"結果{index}"}]
         if rewritten and index == 2:
             messages[2] = {"role": "assistant", "content": "（摘要）"}
     (student / "results.jsonl").write_text(json.dumps({
         "task": "archive-00", "rep": 0, "kind": kind, "passed": passed, "outcome": "error" if reason else "done",
         "reason": reason, "grade": {},
-        "dialogue": [{"user": "一"}, {"user": "二"}]}) + "\n")
+        "dialogue": [{"user": "一", "calls": [made[0]]}, {"user": "二", "calls": [made[2], made[3]]}]}) + "\n")
     if trajectory is not None:
         (student / "traj").mkdir()
         (student / "traj" / "archive-00-r0.json").write_text(json.dumps(trajectory, ensure_ascii=False), encoding="utf-8")
@@ -103,6 +109,35 @@ def test_the_students_reply_at_its_mistake_is_kept_as_the_wrong_side_of_a_pair(t
     plans = run.takeover_plans(student, [0.4, 0.75], "*")
     assert [(rep, plan["at"], plan["replies"], plan["rejected"]) for _, rep, plan in plans] == [
         ("1t0", 0, [], {"role": "assistant", "content": None, "reasoning_content": "繞"})]
+
+
+def test_a_card_is_never_taken_over_past_its_first_call_that_breaks_a_check(tmp_path, monkeypatch):
+    """A takeover past such a call keeps it and fails the same check
+    (scenario_checks.first_offence): the teacher answers the request whose
+    reply made it instead, the first request too, and the student's reply
+    there is the pair's wrong side."""
+    card = {"scenario": {}, "family": "A", "web": False}
+    ping = ("powershell", {"command": "ping example.com"})
+
+    def plans(name, at, kind="scenario", **kwargs):
+        student = _student(tmp_path / name, passed=False, kind=kind, verdict=False, **kwargs)
+        monkeypatch.setattr(run, "TASK_ROOT", tmp_path / name / "tasks")  # this job's card
+        return run.takeover_plans(student, at, "*")
+
+    found = plans("net", [0.25, 0.75], task=card, calls={2: ping})
+    assert [rep for _, rep, _ in found] == ["0t1", "0t2"]
+    assert "rejected" not in found[0][2]
+    assert json.loads(found[1][2]["rejected"]["tool_calls"][0]["function"]["arguments"]) == ping[1]
+    # A card with a stand-in web may reach it: the fractions stand.
+    assert [rep for _, rep, _ in plans("web", [0.25, 0.75], task={**card, "web": True}, calls={2: ping})] == ["0t1", "0t3"]
+    # A whole-drive search in the first reply: only the first request is taken over.
+    found = plans("drive", [0.25, 0.75], task=card, calls={0: ("ls", {"path": "/"})})
+    assert [(rep, plan["replies"]) for _, rep, plan in found] == [("0t0", [])]
+    assert found[0][2]["rejected"]["tool_calls"][0]["function"]["name"] == "ls"
+    # In the last reply, which no later request shows: the last request.
+    assert [rep for _, rep, _ in plans("last", [0.25], task=card, calls={3: ping})] == ["0t1", "0t3"]
+    # Not a card: a job's check reads only where it ended.
+    assert [rep for _, rep, _ in plans("tool", [0.25, 0.75], kind="", calls={2: ping})] == ["0t1", "0t3"]
 
 
 def test_passed_jobs_unjudged_runs_and_rewritten_histories_are_not_taken_over(tmp_path):
