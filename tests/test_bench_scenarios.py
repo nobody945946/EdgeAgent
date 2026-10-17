@@ -390,6 +390,18 @@ def test_a_sum_starts_from_a_date_the_record_or_the_answer_holds(monkeypatch) ->
     assert list(judge("2023-10-26")["failed"]) == ["claim 3 11/27"]
 
 
+def test_a_date_no_calendar_has_fails_whatever_the_judge_says(monkeypatch) -> None:
+    assert all(map(scenario_judge.impossible, ("2026-07-00", "2026-02-30", "2026/13/01")))
+    assert not any(map(scenario_judge.impossible, ("2026-07-09", "2024-02-29", "10-00", "2800-2450", "3.2.1",
+                                                   "0800-789-889", "8080/3128/1080", "5000/3000/2000")))
+    trajectory = [{"role": "user", "content": "從哪天開始抓？"},
+                  {"role": "toolResult", "content": [{"type": "text", "text": "資料從 2026-07-09 開始"}]},
+                  *said("第一次跑 fetch.py --start 2026-07-00 就好。")]
+    reply = {"figures": [{"id": 1, "n": "2026-07-00", "kind": "自己決定", "source": "none"}]}
+    monkeypatch.setattr(scenario_judge, "ask", lambda port, prompt, max_tokens=3000: json.dumps(reply))
+    assert list(scenario_judge.numbered(0, trajectory)["failed"]) == ["claim 1 2026-07-00"]
+
+
 def test_the_judge_is_validated_on_conversations_from_across_the_run() -> None:
     # A run's results come task by task; its first ten would be one family's.
     jobs = [f"{family}-{n:02d}" for family in ("archive", "backup", "calc", "git") for n in range(25)]

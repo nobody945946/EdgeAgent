@@ -38,6 +38,7 @@ import sys
 import threading
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -283,6 +284,9 @@ def numbered(port: int, trajectory: list[dict]) -> dict:
         # The answer's own numbers so far: each one it did not take whole is checked itself.
         held = {plain(f) for c in said[:i + 1] for f in figures(c)}
         for f in unheld:
+            if impossible(f):
+                failed[f"claim {n} {f}"] = f"{s[:40]} / no such date"
+                continue
             kind = kinds.get((str(n), plain(f)))
             source = str((kind or {}).get("source", ""))
             # A sum from a date the record never gave is no sum ("2023-10-26
@@ -415,6 +419,22 @@ def dated(figure: str) -> bool:
         return False
     month, day = map(int, parts[-2:])
     return 1 <= month <= 12 and 1 <= day <= 31
+
+
+def impossible(figure: str) -> bool:
+    """A whole date no calendar has (2026-07-00, 2026-02-30), wrong whatever
+    the judge reads into it: it took --start 2026-07-00 in a command for the
+    assistant's own example (v4-validate-scen, 2026-10-17)."""
+    parts = plain(figure).split("-")
+    # Shaped as a date: not a phone number (0800-789-889) or a list (8080/3128/1080).
+    if len(parts) != 3 or not all(part.isdigit() for part in parts) or [len(part) for part in parts] not in (
+            [4, 2, 2], [4, 1, 2], [4, 2, 1], [4, 1, 1]):
+        return False
+    try:
+        date(*map(int, parts))
+    except ValueError:
+        return True
+    return False
 
 
 def plain(figure: str) -> str:
