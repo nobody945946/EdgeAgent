@@ -365,6 +365,9 @@ def test_the_number_check_asks_about_numbers_as_written_and_the_judge_knows_the_
     # A decimal written from its point is one number, compared with its 0.
     assert scenario_judge.figures("打擊率 .381、上壘率 .5，OPS 0.907，v1.2.3") == [".381", ".5", "0.907", "1.2.3"]
     assert scenario_judge.taken(".381", {"0.381"}) and not scenario_judge.taken(".381", {"381"})
+    # A comma joins thousands, not a CSV row's fields.
+    assert scenario_judge.figures("2023-10-26,8.0110 與 1,234,567、5,000，10,20,30") == [
+        "2023-10-26", "8.0110", "1,234,567", "5,000", "10", "20", "30"]
     assert scenario_judge.claims(trajectory) == ["今天是 2026-10-13，牌照有效到 2026-11-14。", "費用 5,000 元。"]
 
 
@@ -391,6 +394,18 @@ def test_a_sum_starts_from_a_date_the_record_or_the_answer_holds(monkeypatch) ->
     assert judge("10/28") == {"claims": 4, "failed": {}, "missing": [], "passed": True}
     # From a date neither the record nor the answer gave: no sum.
     assert list(judge("2023-10-26")["failed"]) == ["claim 3 11/27"]
+    # Two numbers written as one.
+    reply = {"figures": [{"id": 1, "n": "10/16 10/17", "kind": "推算", "source": "2026-10-13 + 3天"},
+                         *({"id": ids[f], "n": f, "kind": "推算", "source": ""} for f in ("10/28", "11/27", "14"))]}
+    monkeypatch.setattr(scenario_judge, "ask", lambda port, prompt, max_tokens=3000: json.dumps(reply))
+    assert scenario_judge.numbered(0, trajectory)["missing"] == []
+    # A year the judge put to a day the record gave is the record's day; another day is not.
+    sent = [{"role": "user", "content": "什麼時候審完？"},
+            {"role": "toolResult", "content": [{"type": "text", "text": "10/28 送件，審查 30 日"}]}, *said("約 11/27 審完。")]
+    for start, passed in (("2023-10-28", True), ("2023-10-29", False)):
+        reply = {"figures": [{"id": 1, "n": "11/27", "kind": "推算", "source": f"{start} + 30日"}]}
+        monkeypatch.setattr(scenario_judge, "ask", lambda port, prompt, max_tokens=3000, reply=reply: json.dumps(reply))
+        assert scenario_judge.numbered(0, sent)["passed"] is passed
 
 
 def test_a_reply_that_does_not_parse_whole_is_read_object_by_object(monkeypatch) -> None:
@@ -406,6 +421,13 @@ def test_a_reply_that_does_not_parse_whole_is_read_object_by_object(monkeypatch)
     found = scenario_judge.answered(0, trajectory)
     assert found["turns"] == {1: True, 2: False} and found["missing"] == ["turn 3"] and found["reply"] == broken
     assert found["failed"] == {"turn 2": "cut: 結尾"} and not found["passed"]
+    # A Windows path copied with its backslashes as they are.
+    assert scenario_judge.objects('{"turns": [{"turn": 1, "ending": "C:\\Users\\a 了", "complete": true, "responds": true}]',
+                                  "turns", ("turn", "ending", "complete", "responds")) == [
+        {"turn": 1, "ending": "C:\\Users\\a 了", "complete": True, "responds": True}]
+    # An object whose first key the judge left out.
+    assert scenario_judge.objects('{"items": [{"M2", "pass": true}, {"id": "M3", "pass": false}', "items",
+                                  ("id", "pass")) == [{"id": "M2", "pass": True}, {"id": "M3", "pass": False}]
     # An item whose evidence broke the JSON still has its verdict.
     task = {"family": "C", "must": ["做完"], "must_not": [], "scenario": {"goal": "目標"}}
     items = ('{"items": [{"id": "M1", "pass": true, "evidence": "「做"完"了」"}, {"id": "M2", "pass": true, "evidence": "無"}, '

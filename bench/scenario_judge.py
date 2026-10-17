@@ -108,7 +108,8 @@ NUMBERS_PROMPT = """你是嚴格的核對員。下面是一段對話紀錄：使
 # A number as written (a date, a version, a price with its commas, a ratio),
 # not the citation marks [n] the host checks itself; a one-digit number is
 # too often the answer's own (a list's 1., 2.) to ask about.
-FIGURE = re.compile(r"(?:(?<![\w.])\.)?\d+(?:[.,:/\-\u2011]\d+)*")
+# A comma only between thousands: a CSV row's 2023-10-26,8.0110 is a date and a value.
+FIGURE = re.compile(r"(?:(?<![\w.])\.)?\d+(?:[.:/\-\u2011]\d+|,\d{3}(?!\d))*")
 CITATION = re.compile(r"\[\d+\]")
 SENTENCE = re.compile(r"(?<=[。！？!?\n])")
 
@@ -205,16 +206,28 @@ def objects(reply: str, key: str, fields: tuple[str, ...]) -> list[dict]:
     of v4c-scen's 40 conversations (2026-10-17) failed with nothing read."""
     match = re.search(r"\{.*\}", reply, re.DOTALL)
     try:
-        found = json.loads(match.group(0))[key] if match else None
+        found = json.loads(match.group(0), strict=False)[key] if match else None
         if isinstance(found, list):
             return [item for item in found if isinstance(item, dict)]
     except (ValueError, KeyError, TypeError):
         pass
     found = []
-    for chunk in re.split(rf'(?=\{{\s*"{fields[0]}"\s*:)', reply)[1:]:
+    for chunk in re.split(r'(?=\{\s*")', reply)[1:]:
         values = {field: re.search(rf'"{field}"\s*:\s*({VALUE})', chunk) for field in fields}
-        found.append({field: json.loads(value.group(1)) for field, value in values.items() if value})
+        # Its first key left out ({"M2", "pass": true}): the value stands alone.
+        values[fields[0]] = values[fields[0]] or re.match(rf'\{{\s*({VALUE})\s*,', chunk)
+        if item := {field: token(value.group(1)) for field, value in values.items() if value}:
+            found.append(item)
     return found
+
+
+def token(text: str) -> object:
+    """One JSON value as the judge wrote it; a string it escaped wrongly (a
+    Windows path's C:\\Users copied as is: v4-validate-tools, 2026-10-17) as written."""
+    try:
+        return json.loads(text, strict=False)
+    except ValueError:
+        return text[1:-1] if text.startswith('"') else text
 
 
 def yes(value: object) -> bool:
@@ -303,9 +316,9 @@ def numbered(port: int, trajectory: list[dict]) -> dict:
     asked = sum(len(unheld) for _, _, unheld in found)
     # Room for every number's source (a date sum's steps run long): 31 numbers cut a 4,000-token reply.
     reply = ask(port, NUMBERS_PROMPT.format(transcript=transcript(trajectory), claims=listed), max(4000, 200 * asked))
-    # The judge may write a number its own way (40% for 40): its first number as written.
-    kinds = {(str(g.get("id")), plain(next(iter(FIGURE.findall(str(g.get("n", "")))), ""))): g
-             for g in objects(reply, "figures", ("id", "n", "kind", "source"))}
+    # The judge may write a number its own way (40% for 40) or two as one (10/12 21:00): each number in it.
+    kinds = {(str(g.get("id")), plain(figure)): g for g in objects(reply, "figures", ("id", "n", "kind", "source"))
+             for figure in FIGURE.findall(str(g.get("n", "")))}
     failed, missing = {}, []
     for n, (i, s, unheld) in enumerate(found, 1):
         # The answer's own numbers so far: each one it did not take whole is checked itself.
@@ -319,13 +332,15 @@ def numbered(port: int, trajectory: list[dict]) -> dict:
             # A sum from a date the record never gave is no sum ("2023-10-26
             # + 1 day" for a 10/24 the record gave as 10/24). Only the date it
             # starts from: those after it are its steps (2026-10-13 + 2 days =
-            # 10/15, 10/16), and a difference (2800-2450)/2450 is no date.
+            # 10/15, 10/16), a difference (2800-2450)/2450 is no date, and a
+            # year the judge put to a day the record gave (2023-10-24 for 10/24) is the record's.
             start = next((d for d in FIGURE.findall(source) if dated(d)), None)
-            made_up = start is not None and not taken(start, numbers) and plain(start) not in held
+            made_up = start is not None and not taken(start, numbers) and plain(start) not in held and not (
+                plain(start).count("-") == 2 and taken(plain(start).split("-", 1)[1], numbers))
             if kind is None:
                 missing.append(f"claim {n} {f}")
             elif kind.get("kind") == "不符" or kind.get("kind") == "推算" and made_up:
-                failed[f"claim {n} {f}"] = f"{s[:40]} / {source[:60]}"
+                failed[f"claim {n} {f}"] = f"{s[:40]} / {kind.get('kind')}: {source[:60]}"
     return {"claims": len(found), "failed": failed, "missing": missing, **unread(reply, missing),
             "passed": not failed and not missing}
 
