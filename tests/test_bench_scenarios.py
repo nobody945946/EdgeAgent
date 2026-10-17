@@ -363,6 +363,14 @@ def test_the_number_check_asks_about_numbers_as_written_and_the_judge_knows_the_
     assert scenario_judge.claims(trajectory) == ["今天是 2026-10-13，牌照有效到 2026-11-14。", "費用 5,000 元。"]
 
 
+def test_the_judge_is_validated_on_conversations_from_across_the_run() -> None:
+    # A run's results come task by task; its first ten would be one family's.
+    jobs = [f"{family}-{n:02d}" for family in ("archive", "backup", "calc", "git") for n in range(25)]
+    picked = scenario_judge.spread(jobs, 10)
+    assert len(picked) == 10 and {j.split("-")[0] for j in picked} == {"archive", "backup", "calc", "git"}
+    assert scenario_judge.spread(jobs[:7], 10) == jobs[:7]
+
+
 def test_a_misstated_number_is_one_the_transcript_gave_and_never_a_list_number() -> None:
     numbers = scenario_judge.given([
         {"role": "user", "content": "整理 IMG_22310 那批"},

@@ -459,9 +459,17 @@ def corrupt(trajectory: list[dict], other: list[dict], how: str) -> list[dict] |
     return out
 
 
+def spread(found: list, limit: int) -> list:
+    """`limit` of `found`, evenly over it. A run's results come task by task:
+    the first 40 of v4c-tools were all archive and backup tasks (2026-10-17),
+    whose answers list files (a list cut short still reads as one) and look
+    alike (another archive task's answer barely differs from its own)."""
+    return found if len(found) <= limit else [found[i * len(found) // limit] for i in range(limit)]
+
+
 def validate(args: argparse.Namespace, server: run.Server) -> None:
-    found = [(job, task, record) for job, task, record in records(args.run, args.task_root)
-             if answers(record["trajectory"]) and not checks(task, record)][:args.limit]
+    found = spread([(job, task, record) for job, task, record in records(args.run, args.task_root)
+                    if answers(record["trajectory"]) and not checks(task, record)], args.limit)
 
     def one(index: int) -> dict:
         job, task, record = found[index]
