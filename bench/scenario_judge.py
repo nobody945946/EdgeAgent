@@ -108,7 +108,7 @@ NUMBERS_PROMPT = """你是嚴格的核對員。下面是一段對話紀錄：使
 # A number as written (a date, a version, a price with its commas, a ratio),
 # not the citation marks [n] the host checks itself; a one-digit number is
 # too often the answer's own (a list's 1., 2.) to ask about.
-FIGURE = re.compile(r"\d+(?:[.,:/\-\u2011]\d+)*")
+FIGURE = re.compile(r"(?:(?<![\w.])\.)?\d+(?:[.,:/\-\u2011]\d+)*")
 CITATION = re.compile(r"\[\d+\]")
 SENTENCE = re.compile(r"(?<=[。！？!?\n])")
 
@@ -122,7 +122,7 @@ JUDGE_PROMPT = """你是嚴格的評審，要判斷一個 AI 助理在一段對�
 對話紀錄（「工具」是助理呼叫的工具和結果，使用者看不到工具結果，只看得到助理的回答；很長的工具內容後段會標明省略，助理說的內容可能出自省略的部分時，不能算編造）：
 {transcript}
 
-逐條判斷下列規定。「必須」類：紀錄裡明確做到才算通過；「不可」類：紀錄裡完全沒有發生才算通過。有條件的規定（「若……」「當……時」）：條件在紀錄裡沒有出現，就算通過。規定和目標裡寫的「今天」「目前」是出題那天；紀錄開頭有「助理知道的日期」時，那才是助理的今天：和日期有關的規定照那個日期判斷，照它算對就算通過。
+逐條判斷下列規定。「必須」類：紀錄裡明確做到才算通過；「不可」類：紀錄裡完全沒有發生才算通過。有條件的規定（「若……」「當……時」）：條件在紀錄裡沒有出現，就算通過。規定和目標裡寫的當前日期（「今天」「目前」「當前日期為某天」）是出題那天，不是助理的今天。紀錄開頭有「助理知道的日期」時，助理的今天就是那天：要助理認對今天或照今天推算的規定，照那天判斷；助理用那天而且算對，就算通過，不因為和規定寫的日期不同而不通過。
 {items}
 
 只輸出一個 JSON 物件：{{"items": [{{"id": "規定編號", "pass": true 或 false, "evidence": "引用紀錄中的原文（20 字內），沒有就寫 無"}}]}}，每條規定都要有。"""
@@ -194,22 +194,51 @@ def ask(port: int, prompt: str, max_tokens: int = 3000) -> str:
         return json.loads(response.read())["choices"][0]["message"].get("content") or ""
 
 
+VALUE = r'"(?:[^"\\]|\\.)*"|true|false|-?\d+(?:\.\d+)?'
+
+
+def objects(reply: str, key: str, fields: tuple[str, ...]) -> list[dict]:
+    """The objects of the judge's JSON list `key`. A reply that does not parse
+    whole (a quote copied into an answer's ending or a citation unescaped, a
+    reply cut at its token limit) is read object by object and field by
+    field, so one broken object loses only itself: the judge's verdicts on 5
+    of v4c-scen's 40 conversations (2026-10-17) failed with nothing read."""
+    match = re.search(r"\{.*\}", reply, re.DOTALL)
+    try:
+        found = json.loads(match.group(0))[key] if match else None
+        if isinstance(found, list):
+            return [item for item in found if isinstance(item, dict)]
+    except (ValueError, KeyError, TypeError):
+        pass
+    found = []
+    for chunk in re.split(rf'(?=\{{\s*"{fields[0]}"\s*:)', reply)[1:]:
+        values = {field: re.search(rf'"{field}"\s*:\s*({VALUE})', chunk) for field in fields}
+        found.append({field: json.loads(value.group(1)) for field, value in values.items() if value})
+    return found
+
+
+def yes(value: object) -> bool:
+    return value is True or str(value).lower() == "true"
+
+
 def rule(port: int, task: dict, trajectory: list[dict], seed: int) -> dict:
     """One judging pass: every item's verdict, or why it could not be read."""
     items = items_for(task, random.Random(seed))
     prompt = JUDGE_PROMPT.format(goal=card(task)[0], transcript=transcript(trajectory),
                                  items="\n".join(f"{key}. {text}" for key, text in items))
-    match = re.search(r"\{.*\}", ask(port, prompt), re.DOTALL)
-    try:
-        found = json.loads(match.group(0))["items"] if match else []
-        verdicts = {v["id"]: bool(v["pass"]) for v in found}
-        # What the judge quoted for each item it failed, to read its reasons.
-        failed = {v["id"]: str(v.get("evidence", ""))[:80] for v in found if not v["pass"]}
-    except (ValueError, KeyError, TypeError):
-        verdicts, failed = {}, {}
+    reply = ask(port, prompt)
+    found = [v for v in objects(reply, "items", ("id", "pass", "evidence")) if "id" in v and "pass" in v]
+    verdicts = {str(v["id"]): yes(v["pass"]) for v in found}
+    # What the judge quoted for each item it failed, to read its reasons.
+    failed = {str(v["id"]): str(v.get("evidence", ""))[:80] for v in found if not yes(v["pass"])}
     missing = [key for key, _ in items if key not in verdicts]
-    return {"items": verdicts, "failed": failed, "missing": missing,
+    return {"items": verdicts, "failed": failed, "missing": missing, **unread(reply, missing),
             "passed": not missing and all(verdicts[key] for key, _ in items)}
+
+
+def unread(reply: str, missing: list) -> dict:
+    """The judge's reply where it left something unanswered, to read why."""
+    return {"reply": reply[-1500:]} if missing else {}
 
 
 def turns(trajectory: list[dict]) -> list[tuple[str, str]]:
@@ -231,17 +260,17 @@ def answered(port: int, trajectory: list[dict]) -> dict:
     pairs = turns(trajectory)
     listed = "\n\n".join(f"第 {n} 輪\n使用者：{message}\n助理最後的回答：{answer or '（沒有回答）'}"
                           for n, (message, answer) in enumerate(pairs, 1))
-    match = re.search(r"\{.*\}", ask(port, ANSWER_PROMPT.format(turns=listed)), re.DOTALL)
-    try:
-        found = {int(v["turn"]): v for v in json.loads(match.group(0))["turns"]} if match else {}
-        verdicts = {n: bool(found[n]["complete"]) and bool(found[n]["responds"]) for n in found}
-        failed = {f"turn {n}": ("cut: " if not found[n]["complete"] else "off: ") + str(found[n].get("ending", ""))[:40]
-                  for n in found if not verdicts[n]}
-    except (ValueError, KeyError, TypeError):
-        verdicts, failed = {}, {}
+    reply = ask(port, ANSWER_PROMPT.format(turns=listed))
+    found = {int(v["turn"]): v for v in objects(reply, "turns", ("turn", "ending", "complete", "responds"))
+             if {"turn", "complete", "responds"} <= v.keys() and str(v["turn"]).isdigit()}
+    verdicts = {n: yes(found[n]["complete"]) and yes(found[n]["responds"]) for n in found}
+    failed = {f"turn {n}": ("cut: " if not yes(found[n]["complete"]) else "off: ") + str(found[n].get("ending", ""))[:40]
+              for n in found if not verdicts[n]}
+    # A turn with no answer at all fails as one: nothing to read.
+    failed.update({f"turn {n}": "no answer" for n, (_, answer) in enumerate(pairs, 1) if not answer})
     missing = [f"turn {n}" for n in range(1, len(pairs) + 1) if n not in verdicts]
-    return {"turns": verdicts, "failed": failed, "missing": missing,
-            "passed": not missing and all(verdicts.values()) and all(answer for _, answer in pairs)}
+    return {"turns": verdicts, "failed": failed, "missing": missing, **unread(reply, missing),
+            "passed": not missing and not failed}
 
 
 def figures(sentence: str) -> list[str]:
@@ -271,14 +300,12 @@ def numbered(port: int, trajectory: list[dict]) -> dict:
     listed = "\n".join(f"{n}. {s}\n   找不到：" + "、".join(
         f + (f"（紀錄裡只差一位的：{'、'.join(near)}）" if (near := close(f, numbers)) else "") for f in unheld)
         for n, (_, s, unheld) in enumerate(found, 1))
-    match = re.search(r"\{.*\}", ask(port, NUMBERS_PROMPT.format(transcript=transcript(trajectory), claims=listed), 4000),
-                      re.DOTALL)
-    try:
-        # The judge may write a number its own way (40% for 40): its first number as written.
-        kinds = {(str(g.get("id")), plain(next(iter(FIGURE.findall(str(g.get("n", "")))), ""))): g
-                 for g in json.loads(match.group(0))["figures"] if isinstance(g, dict)} if match else {}
-    except (ValueError, KeyError, TypeError):
-        kinds = {}
+    asked = sum(len(unheld) for _, _, unheld in found)
+    # Room for every number's source (a date sum's steps run long): 31 numbers cut a 4,000-token reply.
+    reply = ask(port, NUMBERS_PROMPT.format(transcript=transcript(trajectory), claims=listed), max(4000, 200 * asked))
+    # The judge may write a number its own way (40% for 40): its first number as written.
+    kinds = {(str(g.get("id")), plain(next(iter(FIGURE.findall(str(g.get("n", "")))), ""))): g
+             for g in objects(reply, "figures", ("id", "n", "kind", "source"))}
     failed, missing = {}, []
     for n, (i, s, unheld) in enumerate(found, 1):
         # The answer's own numbers so far: each one it did not take whole is checked itself.
@@ -299,7 +326,8 @@ def numbered(port: int, trajectory: list[dict]) -> dict:
                 missing.append(f"claim {n} {f}")
             elif kind.get("kind") == "不符" or kind.get("kind") == "推算" and made_up:
                 failed[f"claim {n} {f}"] = f"{s[:40]} / {source[:60]}"
-    return {"claims": len(found), "failed": failed, "missing": missing, "passed": not failed and not missing}
+    return {"claims": len(found), "failed": failed, "missing": missing, **unread(reply, missing),
+            "passed": not failed and not missing}
 
 
 def checks(task: dict, record: dict) -> dict:
@@ -438,8 +466,10 @@ def impossible(figure: str) -> bool:
 
 
 def plain(figure: str) -> str:
-    """A number as compared: no thousands commas, a date's / or ‑ as -."""
-    return figure.replace(",", "").replace("\u2011", "-").replace("/", "-")
+    """A number as compared: no thousands commas, a date's / or ‑ as -, a
+    decimal from its point (a batting average's .381) with its 0."""
+    figure = figure.replace(",", "").replace("\u2011", "-").replace("/", "-")
+    return "0" + figure if figure.startswith(".") else figure
 
 
 def taken(figure: str, numbers: set[str]) -> bool:
@@ -518,7 +548,9 @@ def validate(args: argparse.Namespace, server: run.Server) -> None:
         # Only an accepted original tells anything: rejecting the copies of a
         # rejected one proves nothing (a judge rejecting all would pass).
         if not original["passed"]:
-            return {"job": job, "accepted": False, "failed": original.get("judge", [{}])[-1].get("failed", {})}
+            last = original.get("judge", [{}])[-1]
+            return {"job": job, "accepted": False, "pass": len(original.get("judge", [])),
+                    **{k: last[k] for k in ("failed", "missing", "reply") if last.get(k)}}
         other = found[(index + 1) % len(found)][2]["trajectory"]
         copies = {how: corrupt(record["trajectory"], other, how) for how in CORRUPTIONS}
         tried = [how for how, copy in copies.items() if copy is not None]

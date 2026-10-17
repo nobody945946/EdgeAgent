@@ -361,7 +361,10 @@ def test_the_number_check_asks_about_numbers_as_written_and_the_judge_knows_the_
                   {"role": "user", "content": "好"}, *said("不客氣。")]
     assert scenario_judge.transcript(trajectory).startswith("（助理知道的日期：今天是 2026-10-13 (Tuesday)）\n使用者：")
     # A card's "today" is the day it was written: the judge judges by the day the assistant was told.
-    assert "那才是助理的今天" in scenario_judge.JUDGE_PROMPT
+    assert "不是助理的今天" in scenario_judge.JUDGE_PROMPT and "不因為和規定寫的日期不同而不通過" in scenario_judge.JUDGE_PROMPT
+    # A decimal written from its point is one number, compared with its 0.
+    assert scenario_judge.figures("打擊率 .381、上壘率 .5，OPS 0.907，v1.2.3") == [".381", ".5", "0.907", "1.2.3"]
+    assert scenario_judge.taken(".381", {"0.381"}) and not scenario_judge.taken(".381", {"381"})
     assert scenario_judge.claims(trajectory) == ["今天是 2026-10-13，牌照有效到 2026-11-14。", "費用 5,000 元。"]
 
 
@@ -388,6 +391,28 @@ def test_a_sum_starts_from_a_date_the_record_or_the_answer_holds(monkeypatch) ->
     assert judge("10/28") == {"claims": 4, "failed": {}, "missing": [], "passed": True}
     # From a date neither the record nor the answer gave: no sum.
     assert list(judge("2023-10-26")["failed"]) == ["claim 3 11/27"]
+
+
+def test_a_reply_that_does_not_parse_whole_is_read_object_by_object(monkeypatch) -> None:
+    # A quote copied unescaped into an answer's ending, and a reply cut at its token limit.
+    broken = ('{"turns": [{"turn": 1, "ending": "他說"好"。", "complete": true, "responds": true}, '
+              '{"turn": 2, "ending": "結尾", "complete": false, "responds": true}, {"turn": 3, "ending": "x", "comp')
+    assert scenario_judge.objects(broken, "turns", ("turn", "ending", "complete", "responds"))[:2] == [
+        {"turn": 1, "ending": "他說", "complete": True, "responds": True},
+        {"turn": 2, "ending": "結尾", "complete": False, "responds": True}]
+    trajectory = [{"role": "user", "content": f"問{n}"} if i % 2 == 0 else said(f"答{n}")[0]
+                  for n in range(1, 4) for i in range(2)]
+    monkeypatch.setattr(scenario_judge, "ask", lambda port, prompt, max_tokens=3000: broken)
+    found = scenario_judge.answered(0, trajectory)
+    assert found["turns"] == {1: True, 2: False} and found["missing"] == ["turn 3"] and found["reply"] == broken
+    assert found["failed"] == {"turn 2": "cut: 結尾"} and not found["passed"]
+    # An item whose evidence broke the JSON still has its verdict.
+    task = {"family": "C", "must": ["做完"], "must_not": [], "scenario": {"goal": "目標"}}
+    items = ('{"items": [{"id": "M1", "pass": true, "evidence": "「做"完"了」"}, {"id": "M2", "pass": true, "evidence": "無"}, '
+             '{"id": "N1", "pass": true, "evidence": "無"}]}')
+    monkeypatch.setattr(scenario_judge, "ask", lambda port, prompt, max_tokens=3000: items)
+    assert scenario_judge.rule(0, task, trajectory, 1) == {"items": {"M1": True, "M2": True, "N1": True}, "failed": {},
+                                                           "missing": [], "passed": True}
 
 
 def test_a_date_no_calendar_has_fails_whatever_the_judge_says(monkeypatch) -> None:
