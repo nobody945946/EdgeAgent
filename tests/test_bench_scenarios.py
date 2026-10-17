@@ -360,7 +360,34 @@ def test_the_number_check_asks_about_numbers_as_written_and_the_judge_knows_the_
                   *said("今天是 2026-10-13，牌照有效到 2026-11-14。\n費用 5,000 元。"),
                   {"role": "user", "content": "好"}, *said("不客氣。")]
     assert scenario_judge.transcript(trajectory).startswith("（助理知道的日期：今天是 2026-10-13 (Tuesday)）\n使用者：")
+    # A card's "today" is the day it was written: the judge judges by the day the assistant was told.
+    assert "那才是助理的今天" in scenario_judge.JUDGE_PROMPT
     assert scenario_judge.claims(trajectory) == ["今天是 2026-10-13，牌照有效到 2026-11-14。", "費用 5,000 元。"]
+
+
+def test_a_sum_starts_from_a_date_the_record_or_the_answer_holds(monkeypatch) -> None:
+    assert all(map(scenario_judge.dated, ("10/13", "2026-10-13", "2026\u201110\u201113", "12:00")))
+    assert not any(map(scenario_judge.dated, ("2800-2450", "150-130", "14.3", "3.2.1", "25:00", "10-13-14")))
+    trajectory = [{"role": "system", "content": "", "sections": {
+                      "today": "<today>\nToday is 2026-10-13 (Tuesday), time zone UTC (UTC+00:00).\n</today>"}},
+                  {"role": "user", "content": "週五出發，送件要審多久？票價漲了多少？"},
+                  {"role": "toolResult", "content": [{"type": "text", "text": "審查 30 日。去年 2450 元，今年 2800 元"}]},
+                  *said("週五是 10/16，隔天 10/17。\n送件後 10/28 起審。\n30 日後約 11/27。\n漲了約 14%。")]
+    sources = {"10/16": "2026-10-13 (Tuesday) + 3天", "10/17": "2026-10-13 + 2天 = 10/15 (Thursday)，10/16 + 1天",
+               "10/28": "", "11/27": "10/28 + 30日", "14": "(2800-2450)/2450 ≈ 14.3%"}
+    ids = {"10/16": 1, "10/17": 1, "10/28": 2, "11/27": 3, "14": 4}
+
+    def judge(start: str) -> dict:
+        reply = {"figures": [{"id": ids[f], "n": f, "kind": "自己決定" if f == "10/28" else "推算",
+                              "source": source.replace("10/28", start)} for f, source in sources.items()]}
+        monkeypatch.setattr(scenario_judge, "ask", lambda port, prompt, max_tokens=3000: json.dumps(reply))
+        return scenario_judge.numbered(0, trajectory)
+
+    # From the date the assistant was told, through the judge's own steps; from
+    # a date the answer said before; a difference: all sums.
+    assert judge("10/28") == {"claims": 4, "failed": {}, "missing": [], "passed": True}
+    # From a date neither the record nor the answer gave: no sum.
+    assert list(judge("2023-10-26")["failed"]) == ["claim 3 11/27"]
 
 
 def test_the_judge_is_validated_on_conversations_from_across_the_run() -> None:

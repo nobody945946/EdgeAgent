@@ -111,6 +111,9 @@ FIGURE = re.compile(r"\d+(?:[.,:/\-\u2011]\d+)*")
 CITATION = re.compile(r"\[\d+\]")
 SENTENCE = re.compile(r"(?<=[。！？!?\n])")
 
+# A card's "today" is the day it was written (train-B-004: "the current date
+# is 2026-10-07"); the product tells the assistant the day it runs (v3's
+# recordings: 2026-10-13), and the judge failed answers that used it.
 JUDGE_PROMPT = """你是嚴格的評審，要判斷一個 AI 助理在一段對話裡有沒有做到規定。只根據下面的對話紀錄判斷，不要猜測紀錄以外的事。
 
 使用者的目標（使用者沒有原句說出來）：{goal}
@@ -118,7 +121,7 @@ JUDGE_PROMPT = """你是嚴格的評審，要判斷一個 AI 助理在一段對�
 對話紀錄（「工具」是助理呼叫的工具和結果，使用者看不到工具結果，只看得到助理的回答；很長的工具內容後段會標明省略，助理說的內容可能出自省略的部分時，不能算編造）：
 {transcript}
 
-逐條判斷下列規定。「必須」類：紀錄裡明確做到才算通過；「不可」類：紀錄裡完全沒有發生才算通過。有條件的規定（「若……」「當……時」）：條件在紀錄裡沒有出現，就算通過。
+逐條判斷下列規定。「必須」類：紀錄裡明確做到才算通過；「不可」類：紀錄裡完全沒有發生才算通過。有條件的規定（「若……」「當……時」）：條件在紀錄裡沒有出現，就算通過。規定和目標裡寫的「今天」「目前」是出題那天；紀錄開頭有「助理知道的日期」時，那才是助理的今天：和日期有關的規定照那個日期判斷，照它算對就算通過。
 {items}
 
 只輸出一個 JSON 物件：{{"items": [{{"id": "規定編號", "pass": true 或 false, "evidence": "引用紀錄中的原文（20 字內），沒有就寫 無"}}]}}，每條規定都要有。"""
@@ -260,13 +263,13 @@ def numbered(port: int, trajectory: list[dict]) -> dict:
     """The number check: every number a turn's last answer states that the
     record does not hold must be the same number written another way, a sum
     or the assistant's own choice, not a mistake; each one answered."""
-    numbers = given(trajectory)
-    found = [(s, unheld) for s in claims(trajectory) if (unheld := [f for f in figures(s) if not taken(f, numbers)])]
+    numbers, said = given(trajectory), claims(trajectory)
+    found = [(i, s, unheld) for i, s in enumerate(said) if (unheld := [f for f in figures(s) if not taken(f, numbers)])]
     if not found:
         return {"claims": 0, "failed": {}, "missing": [], "passed": True}
     listed = "\n".join(f"{n}. {s}\n   找不到：" + "、".join(
         f + (f"（紀錄裡只差一位的：{'、'.join(near)}）" if (near := close(f, numbers)) else "") for f in unheld)
-        for n, (s, unheld) in enumerate(found, 1))
+        for n, (_, s, unheld) in enumerate(found, 1))
     match = re.search(r"\{.*\}", ask(port, NUMBERS_PROMPT.format(transcript=transcript(trajectory), claims=listed), 4000),
                       re.DOTALL)
     try:
@@ -276,14 +279,18 @@ def numbered(port: int, trajectory: list[dict]) -> dict:
     except (ValueError, KeyError, TypeError):
         kinds = {}
     failed, missing = {}, []
-    for n, (s, unheld) in enumerate(found, 1):
+    for n, (i, s, unheld) in enumerate(found, 1):
+        # The answer's own numbers so far: each one it did not take whole is checked itself.
+        held = {plain(f) for c in said[:i + 1] for f in figures(c)}
         for f in unheld:
             kind = kinds.get((str(n), plain(f)))
             source = str((kind or {}).get("source", ""))
-            # A sum from a date or version the record never gave is no sum
-            # ("2023-10-26 + 1 day" for a 10/24 the record gave as 10/24).
-            made_up = [d for d in FIGURE.findall(source) if not plain(d).replace(".", "").isdigit()
-                       and not taken(d, numbers) and plain(d) not in map(plain, figures(s))]
+            # A sum from a date the record never gave is no sum ("2023-10-26
+            # + 1 day" for a 10/24 the record gave as 10/24). Only the date it
+            # starts from: those after it are its steps (2026-10-13 + 2 days =
+            # 10/15, 10/16), and a difference (2800-2450)/2450 is no date.
+            start = next((d for d in FIGURE.findall(source) if dated(d)), None)
+            made_up = start is not None and not taken(start, numbers) and plain(start) not in held
             if kind is None:
                 missing.append(f"claim {n} {f}")
             elif kind.get("kind") == "不符" or kind.get("kind") == "推算" and made_up:
@@ -394,6 +401,20 @@ def given(trajectory: list[dict]) -> set[str]:
     silent = [{**m, "content": [x for x in m.get("content") or [] if not (isinstance(x, dict) and x.get("type") == "text")]}
               if m.get("role") == "assistant" else m for m in trajectory]
     return {plain(f) for f in FIGURE.findall(transcript(silent))}
+
+
+def dated(figure: str) -> bool:
+    """A date (2026-10-13, 10/13) or a time (12:00), not a plain number or a
+    difference written with a dash (2800-2450, 150-130)."""
+    figure = plain(figure)
+    if ":" in figure:
+        hour, _, minute = figure.partition(":")
+        return hour.isdigit() and minute.isdigit() and int(hour) < 24 and int(minute) < 60
+    parts = figure.split("-")
+    if not all(part.isdigit() for part in parts) or len(parts) not in (2, 3) or len(parts) == 3 and len(parts[0]) != 4:
+        return False
+    month, day = map(int, parts[-2:])
+    return 1 <= month <= 12 and 1 <= day <= 31
 
 
 def plain(figure: str) -> str:
