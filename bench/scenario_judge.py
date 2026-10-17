@@ -71,17 +71,20 @@ GROUNDED_NOT = ("回答說做了紀錄裡沒做、或做了但失敗的事",)
 # items against a long transcript of tool calls); asked alone, per turn, over
 # the messages and answers only, it has nothing else to read. Asked pass or
 # fail, it still passed 3 of 10 answers cut after their main point
-# (teacher-cards-4096); it now copies each answer's ending before it decides.
+# (teacher-cards-4096). Told to copy each answer's ending first, it copied
+# another sentence's for 3 of the 5 cut tool answers it passed (v4c-tools,
+# 2026-10-17): the code gives it each answer's last characters.
 # A real cut (the output limit) is the checks' (scenario_checks cut_off).
 ANSWER_PROMPT = """你是嚴格的評審。下面是一段對話裡使用者說的每一則訊息，以及 AI 助理在那一輪最後給使用者的回答（助理中間查資料、跑工具的過程省略了）。
 
 {turns}
 
-逐輪判斷那一輪的回答：先照抄它最後 15 個字，再看
-1. complete：話有沒有講完——句子、括號、引號、清單、表格、程式碼都完整收尾，不是講到一半就斷掉（只差後面的補充也算沒講完）；
+逐輪判斷那一輪的回答：
+1. complete：話有沒有講完——看它的結尾（每則回答後面列出了它最後 {ending} 個字）：句子、括號、引號、清單、表格、程式碼都完整收尾，不是講到一半就斷掉（斷在詞或句子中間、只差後面的補充，都算沒講完）；
 2. responds：有沒有回應那則訊息要的事（照前面的對話理解那則訊息；反問使用者來釐清那則訊息也算回應）。
 
-只輸出一個 JSON 物件：{{"turns": [{{"turn": 輪次, "ending": "回答最後 15 個字（照抄）", "complete": true 或 false, "responds": true 或 false}}]}}，每一輪都要有。"""
+只輸出一個 JSON 物件：{{"turns": [{{"turn": 輪次, "complete": true 或 false, "responds": true 或 false}}]}}，每一輪都要有。"""
+ENDING = 15
 
 # The numbers an answer states that the record does not hold (code finds
 # them: most numbers an answer states are copied whole), each with the
@@ -271,19 +274,48 @@ def turns(trajectory: list[dict]) -> list[tuple[str, str]]:
 def answered(port: int, trajectory: list[dict]) -> dict:
     """The answer check: each turn's last answer answers its message, in full."""
     pairs = turns(trajectory)
+    endings = [answer.rstrip()[-ENDING:] for _, answer in pairs]
     listed = "\n\n".join(f"第 {n} 輪\n使用者：{message}\n助理最後的回答：{answer or '（沒有回答）'}"
+                          + (f"\n（這則回答最後 {ENDING} 個字：「{endings[n - 1]}」）" if answer else "")
                           for n, (message, answer) in enumerate(pairs, 1))
-    reply = ask(port, ANSWER_PROMPT.format(turns=listed))
-    found = {int(v["turn"]): v for v in objects(reply, "turns", ("turn", "ending", "complete", "responds"))
-             if {"turn", "complete", "responds"} <= v.keys() and str(v["turn"]).isdigit()}
+    reply = ask(port, ANSWER_PROMPT.format(turns=listed, ending=ENDING))
+    found = {int(v["turn"]): v for v in objects(reply, "turns", ("turn", "complete", "responds"))
+             if {"turn", "complete", "responds"} <= v.keys() and str(v["turn"]).isdigit()
+             and 1 <= int(v["turn"]) <= len(pairs)}
     verdicts = {n: yes(found[n]["complete"]) and yes(found[n]["responds"]) for n in found}
-    failed = {f"turn {n}": ("cut: " if not yes(found[n]["complete"]) else "off: ") + str(found[n].get("ending", ""))[:40]
+    failed = {f"turn {n}": ("cut: " if not yes(found[n]["complete"]) else "off: ") + endings[n - 1]
               for n in found if not verdicts[n]}
+    # An answer left open stopped mid-way, whatever the judge reads.
+    failed.update({f"turn {n}": f"cut: {endings[n - 1]}" for n, (_, answer) in enumerate(pairs, 1)
+                   if answer and left_open(answer)})
     # A turn with no answer at all fails as one: nothing to read.
     failed.update({f"turn {n}": "no answer" for n, (_, answer) in enumerate(pairs, 1) if not answer})
     missing = [f"turn {n}" for n in range(1, len(pairs) + 1) if n not in verdicts]
     return {"turns": verdicts, "failed": failed, "missing": missing, **unread(reply, missing),
             "passed": not missing and not failed}
+
+
+PAIRS = ("（）", "「」", "『』", "()", "【】", "[]")
+
+
+def left_open(answer: str) -> bool:
+    """The answer stops inside a code block, or its last paragraph inside a
+    code span, a bracket or a quote: it was cut, whatever the judge reads (it
+    passed "`discounted(100) → 85" as whole: v4c-tools, 2026-10-17). In the
+    carried runs' 1,837 answers it finds 3, all cut (py-train-243's "`ma` 用「該").
+    Not bold: a ** pair spans paragraphs in whole answers."""
+    if answer.count("```") % 2:
+        return True
+    last = re.sub(r"```.*?```", "", answer, flags=re.DOTALL).rstrip().split("\n\n")[-1]
+    if last.count("`") % 2:
+        return True
+    for opening, closing in PAIRS:
+        depth = 0
+        for char in last:
+            depth += 1 if char == opening else -1 if char == closing and depth else 0
+        if depth:
+            return True
+    return False
 
 
 def figures(sentence: str) -> list[str]:

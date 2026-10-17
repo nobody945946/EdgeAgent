@@ -267,6 +267,8 @@ def test_the_judge_runs_side_by_side_and_validates_against_corruptions(tmp_path:
             prompt = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["messages"][0]["content"]
             if "助理最後的回答：" in prompt:  # the answer check sees messages and answers only
                 assert "目標" not in prompt and "工具（" not in prompt
+                # and each answer's ending, given by the code (the judge copied another sentence's).
+                assert "（沒有回答）" in prompt or re.search(r"\n（這則回答最後 15 個字：「.+」）", prompt, re.DOTALL)
                 task = re.search(r"使用者：問(\d+)", prompt).group(1)
                 answer = re.search(r"助理最後的回答：(.*)", prompt).group(1)
                 ok = not Judge.strict and answer.startswith(f"答{task}：") and answer.endswith(f"完整的結尾{task}。")
@@ -420,7 +422,7 @@ def test_a_reply_that_does_not_parse_whole_is_read_object_by_object(monkeypatch)
     monkeypatch.setattr(scenario_judge, "ask", lambda port, prompt, max_tokens=3000: broken)
     found = scenario_judge.answered(0, trajectory)
     assert found["turns"] == {1: True, 2: False} and found["missing"] == ["turn 3"] and found["reply"] == broken
-    assert found["failed"] == {"turn 2": "cut: 結尾"} and not found["passed"]
+    assert found["failed"] == {"turn 2": "cut: 答2"} and not found["passed"]
     # A Windows path copied with its backslashes as they are.
     assert scenario_judge.objects('{"turns": [{"turn": 1, "ending": "C:\\Users\\a 了", "complete": true, "responds": true}]',
                                   "turns", ("turn", "ending", "complete", "responds")) == [
@@ -435,6 +437,19 @@ def test_a_reply_that_does_not_parse_whole_is_read_object_by_object(monkeypatch)
     monkeypatch.setattr(scenario_judge, "ask", lambda port, prompt, max_tokens=3000: items)
     assert scenario_judge.rule(0, task, trajectory, 1) == {"items": {"M1": True, "M2": True, "N1": True}, "failed": {},
                                                            "missing": [], "passed": True}
+
+
+def test_an_answer_left_open_was_cut_whatever_the_judge_says(monkeypatch) -> None:
+    assert all(map(scenario_judge.left_open, (
+        "**驗證**：執行 `discounted(100) → 85", "2. `ma` 用「該", "- 不炸（avg 回 0", "程式如下：\n```python\nx = 1")))
+    assert not any(map(scenario_judge.left_open, (
+        "完成（見 [1]）。", "（上一段的括號\n\n這段收尾了。）", "```\nx = (\n```\n好了。", "**粗體\n\n跨段**。", "")))
+    trajectory = [{"role": "user", "content": "修好了嗎"}, *said("修好了，執行 `discounted(100) → 85")]
+    monkeypatch.setattr(scenario_judge, "ask", lambda port, prompt, max_tokens=3000: json.dumps(
+        {"turns": [{"turn": 1, "complete": True, "responds": True}]}))
+    found = scenario_judge.answered(0, trajectory)
+    assert found["failed"] == {"turn 1": "cut: " + "修好了，執行 `discounted(100) → 85"[-15:]}
+    assert not found["passed"]
 
 
 def test_a_date_no_calendar_has_fails_whatever_the_judge_says(monkeypatch) -> None:
